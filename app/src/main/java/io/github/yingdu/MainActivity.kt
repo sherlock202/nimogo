@@ -138,6 +138,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashLog.install(this)
         setTheme(android.R.style.Theme_Material_Light_NoActionBar)
         window.statusBarColor = BG
         window.navigationBarColor = BG
@@ -148,6 +149,26 @@ class MainActivity : Activity(), ReaderService.UiListener {
         // 从 Google Maps「共享」进来（屏幕旋转重建时不再处理一次）
         // 从「最近任务」重新打开时，系统会把当初共享的那个 intent 再给一次，不能再导航一次
         if (savedInstanceState == null && intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0) handleNavIntent(intent)
+        if (savedInstanceState == null) showLastCrash()
+    }
+
+    /** 上次闪退了：把记录给用户看，可以复制下来发给开发者。 */
+    private fun showLastCrash() {
+        val t = CrashLog.last(this) ?: return
+        AlertDialog.Builder(this)
+            .setTitle("NimoGo 上次闪退了")
+            .setView(ScrollView(this).apply {
+                addView(text("下面是出错的记录（只存在手机上）。点「复制」后发给开发者，能很快找到原因。\n\n$t", 11.5f).apply {
+                    setTextIsSelectable(true); setPadding(dp(20), dp(8), dp(20), dp(4))
+                })
+            })
+            .setPositiveButton("复制") { _, _ ->
+                (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("NimoGo 闪退记录", t))
+                CrashLog.clear(this); toast("已复制")
+            }
+            .setNegativeButton("知道了") { _, _ -> CrashLog.clear(this) }
+            .show()
     }
 
     // ---- 免责说明、隐私说明：第一次打开时要同意才能用 ----

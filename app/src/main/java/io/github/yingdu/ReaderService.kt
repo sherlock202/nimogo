@@ -167,9 +167,21 @@ class ReaderService : Service(), NimoListener, AppHost {
     val nav by lazy {
         navCreated = true
         // 开始导航时让服务以前台方式常驻（没连眼镜、只是绑定着的时候，离开萤读服务就会被销毁，导航也跟着停）
-        NavApp(this, { startForegroundService(Intent(this, ReaderService::class.java)); openApp(it) }, { if (activeApp === it) closeApp() })
+        NavApp(this, { keepForNav(); openApp(it) }, { if (activeApp === it) closeApp() })
     }
     private var navCreated = false
+
+    /**
+     * 导航开始时让服务常驻前台。前台服务的类型是「连接设备」，Android 12 起要先有蓝牙权限，
+     * 没有就不切前台（否则系统直接让 app 崩溃）；导航本身由 Navigation SDK 自己的前台服务撑着。
+     */
+    private fun keepForNav() {
+        if (Build.VERSION.SDK_INT >= 31 &&
+            checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            log("导航：没有蓝牙权限，服务不切到前台（先连一次眼镜就好）"); return
+        }
+        runCatching { startForegroundService(Intent(this, ReaderService::class.java)) }.onFailure { log("导航：服务切前台失败：$it") }
+    }
     /** 实时字幕（用全天记忆里设置的转文字服务）。 */
     val captions by lazy { CaptionsApp(this, object : CaptionsApp.Env {
         override fun asr() = memGet("asrKey").takeIf { it.isNotEmpty() }?.let { Triple(asrBase(), it, asrModel()) }
@@ -927,6 +939,7 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     override fun onCreate() {
         super.onCreate()
+        CrashLog.install(this)
         instance = this
         GlassesFonts.init(this)
         steps = StepsProvider(this) { if (appMode == AppMode.DASHBOARD) pushDashboard(force = false); notifyUi() }
