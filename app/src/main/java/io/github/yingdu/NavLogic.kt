@@ -1,0 +1,224 @@
+package io.github.yingdu
+
+import java.net.URI
+import java.net.URLDecoder
+import java.util.Calendar
+
+/*
+ * NimoGo 导航里不依赖 Android / Navigation SDK 的部分（方便单元测试）：
+ *  - 从 Google Maps「共有 / 分享」出来的文字和链接里找出目的地；
+ *  - 距离、时间的写法；
+ *  - SDK 的转向类型（Maneuver）对应眼镜上画哪种箭头；
+ *  - 每月目的地次数（Navigation SDK 按目的地计费，每月前 1000 个免费）。
+ */
+
+/** 出行方式（和 Navigation SDK 的 RoutingOptions.TravelMode 对应，见 NavGuide）。 */
+enum class NavMode(val zh: String) { WALKING("步行"), DRIVING("驾车"), CYCLING("骑行") }
+
+/**
+ * 目的地：有坐标就用坐标，其次 Place ID，都没有就是一段要查的文字（交给系统的地理编码）。
+ * [title] 只用来显示。
+ */
+data class NavDest(val title: String, val lat: Double? = null, val lng: Double? = null,
+                   val placeId: String? = null, val query: String? = null) {
+    val hasPoint get() = lat != null && lng != null
+    /** 能直接交给 Navigation SDK（不用再查）。 */
+    val ready get() = hasPoint || placeId != null
+}
+
+object NavLinks {
+    private val URL_RE = Regex("""https?://[^\s<>"'）)]+""")
+    private val PLACE_3D4D = Regex("""!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)""")
+    private val AT_LATLNG = Regex("""/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)""")
+    private val LATLNG = Regex("""^\s*(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)\s*(?:\((.*)\))?\s*$""")
+
+    /** 分享文字里的第一个链接。 */
+    fun findUrl(text: String): String? = URL_RE.find(text)?.value?.trimEnd('.', ',', '。', '、')
+
+    /** 需要先跟一下跳转才知道地点的短链接（maps.app.goo.gl 等）。 */
+    fun isShortLink(url: String): Boolean {
+        val host = runCatching { URI(url).host?.lowercase() }.getOrNull() ?: return false
+        return host == "goo.gl" || host.endsWith(".goo.gl") || host == "g.co"
+    }
+
+    /** 分享文字里除了链接以外的第一行，当作地点名（Google Maps 有时写成「名称 · 地址」，只取名称）。 */
+    fun titleOf(text: String): String {
+        val line = text.lines().map { URL_RE.replace(it, "").trim() }.firstOrNull { it.isNotEmpty() } ?: return ""
+        return line.substringBefore(" · ").substringBefore(" ⋅ ").trim().trim('"', '「', '」')
+    }
+
+    /**
+     * 解析一个（已经展开的）Google Maps 链接。按精确程度依次找：
+     * 地点坐标（!3d…!4d…）→ Place ID → 参数里的「纬度,经度」→ 参数或路径里的地名 → 地图中心（/@纬度,经度）。
+     */
+    fun parseUrl(url: String, fallbackTitle: String = ""): NavDest? {
+        val u = runCatching { URI(url) }.getOrNull() ?: return null
+        val host = u.host?.lowercase() ?: return null
+        if (!host.contains("google.") && !host.startsWith("maps.") && !host.contains("goo.gl")) return null
+        val q = query(u.rawQuery)
+        val path = runCatching { URLDecoder.decode(u.rawPath ?: "", "UTF-8") }.getOrDefault(u.path ?: "")
+        val placeName = Regex("""/place/([^/]+)""").find(path)?.groupValues?.get(1)?.replace('+', ' ')?.trim().orEmpty()
+        val title = fallbackTitle.ifEmpty { placeName }
+
+        PLACE_3D4D.find(url)?.let { m ->
+            return NavDest(title.ifEmpty { "地图上的地点" }, m.groupValues[1].toDouble(), m.groupValues[2].toDouble())
+        }
+        val pid = q["query_place_id"] ?: q["destination_place_id"]
+            ?: listOf("q", "query", "destination", "daddr").firstNotNullOfOrNull { k -> q[k]?.takeIf { it.startsWith("place_id:") }?.removePrefix("place_id:") }
+        if (!pid.isNullOrBlank()) return NavDest(title.ifEmpty { q["query"] ?: q["q"]?.takeUnless { it.startsWith("place_id:") } ?: "地图上的地点" }, placeId = pid.trim())
+        for (k in listOf("destination", "daddr", "q", "query", "ll")) {
+            val v = q[k] ?: continue
+            point(v)?.let { (lat, lng, label) -> return NavDest(title.ifEmpty { label ?: "地图上的地点" }, lat, lng) }
+        }
+        for (k in listOf("destination", "daddr", "q", "query")) {
+            val v = q[k]?.trim().orEmpty()
+            if (v.isNotEmpty()) return NavDest(title.ifEmpty { v }, query = v)
+        }
+        if (placeName.isNotEmpty()) return NavDest(title, query = placeName)
+        // 路线链接（/maps/dir/起点/终点/@…）：@ 后面是地图中心不是终点，用路径里最后一个地点名
+        if (path.contains("/dir/")) {
+            val last = path.substringAfter("/dir/").split('/').map { it.replace('+', ' ').trim() }
+                .lastOrNull { it.isNotEmpty() && !it.startsWith("@") && !it.startsWith("data=") }
+            if (last != null) return point(last)?.let { (lat, lng, _) -> NavDest(title.ifEmpty { "地图上的地点" }, lat, lng) }
+                ?: NavDest(title.ifEmpty { last }, query = last)
+            return null
+        }
+        AT_LATLNG.find(path)?.let { m ->
+            return NavDest(title.ifEmpty { "地图上的地点" }, m.groupValues[1].toDouble(), m.groupValues[2].toDouble())
+        }
+        return null
+    }
+
+    /** geo: 链接（其他 app 用「用地图打开」时发来的）：geo:纬度,经度?q=纬度,经度(名称) 或 geo:0,0?q=地址。 */
+    fun parseGeo(uri: String): NavDest? {
+        if (!uri.startsWith("geo:", ignoreCase = true)) return null
+        val body = uri.substring(4)
+        val pointPart = body.substringBefore('?').substringBefore(';')
+        val q = query(body.substringAfter('?', ""))["q"]?.trim().orEmpty()
+        point(q)?.let { (lat, lng, label) -> return NavDest(label ?: "地图上的地点", lat, lng) }
+        if (q.isNotEmpty()) return NavDest(q, query = q)
+        val p = point(pointPart) ?: return null
+        if (p.first == 0.0 && p.second == 0.0) return null
+        return NavDest("地图上的地点", p.first, p.second)
+    }
+
+    /** 「35.68,139.76」或「35.68,139.76(名称)」。 */
+    fun point(s: String): Triple<Double, Double, String?>? {
+        val m = LATLNG.find(s) ?: return null
+        val lat = m.groupValues[1].toDoubleOrNull() ?: return null
+        val lng = m.groupValues[2].toDoubleOrNull() ?: return null
+        if (lat !in -90.0..90.0 || lng !in -180.0..180.0) return null
+        return Triple(lat, lng, m.groupValues[3].trim().ifEmpty { null })
+    }
+
+    private fun query(raw: String?): Map<String, String> {
+        if (raw.isNullOrEmpty()) return emptyMap()
+        val out = LinkedHashMap<String, String>()
+        for (part in raw.split('&')) {
+            if (part.isEmpty()) continue
+            val k = part.substringBefore('=')
+            val v = part.substringAfter('=', "")
+            val dk = runCatching { URLDecoder.decode(k, "UTF-8") }.getOrDefault(k)
+            if (dk !in out) out[dk] = runCatching { URLDecoder.decode(v, "UTF-8") }.getOrDefault(v)
+        }
+        return out
+    }
+}
+
+object NavText {
+    /** 眼镜上的距离：100 米内按 5 米、1 公里内按 10 米、10 公里内一位小数（数字变化少，眼镜不用频繁刷新）。 */
+    fun distance(m: Int): String = when {
+        m < 0 -> ""
+        m < 100 -> "${(m + 2) / 5 * 5} 米"
+        m < 995 -> "${(m + 5) / 10 * 10} 米"
+        m < 9950 -> String.format(java.util.Locale.US, "%.1f 公里", m / 1000.0)
+        else -> "${(m + 500) / 1000} 公里"
+    }
+
+    fun duration(sec: Int): String = when {
+        sec < 60 -> "不到 1 分钟"
+        sec < 3600 -> "${(sec + 30) / 60} 分钟"
+        else -> { val min = (sec + 30) / 60; "${min / 60} 小时" + if (min % 60 > 0) " ${min % 60} 分" else "" }
+    }
+
+    /** 预计到达时刻（HH:mm）。 */
+    fun eta(nowMillis: Long, sec: Int, tz: java.util.TimeZone = java.util.TimeZone.getDefault()): String {
+        val c = Calendar.getInstance(tz).apply { timeInMillis = nowMillis + sec * 1000L }
+        return String.format(java.util.Locale.US, "%02d:%02d", c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE))
+    }
+}
+
+/** 眼镜上画的转向箭头。 */
+enum class NavIcon { STRAIGHT, LEFT, RIGHT, SLIGHT_LEFT, SLIGHT_RIGHT, SHARP_LEFT, SHARP_RIGHT, KEEP_LEFT, KEEP_RIGHT,
+    UTURN_LEFT, UTURN_RIGHT, ROUNDABOUT_CW, ROUNDABOUT_CCW, DESTINATION, DEPART, FERRY, UNKNOWN;
+
+    companion object {
+        /**
+         * Navigation SDK 的 Maneuver 值（com.google.android.libraries.mapsplatform.turnbyturn.model.Maneuver，
+         * 数值照官方参考文档抄的，这里不直接引用 SDK，方便单元测试）。
+         */
+        fun of(maneuver: Int): NavIcon = when (maneuver) {
+            1 -> DEPART
+            2, 3, 4 -> DESTINATION
+            5, 65 -> STRAIGHT
+            6 -> LEFT; 7 -> RIGHT
+            8, 17, 19 -> KEEP_LEFT; 9, 18, 20 -> KEEP_RIGHT
+            10 -> SLIGHT_LEFT; 11 -> SLIGHT_RIGHT
+            12 -> SHARP_LEFT; 13 -> SHARP_RIGHT
+            14 -> UTURN_RIGHT; 15 -> UTURN_LEFT          // 顺时针掉头 = 往右绕（靠左行驶的日本），逆时针 = 往左绕
+            16, 21, 32 -> STRAIGHT
+            22, 33 -> LEFT; 23, 34 -> RIGHT
+            24, 26, 35, 37 -> KEEP_LEFT; 25, 27, 36, 38 -> KEEP_RIGHT
+            28, 39 -> SHARP_LEFT; 29, 40 -> SHARP_RIGHT
+            30, 41 -> UTURN_RIGHT; 31, 42 -> UTURN_LEFT
+            in 43..62 -> if (maneuver % 2 == 1) ROUNDABOUT_CW else ROUNDABOUT_CCW
+            63, 64 -> FERRY
+            else -> UNKNOWN
+        }
+
+        /** 文字说明里用的方向（导航页的「后续步骤」）。 */
+        fun zh(i: NavIcon) = when (i) {
+            STRAIGHT -> "直行"; LEFT -> "左转"; RIGHT -> "右转"; SLIGHT_LEFT -> "稍向左"; SLIGHT_RIGHT -> "稍向右"
+            SHARP_LEFT -> "向左急转"; SHARP_RIGHT -> "向右急转"; KEEP_LEFT -> "靠左"; KEEP_RIGHT -> "靠右"
+            UTURN_LEFT, UTURN_RIGHT -> "掉头"; ROUNDABOUT_CW, ROUNDABOUT_CCW -> "环岛"; DESTINATION -> "到达"
+            DEPART -> "出发"; FERRY -> "轮渡"; UNKNOWN -> ""
+        }
+    }
+}
+
+/** 导航的一步（从 SDK 的 StepInfo 转过来）。 */
+data class NavStep(val maneuver: Int, val road: String, val instruction: String, val meters: Int?)
+
+/**
+ * 某一刻的导航状态（从 SDK 的 NavInfo 转过来，大约每秒一次）。
+ * @param state NavState：0 未知 / 1 导航中 / 2 重新规划路线 / 3 已停止
+ */
+data class NavSnap(val state: Int, val current: NavStep?, val toStepMeters: Int?, val toStepSeconds: Int?,
+                   val remainMeters: Int?, val remainSeconds: Int?, val next: List<NavStep>) {
+    /** 眼镜画面上会显示的内容；不变就不用重画。 */
+    fun displayKey(): String = listOf(state, current?.maneuver, current?.road, current?.instruction,
+        toStepMeters?.let { NavText.distance(it) }, remainMeters?.let { NavText.distance(it) },
+        remainSeconds?.let { (it + 30) / 60 }, next.take(3).joinToString("|") { "${it.maneuver}${it.road}${it.meters?.let { m -> NavText.distance(m) }}" })
+        .joinToString("/")
+
+    companion object {
+        const val UNKNOWN = 0
+        const val ENROUTE = 1
+        const val REROUTING = 2
+        const val STOPPED = 3
+    }
+}
+
+/** 每月的目的地次数（本机自己数的，和 Google Cloud 后台的计费可能有出入）。 */
+object NavBudget {
+    fun monthKey(millis: Long, tz: java.util.TimeZone = java.util.TimeZone.getDefault()): String {
+        val c = Calendar.getInstance(tz).apply { timeInMillis = millis }
+        return String.format(java.util.Locale.US, "%04d-%02d", c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1)
+    }
+
+    /** 记录的月份不是本月就从 0 算起。 */
+    fun used(savedMonth: String, savedCount: Int, nowMonth: String) = if (savedMonth == nowMonth) savedCount else 0
+
+    /** 再导航 n 个目的地会不会超过上限（上限 0 = 不限制）。 */
+    fun allowed(used: Int, limit: Int, n: Int = 1) = limit <= 0 || used + n <= limit
+}

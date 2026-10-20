@@ -1,0 +1,54 @@
+# NimoGo：在 GitHub 上编译 APK（Actions 页里点「Run workflow」，或推送代码时自动跑）
+# 编好的安装包在这次运行的 Artifacts 里（NimoGo-apk）。
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # 有签名 Secret 就用固定签名编译 Release，没有就编译调试版
+      - name: Prepare signing key
+        env:
+          KS: ${{ secrets.NIMOGO_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/nimogo.jks"
+            echo "NIMOGO_KEYSTORE_FILE=$RUNNER_TEMP/nimogo.jks" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build
+        env:
+          NIMOGO_KEYSTORE_PASSWORD: ${{ secrets.NIMOGO_KEYSTORE_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          if [ -n "$NIMOGO_KEYSTORE_FILE" ]; then
+            ./gradlew --no-daemon assembleRelease
+            cp app/build/outputs/apk/release/app-release.apk NimoGo.apk
+          else
+            ./gradlew --no-daemon assembleDebug
+            cp app/build/outputs/apk/debug/app-debug.apk NimoGo.apk
+          fi
+
+      - name: Unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NimoGo-apk
+          path: NimoGo.apk
