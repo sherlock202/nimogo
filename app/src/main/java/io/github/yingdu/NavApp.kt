@@ -71,6 +71,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     init {
         NavGuide.sink = { onSnap(it) }
         NavGuide.onArrived = { arrived() }
+        NavGuide.log = { host.log(it) }
         // 上一个服务实例留下的引导（萤读被关掉后重新打开）：这里接不上它的状态，直接停掉，免得在后台空跑
         if (NavGuide.guiding()) NavGuide.stop()
     }
@@ -81,7 +82,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         host.main.removeCallbacks(autoClose)
         val id = ++reqId
         this.dest = dest; this.mode = mode
-        phase = Phase.ROUTING; snap = null; error = ""; page = 0
+        phase = Phase.ROUTING; snap = null; error = ""; page = 0; noDataHint = ""
         host.log("导航：规划到「${dest.title}」的路线（${mode.zh}）")
         showOnGlasses(this)
         show()
@@ -93,7 +94,11 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
                 if (billed) countOne()
                 if (id != reqId || phase != Phase.ROUTING) return@routed         // 迟到的结果（例如被新请求取消）
                 if (e != null) fail(e)
-                else { phase = Phase.GUIDING; host.log("导航开始：到「${dest.title}」"); show() }
+                else {
+                    phase = Phase.GUIDING; host.log("导航开始：到「${dest.title}」"); show()
+                    // 15 秒还没收到逐向数据：记下来，眼镜上也提示（方便排查）
+                    host.main.removeCallbacks(noData); host.main.postDelayed(noData, 15_000)
+                }
             }
         }
     }
@@ -136,6 +141,16 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         show()
         // 到达画面留 20 秒，然后眼镜回到阅读或看板
         host.main.removeCallbacks(autoClose); host.main.postDelayed(autoClose, 20_000)
+    }
+
+    /** 开始引导后一直没收到 SDK 的逐向数据。 */
+    var noDataHint = ""; private set
+    private val noData = Runnable {
+        if (phase == Phase.GUIDING && NavGuide.infoCount == 0) {
+            noDataHint = "没收到导航数据（逐向数据服务：" + when (NavGuide.lastRegisterOk) { true -> "已注册"; false -> "注册失败"; null -> "未注册" } + "）"
+            host.log("导航：开始引导 15 秒了，还没收到 SDK 的逐向数据（" + (if (NavGuide.guiding()) "SDK 引导中" else "SDK 引导没有运行") + "）")
+            show()
+        }
     }
 
     private val autoClose = Runnable { if (phase == Phase.ARRIVED || phase == Phase.ERROR) { phase = Phase.IDLE; hideFromGlasses(this); host.changed() } }
@@ -240,6 +255,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         val c = sn?.current
         if (sn == null || c == null) {
             f.text(if (rerouting) "重新规划路线…" else "等待定位…", 12, 60, Frame.FULL)
+            if (noDataHint.isNotEmpty()) f.small.wrap(noDataHint, f.w - 24).take(2).forEachIndexed { i, l -> f.text(l, 12, 60 + f.font.height + 10 + i * (f.small.height + 4), Frame.DIM, f.small) }
             return
         }
         val s: NavSnap = sn

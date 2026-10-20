@@ -1,7 +1,7 @@
 # NimoGo —— 戴着 Nimo 走出去
 
 > NimoGo 是 [萤读 Yingdu](https://github.com/codexmasterme/yingdu)（v1.0.3，Apache License 2.0）的修改版。
-> 改动：**内置 Google 导航（海外可用）**、**左单击镜腿和 Gemini 语音对话**、AI 加入 Google Gemini。其余功能与萤读相同，萤读的原说明见下文。
+> 改动：**内置 Google 导航（海外可用）**、AI 加入 Google Gemini。其余功能与萤读相同，萤读的原说明见下文。
 
 ## 相比萤读改了什么
 
@@ -11,12 +11,11 @@
 | 目的地 | 在 Google Maps 里选好地点 →「共享」→ NimoGo（支持 maps.app.goo.gl 短链接、地点链接、坐标、Place ID、geo: 链接）；或在「导航」页直接输入地名（系统地理编码，不花 API 次数） |
 | 计费保护 | Navigation SDK 按目的地计费（每月前 1000 个免费，偏航重算不计）。每次开始前弹窗确认；本机按月计数，可设每月上限（默认 1000） |
 | Gemini | 「全天记忆 › 转文字和总结」里多了 Google Gemini：转文字默认 `gemini-3.5-flash-lite`，总结 / 问 AI 默认 `gemini-3.8-flash`，走 Gemini 的 OpenAI 兼容接口。转文字语言多了「日语」 |
-| Gemini 对话 | **左单击镜腿**唤起（阅读显示时仍是上一页、小游戏里是游戏按键）：眼镜麦克风录下一句话，直接把声音发给 Gemini（原生 generateContent 接口），回答显示在眼镜上；连续对话、记得上下文；可开 Google 搜索（每月前 5000 次免费）。左单击结束、右单击翻页、右双击换话题，1 分钟没人说话自动结束。番茄钟「重来」、聚会工具「换工具」改为左双击；主界面左单击不再叫回看板 |
 | 其他 | 包名 `io.github.nimogo`、应用名「NimoGo」（可以和原版同时安装）；不再检查原版的更新；「和官方 app 切换」里的导航改成打开自带导航；隐私说明、使用手册同步更新 |
 
 ![眼镜上的导航画面（模拟 2bpp 显示）](docs/images/nav-preview.png)
 
-新增 / 修改的代码：`GeminiChat.kt`（Gemini 语音对话）、`NavLogic.kt`（链接解析、文字、计数，有单元测试）、`NavGuide.kt`（SDK 封装、逐向数据服务、短链接展开）、`NavApp.kt`（眼镜画面和状态）、`MainActivity.kt`（导航页、设置页、共享入口）、`MemoryAi.kt`（Gemini）、`AndroidManifest.xml`、Gradle 配置。
+新增 / 修改的代码：`NavLogic.kt`（链接解析、文字、计数，有单元测试）、`NavGuide.kt`（SDK 封装、逐向数据服务、短链接展开）、`NavApp.kt`（眼镜画面和状态）、`MainActivity.kt`（导航页、设置页、共享入口）、`MemoryAi.kt`（Gemini）、`AndroidManifest.xml`、Gradle 配置。
 
 ### 准备 Google 的 Key
 
@@ -72,8 +71,7 @@ NimoGo 依赖 Navigation SDK（从 Google Maven 下载），原版的「不用 A
 2. 服务条款对话框在萤读的主题（系统 Material，非 AppCompat）下能否正常弹出；
 3. 只用逐向数据、不显示 Google 地图时，引导能否在后台持续（SDK 会自己开前台服务）；
 4. Gemini 的 OpenAI 兼容接口对音频（`input_audio`）的支持、模型名（`gemini-3.5-flash-lite` / `gemini-3.8-flash`，可在设置里改）；
-5. Google Maps 共享出来的短链接展开后的格式（解析不出坐标时会用系统地理编码兜底）；
-6. Gemini 对话：音频 + Google 搜索能否在同一个请求里用（不行时会自动去掉搜索重试）、回答速度；在官方主界面上左单击能否收到（取决于眼镜固件和官方 app 的设置）。
+5. Google Maps 共享出来的短链接展开后的格式（解析不出坐标时会用系统地理编码兜底）。
 
 另外，Google 要求在 app 的法律声明里放 Navigation SDK 的 NOTICE 和许可文本（见官方「Set up an Android Studio project › attributions」），发布给别人用之前请补上。
 

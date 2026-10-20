@@ -187,21 +187,5 @@ object PhoneIcons {
         "oooooooooooo",
     ), mapOf('#' to c(0xFF2E8B57), 'o' to c(0xFFBFE3CC)))
 
-    /** Gemini 对话（NimoGo）：对话气泡，挖出三个点。 */
-    val CHAT = PixelIcon(listOf(
-        ".##########.",
-        "############",
-        "############",
-        "############",
-        "##..#..#..##",
-        "##..#..#..##",
-        "############",
-        "############",
-        ".##########.",
-        ".###........",
-        ".##.........",
-        ".#..........",
-    ), mapOf('#' to c(0xFF4285F4)))
-
-    val ALL = listOf(READ, POMO, CLOCK, GAMES, PARTY, OFFICIAL, MEMORY, CAPTIONS, SIGHTS, MANUAL, NAV, CHAT)
+    val ALL = listOf(READ, POMO, CLOCK, GAMES, PARTY, OFFICIAL, MEMORY, CAPTIONS, SIGHTS, MANUAL, NAV)
 }

@@ -179,63 +179,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun denoise() = memDenoise
     }) }
 
-    // ---------- Gemini 对话（NimoGo）：左单击镜腿唤起 ----------
-
-    private val chatPrefs by lazy { getSharedPreferences("chat", MODE_PRIVATE) }
-    /** Gemini API Key：没单独填时用「全天记忆」里 Gemini 服务填过的 Key。 */
-    var chatKey: String
-        get() = chatPrefs.getString("key", "").orEmpty().ifEmpty {
-            listOf(if (sumPreset.id == "gemini") memGet("sumKey") else "", memGet("sumKey@gemini"),
-                if (asrPreset.id == "gemini") memGet("asrKey") else "", memGet("asrKey@gemini")).firstOrNull { it.isNotBlank() }.orEmpty()
-        }
-        set(v) { chatPrefs.edit().putString("key", v.trim()).apply(); notifyUi() }
-    /** 是不是自己在这里填的 Key（不是借用全天记忆的）。 */
-    val chatKeyOwn get() = chatPrefs.getString("key", "").orEmpty().isNotEmpty()
-    var chatModel: String
-        get() = chatPrefs.getString("model", "").orEmpty().ifEmpty { GeminiChat.DEFAULT_MODEL }
-        set(v) { chatPrefs.edit().putString("model", v.trim()).apply(); notifyUi() }
-    var chatSearch: Boolean
-        get() = chatPrefs.getBoolean("search", true)
-        set(v) { chatPrefs.edit().putBoolean("search", v).apply(); notifyUi() }
-    /** 左单击镜腿唤起（阅读时左单击仍然是上一页；小游戏里是游戏按键）。 */
-    var chatOnLeftClick: Boolean
-        get() = chatPrefs.getBoolean("leftClick", true)
-        set(v) { chatPrefs.edit().putBoolean("leftClick", v).apply(); notifyUi() }
-
-    private var chatWantsMic = false
-    val chat by lazy { GeminiChatApp(this, object : GeminiChatApp.Env {
-        override fun key() = chatKey
-        override fun model() = chatModel
-        override fun search() = chatSearch
-        override fun city() = dashCity
-        override fun setMic(on: Boolean) { chatWantsMic = on; glassesMic(on) }
-        override fun end() { endChat() }
-    }) }
-    /** 唤起前眼镜在显示的全屏功能（例如导航）、是不是收起在主界面：结束后回到那里。 */
-    private var chatReturn: GlassesApp? = null
-    private var chatWasPaused = false
-
-    fun startChat() {
-        if (activeApp === chat) return
-        if (linkState != LinkState.READY) { log("Gemini 对话：眼镜没连接"); return }
-        chatReturn = activeApp
-        chatWasPaused = glassesPaused
-        openApp(chat)
-    }
-
-    fun endChat() {
-        if (activeApp !== chat) return
-        val back = chatReturn; chatReturn = null
-        when {
-            // 回到唤起前的全屏功能（导航已经结束的就不回去了）
-            back != null && (back !== nav || nav.active()) -> openApp(back)
-            // 唤起前眼镜在主界面：结束后回主界面
-            chatWasPaused -> { activeApp = null; chat.onClose(); lastPushedDash = ""; pauseGlasses() }
-            else -> closeApp()
-        }
-        log("Gemini 对话：结束")
-    }
-
     override fun popup(title: String, text: String) { if (linkState == LinkState.READY) client.sendNotification(title, text) }
 
     /** 在眼镜上打开一个全屏功能（阅读的自动滚动、看板的轮换和自动收起都先停下）。 */
@@ -1875,8 +1818,6 @@ class ReaderService : Service(), NimoListener, AppHost {
                 "，收起方式 ${if (dashHideMode == HIDE_HOME) "回主界面" else "关屏"}，抬头显示看板 ${if (dashHeadWake) "开" else "关"}，" +
                 "使用看板 ${if (dashEnabled) "开" else "关"}，眼镜页面 ${client.enteredAppId() ?: "主界面"}")
         if (input == GlassesInput.EXITED) {
-            // Gemini 对话被眼镜退出：直接结束（不在后台继续听）
-            if (activeApp === chat) { chatReturn = null; activeApp = null; chat.onClose() }
             // 眼镜退出了页面（长按右镜腿）：停止自动滚动，暂停显示
             stopAutoFlip()
             if (appMode == AppMode.DASHBOARD) cancelDashTimers()
@@ -1889,13 +1830,6 @@ class ReaderService : Service(), NimoListener, AppHost {
                 else "眼镜上已退出显示，在手机上翻页、切换或点通知栏按钮即可恢复")
             updateNotification()
             notifyUi()
-            return
-        }
-        // NimoGo：左单击镜腿唤起 Gemini 对话（阅读正在显示时仍是上一页；小游戏里是游戏按键）
-        if (input == GlassesInput.CLICK_LEFT && chatOnLeftClick && activeApp !== chat && activeApp !is GameApp &&
-            !(activeApp == null && appMode == AppMode.READER && !glassesPaused)) {
-            log("左单击：唤起 Gemini 对话")
-            startChat()
             return
         }
         activeApp?.let { it.onInput(input); return }
@@ -2001,13 +1935,12 @@ class ReaderService : Service(), NimoListener, AppHost {
     private var captionsWantMic = false
     private fun glassesMic(on: Boolean) {
         if (on) client.micStart()
-        else if (!memWantsMic && !captionsWantMic && !chatWantsMic) client.micStop()
+        else if (!memWantsMic && !captionsWantMic) client.micStop()
     }
 
     override fun onMicFrames(frames: List<NimoMic.Frame>) {
         if (memEngine.running) { memEngine.onGlassesFrames(frames); memUi() }
         if (captions.running) captions.onFrames(frames)
-        if (chat.running) chat.onFrames(frames)
     }
 
     val micAvailable get() = ::client.isInitialized && client.micAvailable

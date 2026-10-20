@@ -123,7 +123,7 @@ class PaginatorTest {
 
 class PixelFontTest {
     @Test fun punctuationNeverStartsALine() {
-        val dir = "app/src/main/assets/fonts/"
+        val dir = listOf("src/main/assets/fonts/", "app/src/main/assets/fonts/").first { java.io.File(it).isDirectory }
         GlassesFonts.init(PixelFont.parse(java.io.File(dir + "yingdu_pixel16.ydpf").readBytes()), PixelFont.parse(java.io.File(dir + "yingdu_pixel12.ydpf").readBytes()))
         val f = GlassesFonts.text(16)
         val w = f.measure("一".repeat(10))
@@ -134,7 +134,7 @@ class PixelFontTest {
     }
 
     @Test fun sightIntroFillsOneScreen() {
-        val dir = "app/src/main/assets/fonts/"
+        val dir = listOf("src/main/assets/fonts/", "app/src/main/assets/fonts/").first { java.io.File(it).isDirectory }
         GlassesFonts.init(PixelFont.parse(java.io.File(dir + "yingdu_pixel16.ydpf").readBytes()), PixelFont.parse(java.io.File(dir + "yingdu_pixel12.ydpf").readBytes()))
         val long = "东京晴空塔是位于日本东京都墨田区的电波塔，高634米，是世界最高的自立式电波塔。塔内设有两座展望台，天气晴朗时可以远眺富士山。" +
             "塔下的商业设施东京晴空街道有三百多家商店和餐厅，还有水族馆和天象馆。晴空塔于2008年动工，2012年5月正式开放，" +
@@ -1106,7 +1106,7 @@ class ManualTest {
 
 class PhoneIconsTest {
     @Test fun iconsAreWellFormed() {
-        assertEquals(12, PhoneIcons.ALL.size)
+        assertEquals(11, PhoneIcons.ALL.size)
         for (icon in PhoneIcons.ALL) {
             val w = icon.rows[0].length
             icon.rows.forEach { assertEquals("每行一样宽：$it", w, it.length) }

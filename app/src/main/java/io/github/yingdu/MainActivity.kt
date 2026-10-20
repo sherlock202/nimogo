@@ -83,7 +83,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
     private enum class Sub {
         READ, STOCKS, AGENDA, NOTIFY, GAMES, GAME, CLOCK, POMO, POMO_SET, PARTY,
         DASH_SET, FONT, READ_SET, OFFICIAL, LOG, ABOUT, LICENSES, MEMORY, MEMORY_SET, MEMORY_LISTEN, MEMORY_API, CAPTIONS, SIGHTS, MANUAL, MANUAL_TOPIC,
-        NAV, NAV_SET, CHAT
+        NAV, NAV_SET
     }
 
     private var service: ReaderService? = null
@@ -588,7 +588,6 @@ class MainActivity : Activity(), ReaderService.UiListener {
         subPages[Sub.SIGHTS] = buildSights()
         subPages[Sub.NAV] = buildNav()
         subPages[Sub.NAV_SET] = buildNavSettings()
-        subPages[Sub.CHAT] = buildChat()
         subPages[Sub.ABOUT] = buildAbout()
         subPages[Sub.MANUAL] = buildManual()
         subPages[Sub.MANUAL_TOPIC] = buildManualTopic()
@@ -814,7 +813,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.FONT -> "眼镜字号"; Sub.READ_SET -> "阅读显示"; Sub.OFFICIAL -> "官方 app"; Sub.LOG -> "日志"; Sub.ABOUT -> "关于"; Sub.LICENSES -> "开源许可"
         Sub.MEMORY -> "全天记忆"; Sub.CAPTIONS -> "实时字幕"; Sub.MEMORY_LISTEN -> "收音方式和耗电"; Sub.MEMORY_API -> "转文字和总结"; Sub.MEMORY_SET -> "全天记忆设置"; Sub.SIGHTS -> "景点介绍"
         Sub.MANUAL -> "使用手册"; Sub.MANUAL_TOPIC -> manualTopic.title
-        Sub.NAV -> "导航"; Sub.NAV_SET -> "导航设置"; Sub.CHAT -> "Gemini 对话"
+        Sub.NAV -> "导航"; Sub.NAV_SET -> "导航设置"
     }
 
     /** 子页面右上角的文字按钮。 */
@@ -841,7 +840,6 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.POMO -> glassesButton(s, s.pomodoro, "在眼镜上看进度环")
         Sub.PARTY -> glassesButton(s, s.party, "在眼镜上打开")
         Sub.NAV -> if (s.nav.phase == NavApp.Phase.IDLE) null else glassesButton(s, s.nav, "在眼镜上显示导航")
-        Sub.CHAT -> if (s.activeApp === s.chat) "结束对话" else "在眼镜上开始对话"
         Sub.CAPTIONS -> if (s.activeApp === s.captions && !s.glassesPaused) "关掉字幕" else glassesButton(s, s.captions, "在眼镜上开字幕")
         else -> null
     }
@@ -858,11 +856,6 @@ class MainActivity : Activity(), ReaderService.UiListener {
             Sub.POMO -> toggleOnGlasses { it.pomodoro }
             Sub.PARTY -> toggleOnGlasses { it.party }
             Sub.NAV -> toggleOnGlasses { it.nav }
-            Sub.CHAT -> when {
-                s.activeApp === s.chat -> s.endChat()
-                s.linkState != LinkState.READY -> toast("先连上眼镜")
-                else -> s.startChat()
-            }
             Sub.CAPTIONS -> {
                 if (s.activeApp !== s.captions && s.memGet("asrKey").isEmpty()) { toast("先在「全天记忆 › 设置」里填转文字的 API Key"); return }
                 if (s.activeApp !== s.captions && s.linkState != LinkState.READY) { toast("先连上眼镜"); return }
@@ -1042,7 +1035,6 @@ class MainActivity : Activity(), ReaderService.UiListener {
         fun px(icon: PixelIcon) = ImageView(this).apply { setImageBitmap(icon.bitmap(dp(2))) }
         val apps = listOf(
             app(px(PhoneIcons.READ), "阅读") { openSub(Sub.READ) }, app(px(PhoneIcons.NAV), "导航") { openSub(Sub.NAV) },
-            app(px(PhoneIcons.CHAT), "Gemini") { openSub(Sub.CHAT) },
             app(px(PhoneIcons.POMO), "番茄钟") { openSub(Sub.POMO) }, app(px(PhoneIcons.CLOCK), "像素表盘") { openSub(Sub.CLOCK) },
             app(px(PhoneIcons.GAMES), "小游戏") { openSub(Sub.GAMES) },
             app(px(PhoneIcons.PARTY), "聚会工具") { openSub(Sub.PARTY) }, app(px(PhoneIcons.OFFICIAL), "官方 app") { openSub(Sub.OFFICIAL) },
@@ -1110,7 +1102,6 @@ class MainActivity : Activity(), ReaderService.UiListener {
                             a === s.party -> openSub(Sub.PARTY)
                             a === s.captions -> openSub(Sub.CAPTIONS)
                             a === s.nav -> openSub(Sub.NAV)
-                            a === s.chat -> openSub(Sub.CHAT)
                         }
                     }
                 }
@@ -1867,6 +1858,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 "导航开始后眼镜自动显示转向箭头、距离和路名；单击镜腿在「当前一步」和「后续步骤」之间切换。" +
                 "长按右镜腿只是眼镜不显示，导航还在继续，可以点下面的按钮恢复。", 13.5f).apply { setLineSpacing(0f, 1.4f) })
         })
+        val diag = text("", 12f, SUB).apply { setLineSpacing(0f, 1.3f) }
+        page.addView(card().apply { addView(diag) })
         page.addView(note("用的是 Google Navigation SDK：按目的地计费，每月前 1000 个免费，偏航后重新算路线不计。API Key、出行方式在右上角「设置」里。"))
         onUpdate(Sub.NAV) { s ->
             val n = s.nav
@@ -1880,6 +1873,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 NavApp.Phase.ERROR -> "导航没有开始：${n.error}"
             }
             stopBtn.visibility = if (n.active()) View.VISIBLE else View.GONE
+            // 诊断：一步步卡在哪里
+            val ago = if (NavGuide.lastInfoAt > 0) "，最近 ${(System.currentTimeMillis() - NavGuide.lastInfoAt) / 1000} 秒前" else ""
+            diag.text = "诊断：Google 条款 " + (if (NavGuide.termsAccepted(application)) "已同意" else "未同意") +
+                " · Navigator " + (if (NavGuide.ready) "就绪" else "未初始化") +
+                " · SDK 引导 " + (if (NavGuide.guiding()) "运行中" else "未运行") +
+                " · 逐向数据 ${NavGuide.infoCount} 次$ago" + (if (NavGuide.lastState >= 0) "（状态 ${NavGuide.lastState}）" else "") +
+                if (n.noDataHint.isNotEmpty()) "\n" + n.noDataHint else ""
         }
         return page
     }
@@ -1938,82 +1938,6 @@ class MainActivity : Activity(), ReaderService.UiListener {
             limitRow.value(if (n.monthlyLimit > 0) "${n.monthlyLimit} 个" else "不限")
             modeSeg.select(n.defaultMode.ordinal)
             voiceT.set(n.voice); tollT.set(n.avoidTolls); hwT.set(n.avoidHighways)
-        }
-        return page
-    }
-
-    // =====================================================================
-    // Gemini 对话（NimoGo）：左单击镜腿唤起，眼镜麦克风听、眼镜上显示回答
-    // =====================================================================
-
-    private fun buildChat(): View {
-        val page = vbox()
-        val c = card()
-        val img = glassesImage()
-        c.addView(img)
-        val st = text("", 13.5f, SUB).apply { setLineSpacing(0f, 1.3f) }
-        c.addView(st, lp(top = 10))
-        c.addView(pillRow(pill("换话题", dark = false, small = true) { service?.chat?.newTopic(); refreshNow() }), lp(top = 12))
-        page.addView(c)
-        page.addView(note("眼镜上：说完停顿一下就会发给 Gemini；回答后可以接着问（记得上下文）。左单击结束，右单击翻页，右双击换话题；1 分钟没人说话自动结束。一句话最长 12 秒。"))
-
-        page.addView(section("设置"))
-        val l = listBox()
-        val leftT = Toggle { service?.let { it.chatOnLeftClick = !it.chatOnLeftClick }; refreshNow() }
-        l.addRow(Row("左单击镜腿唤起", "阅读时左单击仍是上一页，小游戏里是游戏按键；番茄钟「重来」、聚会工具「换工具」改为左双击").apply { accessory(leftT.root) }.root)
-        val keyRow = Row("Gemini API Key", chevron = true) {
-            val s = service ?: return@Row
-            val f = field("在 Google AI Studio 申请").apply {
-                setText(if (s.chatKeyOwn) s.chatKey else "")
-                inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-            }
-            AlertDialog.Builder(this).setTitle("Gemini API Key")
-                .setMessage("不填就用「全天记忆」里 Gemini 服务填过的 Key。")
-                .setView(vbox().apply { setPadding(dp(20), dp(8), dp(20), 0); addView(f) })
-                .setPositiveButton("保存") { _, _ -> s.chatKey = f.text.toString(); refreshNow() }
-                .setNegativeButton("取消", null).show()
-        }
-        val modelRow = Row("模型", chevron = true) {
-            val s = service ?: return@Row
-            val f = field(GeminiChat.DEFAULT_MODEL).apply { setText(s.chatModel) }
-            AlertDialog.Builder(this).setTitle("模型")
-                .setMessage("例如 gemini-3.8-flash（更聪明）、gemini-3.5-flash-lite（更快）。留空用默认。")
-                .setView(vbox().apply { setPadding(dp(20), dp(8), dp(20), 0); addView(f) })
-                .setPositiveButton("保存") { _, _ -> s.chatModel = f.text.toString(); refreshNow() }
-                .setNegativeButton("取消", null).show()
-        }
-        val searchT = Toggle { service?.let { it.chatSearch = !it.chatSearch }; refreshNow() }
-        l.addRow(keyRow.root); l.addRow(modelRow.root)
-        l.addRow(Row("用 Google 搜索", "天气、新闻、营业时间这类问题更准；每月前 5000 次搜索免费").apply { accessory(searchT.root) }.root)
-        page.addView(l)
-        page.addView(note("在官方主界面上左单击也能唤起：官方 app 里要把左击设成「切换看板应用」，并且官方 app 要强行停止。" +
-            "Gemini 免费额度下 Google 会用发过去的内容（包括录音）改进产品，工作内容请用付费 Key。"))
-
-        page.addView(section("这次的对话"))
-        val hist = vbox()
-        page.addView(card().apply { addView(hist) })
-        var shown = -1
-        onUpdate(Sub.CHAT) { s ->
-            val ch = s.chat
-            img.setImageBitmap(glassesTint(ch.draw(s.glassesFontPx).bitmap()))
-            st.text = when {
-                s.activeApp === ch -> ch.status() + "（眼镜上显示中）"
-                s.chatKey.isEmpty() -> "还没填 Gemini API Key"
-                s.chatOnLeftClick -> "左单击镜腿就能开始对话"
-                else -> "点下面的按钮开始对话"
-            }
-            leftT.set(s.chatOnLeftClick); searchT.set(s.chatSearch)
-            keyRow.value(when { s.chatKey.isEmpty() -> "未填"; s.chatKeyOwn -> "••••" + s.chatKey.takeLast(4); else -> "用全天记忆的" })
-            modelRow.value(s.chatModel)
-            if (shown != ch.log.size) {
-                shown = ch.log.size
-                hist.removeAllViews()
-                if (ch.log.isEmpty()) hist.addView(text("还没有对话", 13.5f, SUB))
-                ch.log.takeLast(20).asReversed().forEachIndexed { i, t ->
-                    hist.addView(text("问：" + t.user, 13f, SUB), lp(top = if (i == 0) 0 else 12))
-                    hist.addView(text(t.model, 14f).apply { setLineSpacing(0f, 1.3f) }, lp(top = 2))
-                }
-            }
         }
         return page
     }

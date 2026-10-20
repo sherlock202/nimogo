@@ -5,7 +5,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Test
 
 class NavLinksTest {
@@ -136,32 +135,5 @@ class GeminiTest {
         assertFalse(DaySummarizer.openAiBody("gemini-3.8-flash", "x", "2026-10-20", jsonMode = false).has("response_format"))
         assertTrue(DaySummarizer.openAiBody("gpt-4o-mini", "x", "2026-10-20").has("response_format"))
         assertTrue(DaySummarizer.PRESETS.any { it.id == "gemini" && it.base == GEMINI_BASE })
-    }
-}
-
-class GeminiChatTest {
-    @Test fun bodyHasHistoryAudioAndSearch() {
-        val hist = listOf(GeminiChat.Turn("东京今天天气", "晴，最高 22 度。"))
-        val b = GeminiChat.body(hist, "AQID", search = true, system = "SYS")
-        val contents = b.getJSONArray("contents")
-        assertEquals(3, contents.length())
-        assertEquals("model", contents.getJSONObject(1).getString("role"))
-        val last = contents.getJSONObject(2).getJSONArray("parts")
-        assertEquals("audio/wav", last.getJSONObject(0).getJSONObject("inline_data").getString("mime_type"))
-        assertEquals("AQID", last.getJSONObject(0).getJSONObject("inline_data").getString("data"))
-        assertTrue(b.getJSONArray("tools").getJSONObject(0).has("google_search"))
-        assertEquals("SYS", b.getJSONObject("system_instruction").getJSONArray("parts").getJSONObject(0).getString("text"))
-        assertFalse(GeminiChat.body(hist, "AQID", search = false, system = "S").has("tools"))
-    }
-
-    @Test fun parseAndSplit() {
-        val resp = """{"candidates":[{"content":{"parts":[{"text":"思考","thought":true},{"text":"问：明天要带伞吗\n答：**要带**，下午有雨 [1]。"}]},"finishReason":"STOP"}]}"""
-        val (q, a) = GeminiChat.split(GeminiChat.text(resp))
-        assertEquals("明天要带伞吗", q)
-        assertEquals("要带，下午有雨 。", a)
-        assertEquals("" to "", GeminiChat.split("问："))
-        assertEquals("" to "只有回答", GeminiChat.split("只有回答"))
-        assertEquals("你好" to "多行 回答", GeminiChat.split("问: 你好\n答: 多行\n- 回答"))
-        try { GeminiChat.text("""{"promptFeedback":{"blockReason":"SAFETY"}}"""); fail("应该抛出") } catch (e: java.io.IOException) {}
     }
 }

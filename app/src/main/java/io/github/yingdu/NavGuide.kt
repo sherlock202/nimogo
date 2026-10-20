@@ -38,13 +38,32 @@ object NavGuide {
     /** 收到逐向数据时交给谁（ReaderService 里的 NavApp）。 */
     var sink: ((NavSnap) -> Unit)? = null
     var onArrived: (() -> Unit)? = null
+    /** 写到「我的 › 日志」（ReaderService 设置）。 */
+    var log: ((String) -> Unit)? = null
+    private fun note(msg: String) { main.post { log?.invoke("导航：$msg") } }
+
+    // ---------- 诊断（导航页显示，方便排查「没有显示也不报错」） ----------
+    /** 收到逐向数据的次数、最近一次的时间、最近的状态（0 未知 / 1 导航中 / 2 重新规划 / 3 停止）。 */
+    var infoCount = 0; private set
+    var lastInfoAt = 0L; private set
+    var lastState = -1; private set
+    var lastRegisterOk: Boolean? = null; private set
+    val ready get() = navigator != null
 
     fun termsAccepted(app: Application) = runCatching { NavigationApi.areTermsAccepted(app) }.getOrDefault(false)
 
     /** 弹出 Google 导航服务条款（SDK 自带的对话框）。 */
     fun askTerms(activity: Activity, done: (Boolean) -> Unit) {
-        NavigationApi.showTermsAndConditionsDialog(activity, "NimoGo", "Google 导航服务条款",
-            object : NavigationApi.OnTermsResponseListener { override fun onTermsResponse(accepted: Boolean) { done(accepted) } })
+        note("显示 Google 导航服务条款")
+        try {
+            NavigationApi.showTermsAndConditionsDialog(activity, "NimoGo", "Google 导航服务条款",
+                object : NavigationApi.OnTermsResponseListener {
+                    override fun onTermsResponse(accepted: Boolean) { note(if (accepted) "已同意服务条款" else "没有同意服务条款"); done(accepted) }
+                })
+        } catch (e: Exception) {
+            note("服务条款对话框出错：${e.javaClass.simpleName} ${e.message ?: ""}")
+            done(false)
+        }
     }
 
     /** 拿 Navigator（第一次要几秒）；失败时第二个参数是原因。API Key 只在第一次初始化前生效。 */
@@ -52,14 +71,17 @@ object NavGuide {
         navigator?.let { cb(it, null); return }
         waiting.add(cb)
         if (waiting.size > 1) return
-        if (apiKey.isNotBlank()) runCatching { NavigationApi.setApiKey(apiKey.trim()) }
+        if (apiKey.isNotBlank()) runCatching { NavigationApi.setApiKey(apiKey.trim()) }.onFailure { note("设置 API Key 出错：${it.message}") }
+        note("初始化 Navigator…")
         try { NavigationApi.getNavigator(app, object : NavigationApi.NavigatorListener {
             override fun onNavigatorReady(n: Navigator) {
+                note("Navigator 就绪（SDK ${runCatching { NavigationApi.getNavSDKVersion() }.getOrDefault("?")}）")
                 navigator = n
                 n.addArrivalListener(arrival)
                 flush(n, null)
             }
             override fun onError(errorCode: Int) {
+                note("Navigator 初始化失败，错误码 $errorCode")
                 flush(null, when (errorCode) {
                     NavigationApi.ErrorCode.NOT_AUTHORIZED -> "API Key 没有开通 Navigation SDK（或 Key 填错了、项目没绑结算账号）"
                     NavigationApi.ErrorCode.TERMS_NOT_ACCEPTED -> "还没有同意 Google 导航服务条款"
@@ -68,7 +90,7 @@ object NavGuide {
                     else -> "导航初始化失败（错误 $errorCode）"
                 })
             }
-        }) } catch (e: Exception) { flush(null, "导航初始化失败（${e.message ?: e.javaClass.simpleName}）") }
+        }) } catch (e: Exception) { note("getNavigator 出错：$e"); flush(null, "导航初始化失败（${e.message ?: e.javaClass.simpleName}）") }
     }
 
     private fun flush(n: Navigator?, err: String?) {
@@ -110,12 +132,21 @@ object NavGuide {
             nav.setAudioGuidance(if (opt.voice) Navigator.AudioGuidance.VOICE_ALERTS_AND_GUIDANCE or Navigator.AudioGuidance.BLUETOOTH_AUDIO
                 else Navigator.AudioGuidance.SILENT)
         }
-        nav.registerServiceForNavUpdates(ctx.packageName, NavInfoService::class.java.name, 3)
+        val reg = runCatching { nav.registerServiceForNavUpdates(ctx.packageName, NavInfoService::class.java.name, 3) }
+        lastRegisterOk = reg.getOrNull()
+        note("注册逐向数据服务：" + reg.fold({ if (it) "成功" else "失败（返回 false）" }, { "出错 $it" }))
+        infoCount = 0; lastInfoAt = 0L; lastState = -1
+        note("算路线：${dest.title}（" + (dest.placeId?.let { "Place ID $it" } ?: "%.5f, %.5f".format(dest.lat, dest.lng)) + "，${opt.mode.zh}）")
         nav.setDestination(wp, routing).setOnResultListener { status ->
             main.post {
+                note("算路线结果：$status")
                 val billed = status == Navigator.RouteStatus.OK || status == Navigator.RouteStatus.NO_ROUTE_FOUND ||
                     status == Navigator.RouteStatus.ROUTE_CANCELED
-                if (status == Navigator.RouteStatus.OK) { nav.startGuidance(); done(null, true); return@post }
+                if (status == Navigator.RouteStatus.OK) {
+                    runCatching { nav.startGuidance() }.onFailure { note("开始引导出错：$it") }
+                    note("开始引导：" + (if (runCatching { nav.isGuidanceRunning }.getOrDefault(false)) "引导中" else "引导没有运行"))
+                    done(null, true); return@post
+                }
                 done(when (status) {
                     Navigator.RouteStatus.NO_ROUTE_FOUND -> "找不到路线（换个出行方式试试）"
                     Navigator.RouteStatus.NETWORK_ERROR -> "网络连不上"
@@ -150,7 +181,16 @@ object NavGuide {
         i.distanceToFinalDestinationMeters, i.timeToFinalDestinationSeconds,
         i.remainingSteps?.map { stepOf(it) } ?: emptyList())
 
-    fun deliver(snap: NavSnap) { main.post { sink?.invoke(snap) } }
+    fun deliver(snap: NavSnap) {
+        main.post {
+            infoCount++; lastInfoAt = System.currentTimeMillis()
+            if (infoCount == 1) note("收到第一条逐向数据（状态 ${snap.state}，" + (snap.current?.let { "下一步 ${it.instruction.ifEmpty { it.road }}" } ?: "没有当前步骤") + "）")
+            if (snap.state != lastState) { if (lastState >= 0) note("导航状态 $lastState → ${snap.state}"); lastState = snap.state }
+            sink?.invoke(snap)
+        }
+    }
+
+    fun readError(e: Throwable) = note("读逐向数据出错：$e")
 }
 
 /** 接收 Navigation SDK 发来的逐向数据（Message.what = MSG_NAV_INFO，大约每秒一次）。 */
@@ -161,7 +201,7 @@ class NavInfoService : Service() {
         Messenger(object : Handler(Looper.getMainLooper()) {
             override fun handleMessage(msg: Message) {
                 if (msg.what != TurnByTurnManager.MSG_NAV_INFO) return
-                val info = runCatching { tbt.readNavInfoFromBundle(msg.data) }.getOrNull() ?: return
+                val info = runCatching { tbt.readNavInfoFromBundle(msg.data) }.onFailure { NavGuide.readError(it) }.getOrNull() ?: return
                 NavGuide.deliver(NavGuide.snapOf(info))
             }
         })

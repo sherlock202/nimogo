@@ -178,7 +178,7 @@ class PomodoroApp(private val host: AppHost) : GlassesApp {
         when (input) {
             GlassesInput.CLICK_RIGHT -> startPause()
             GlassesInput.DOUBLE_RIGHT -> skip()
-            GlassesInput.CLICK_LEFT, GlassesInput.DOUBLE_LEFT -> reset()   // NimoGo：左单击默认唤起 Gemini，用左双击
+            GlassesInput.CLICK_LEFT -> reset()
             else -> {}
         }
     }
