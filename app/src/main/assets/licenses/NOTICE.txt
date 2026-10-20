@@ -5,7 +5,7 @@ Copyright 2026 codexmasterme
 眼镜用的点阵字体（app/src/main/assets/fonts/*.ydpf）由 GNU Unifont 和 Fusion Pixel Font 转换而来，
 仍按 SIL Open Font License 1.1 授权，许可证见同一文件夹。
 NimoGo 是萤读的修改版（2026-10，基于萤读 v1.0.3）：「戴着 Nimo 走出去」。
-加入了 Google Navigation SDK 导航（NavLogic.kt、NavGuide.kt、NavApp.kt），「全天记忆」可选 Google Gemini，
+加入了 Google Navigation SDK 导航（NavLogic.kt、NavGuide.kt、NavApp.kt），
 MainActivity.kt、ReaderService.kt、MemoryAi.kt、AndroidManifest.xml、Gradle 配置等有修改；应用名改为 NimoGo，包名 io.github.nimogo。
 Google Navigation SDK 的使用受 Google Maps Platform 服务条款约束，不随本仓库分发。
 

@@ -9,24 +9,18 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Google Gemini 的 OpenAI 兼容接口（Authorization: Bearer <Gemini API Key>，Key 在 Google AI Studio 申请）。 */
-const val GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
-
 /**
  * 转文字，两种接口：
  *  - OpenAI 兼容的 /audio/transcriptions（multipart 上传音频，返回 {"text": ...}）：硅基流动（SenseVoice）、OpenAI、Groq 等；
  *  - 阿里云百炼的 Qwen3-ASR（qwen3-asr-flash）：走 OpenAI 兼容的 /chat/completions，音频用 base64 放在
  *    user 消息的 input_audio 里，识别选项放在 asr_options，返回的 choices[0].message.content 就是文字
  *    （单段音频不超过 3 分钟、10 MB；萤读每段最长 2 分钟）。
- *  - Google Gemini（NimoGo 加的）：也走 OpenAI 兼容的 /chat/completions，音频 base64 放在 input_audio（data + format），
- *    再加一句「逐字转写」的提示；有免费额度（免费额度下 Google 会用请求内容改进产品）。
  */
 object SpeechToText {
     class Preset(val id: String, val name: String, val base: String, val model: String, val note: String)
 
     val PRESETS = listOf(
         Preset("siliconflow", "硅基流动", "https://api.siliconflow.cn/v1", "FunAudioLLM/SenseVoiceSmall", "SenseVoice，中文好，免费"),
-        Preset("gemini", "Google Gemini", GEMINI_BASE, "gemini-3.5-flash-lite", "有免费额度，海外直连"),
         Preset("openai", "OpenAI", "https://api.openai.com/v1", "gpt-4o-mini-transcribe", ""),
         Preset("groq", "Groq", "https://api.groq.com/openai/v1", "whisper-large-v3", "Whisper large-v3，有免费额度"),
         Preset("qwen", "阿里百炼（国内）", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3-asr-flash", "Qwen3-ASR-Flash，中文准、抗噪"),
@@ -61,34 +55,12 @@ object SpeechToText {
         return t.replace(Regex("<\\|[^|>]*\\|>"), "").trim()
     }
 
-    /** Qwen3-ASR、Gemini 这类用对话接口的模型。 */
-    fun isChatAsr(model: String) = (model.startsWith("qwen", true) && model.contains("asr", true)) || isGemini(model)
-
-    fun isGemini(model: String) = model.startsWith("gemini", true)
-
-    /** Gemini 转写的提示（language：zh / ja / 空 = 自动）。 */
-    fun geminiPrompt(language: String) = "把这段音频里的说话内容逐字转写成文字，只输出转写结果，不要解释、不要加引号或时间戳。" +
-        when (language) {
-            "zh" -> "用简体中文，加上标点。"
-            "ja" -> "日本語で、句読点を付けて書き起こしてください。"
-            "en" -> "Write it in English with punctuation."
-            else -> "按说话的原语言写，加上标点。"
-        } + "听不清或没有人说话就输出空字符串。"
+    /** Qwen3-ASR 这类用对话接口的模型。 */
+    fun isChatAsr(model: String) = model.startsWith("qwen", true) && model.contains("asr", true)
 
     /** Qwen3-ASR 的请求体（单独拿出来，方便单元测试）。 */
     fun chatBody(model: String, language: String, mime: String, audio: ByteArray): String {
         val b64 = java.util.Base64.getEncoder().encodeToString(audio)
-        if (isGemini(model)) {
-            // Gemini 的 OpenAI 兼容接口：input_audio = { data: 纯 base64, format: "wav" }
-            val part = JSONObject().put("type", "input_audio")
-                .put("input_audio", JSONObject().put("data", b64).put("format", mime.substringAfter('/').ifEmpty { "wav" }))
-            val prompt = JSONObject().put("type", "text").put("text", geminiPrompt(language))
-            return JSONObject()
-                .put("model", model)
-                .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", JSONArray().put(prompt).put(part))))
-                .put("stream", false)
-                .toString()
-        }
         val audioPart = JSONObject().put("type", "input_audio")
             .put("input_audio", JSONObject().put("data", "data:$mime;base64,$b64"))
         val opts = JSONObject().put("enable_itn", false)
@@ -163,7 +135,6 @@ object DaySummarizer {
 
     val PRESETS = listOf(
         Preset("claude", "Claude", "https://api.anthropic.com", "claude-opus-5"),
-        Preset("gemini", "Google Gemini（有免费额度）", GEMINI_BASE, "gemini-3.8-flash"),
         Preset("siliconflow", "硅基流动", "https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V3"),
         Preset("deepseek", "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
         Preset("openai", "OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
@@ -227,10 +198,9 @@ object DaySummarizer {
         return JSONObject(text)
     }
 
-    /** jsonMode：要求返回 JSON 对象（Gemini 的兼容接口不一定认 json_object，就只靠提示词，解析时再从文字里取 JSON）。 */
-    fun openAiBody(model: String, transcript: String, day: String, jsonMode: Boolean = true): JSONObject = JSONObject()
+    fun openAiBody(model: String, transcript: String, day: String): JSONObject = JSONObject()
         .put("model", model)
-        .apply { if (jsonMode) put("response_format", JSONObject().put("type", "json_object")) }
+        .put("response_format", JSONObject().put("type", "json_object"))
         .put("messages", JSONArray()
             .put(JSONObject().put("role", "system").put("content", SYSTEM +
                 "\n只输出一个 JSON 对象，格式：{\"title\":\"…\",\"mood\":\"😊\",\"overview\":\"…\",\"topics\":[\"…\"],\"todos\":[{\"text\":\"…\",\"when\":\"…\"}],\"notes\":[\"…\"]}"))
@@ -297,7 +267,7 @@ object DaySummarizer {
 
     private fun call(provider: String, base: String, key: String, model: String, day: String, transcript: String): MemorySummary {
         val claude = provider == "claude"
-        val text = post(provider, base, key, if (claude) claudeBody(model, transcript, day) else openAiBody(model, transcript, day, jsonMode = provider != "gemini"))
+        val text = post(provider, base, key, if (claude) claudeBody(model, transcript, day) else openAiBody(model, transcript, day))
         return toSummary(day, if (claude) parseClaude(text) else parseOpenAi(text), model)
     }
 

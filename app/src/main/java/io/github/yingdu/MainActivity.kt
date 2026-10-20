@@ -2589,7 +2589,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         listOf(asrPreset, asrKey, asrModel, asrBase).forEach { asr.addRow(it.root) }
         asr.addRow(FrameLayout(this).apply { setPadding(dp(14), dp(10), dp(14), dp(12)); addView(langSeg.root) })
         page.addView(asr)
-        page.addView(note("硅基流动 SenseVoice 免费；Google Gemini 有免费额度（Key 在 Google AI Studio 申请，免费额度下 Google 会用请求内容改进产品，工作内容请用付费 Key）。各家 Key 怎么申请见右上角「说明」。"))
+        page.addView(note("硅基流动 SenseVoice 免费；各家 Key 怎么申请见右上角「说明」。"))
 
         page.addView(section("每天的总结"))
         val sum = listBox()
@@ -2855,7 +2855,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val c = card()
         val v = text("", 16f, INK, true)
         c.addView(v)
-        c.addView(hint("NimoGo：戴着 Nimo 走出去。Nimo 智能眼镜的第三方伴侣 app，基于开源的萤读（Yingdu）修改，加了 Google 导航（海外可用）和 Gemini 语音对话。翻译请用 Nimo 官方 app。"), lp(top = 6))
+        c.addView(hint("NimoGo：戴着 Nimo 走出去。Nimo 智能眼镜的第三方伴侣 app，基于开源的萤读（Yingdu）修改，加了海外可用的 Google 导航。翻译请用 Nimo 官方 app。"), lp(top = 6))
         page.addView(c)
         val legal = listBox().apply { layoutParams = lp(top = 10, bottom = 10) }
         legal.addRow(Row("免责说明", chevron = true) { showLegal("免责说明", Legal.DISCLAIMER) }.root)
@@ -2874,7 +2874,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             "眼镜点阵字体基于 GNU Unifont 和 Fusion Pixel Font（SIL OFL 1.1）。许可全文见「开源许可」。\n" +
             "数据来源：行情 雅虎财经、腾讯证券、Robinhood、微牛；天气 Open-Meteo（CC BY 4.0）；反向地理编码 BigDataCloud；" +
             "景点 高德地图、Google 地图；景点介绍 百度百科、维基百科（CC BY-SA 4.0）。\n" +
-            "导航 Google Navigation SDK（受 Google Maps Platform 服务条款约束）；AI 可选 Google Gemini。"))
+            "导航 Google Navigation SDK（受 Google Maps Platform 服务条款约束）。"))
         onUpdate(Sub.ABOUT) {
             v.text = "NimoGo " + versionName().let { if (it.isEmpty()) "" else "v$it" }
             autoToggle.set(autoUpdateCheck)

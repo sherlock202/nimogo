@@ -1,6 +1,5 @@
 package io.github.yingdu
 
-import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -113,27 +112,5 @@ class NavBudgetTest {
         assertTrue(NavBudget.allowed(999, 1000))
         assertFalse(NavBudget.allowed(1000, 1000))
         assertTrue(NavBudget.allowed(5000, 0))
-    }
-}
-
-class GeminiTest {
-    @Test fun transcribeBody() {
-        assertTrue(SpeechToText.isChatAsr("gemini-3.5-flash-lite"))
-        val j = JSONObject(SpeechToText.chatBody("gemini-3.5-flash-lite", "ja", "audio/wav", byteArrayOf(1, 2, 3)))
-        val content = j.getJSONArray("messages").getJSONObject(0).getJSONArray("content")
-        assertEquals("text", content.getJSONObject(0).getString("type"))
-        assertTrue(content.getJSONObject(0).getString("text").contains("日本語"))
-        val audio = content.getJSONObject(1).getJSONObject("input_audio")
-        assertEquals("AQID", audio.getString("data"))
-        assertEquals("wav", audio.getString("format"))
-        assertFalse(j.has("asr_options"))
-        // 日语时不给 Whisper 加中文提示
-        assertFalse(SpeechToText.wantsPrompt("whisper-large-v3", "ja"))
-    }
-
-    @Test fun summaryBodyWithoutJsonMode() {
-        assertFalse(DaySummarizer.openAiBody("gemini-3.8-flash", "x", "2026-10-20", jsonMode = false).has("response_format"))
-        assertTrue(DaySummarizer.openAiBody("gpt-4o-mini", "x", "2026-10-20").has("response_format"))
-        assertTrue(DaySummarizer.PRESETS.any { it.id == "gemini" && it.base == GEMINI_BASE })
     }
 }
