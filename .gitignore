@@ -14,3 +14,5 @@ __pycache__/
 *.env
 *Secrets*.txt
 signing/
+# 编译时从 Navigation SDK 的 AAR 里取出来的许可文件（不提交）
+app/src/main/assets/licenses/navsdk/

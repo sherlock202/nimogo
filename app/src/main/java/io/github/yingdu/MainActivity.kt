@@ -2701,6 +2701,24 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 addView(text(body.trim(), 10.5f, SUB).apply { typeface = Typeface.MONOSPACE; setLineSpacing(0f, 1.25f); setTextIsSelectable(true) })
             })
         }
+        // Google Navigation SDK 的版权声明和开源许可（编译时从 SDK 里取出来放进 licenses/navsdk；文件可能很长，点开再读）
+        page.addView(section("Google Navigation SDK"))
+        val nav = listBox()
+        val navFiles = runCatching { assets.list("licenses/navsdk")?.sorted() }.getOrNull().orEmpty()
+        for (name in navFiles) nav.addRow(Row(name, chevron = true) {
+            val body = runCatching { assets.open("licenses/navsdk/$name").use { String(it.readBytes(), Charsets.UTF_8) } }.getOrDefault("（读不到）")
+            AlertDialog.Builder(this).setTitle(name)
+                .setView(ScrollView(this).apply {
+                    addView(text(body.take(400_000).trim(), 10.5f, SUB).apply {
+                        typeface = Typeface.MONOSPACE; setTextIsSelectable(true); setPadding(dp(16), dp(8), dp(16), dp(8))
+                    })
+                })
+                .setPositiveButton("关闭", null).show()
+        }.root)
+        if (navFiles.isNotEmpty()) page.addView(nav)
+        page.addView(note("NimoGo 的导航用 Google Navigation SDK，使用受 Google Maps Platform 服务条款约束（cloud.google.com/maps-platform/terms）。" +
+            if (navFiles.isEmpty()) "这个安装包没有带上 SDK 的许可文件（只有用 GitHub Actions 编译时才会自动放进来），完整的版权声明和开源许可见 Google 提供的 Navigation SDK 发行包（NOTICE.txt、LICENSES.txt）。"
+            else "上面是 SDK 自带的版权声明和开源许可。"))
         return page
     }
 

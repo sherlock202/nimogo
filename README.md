@@ -3,6 +3,16 @@
 > NimoGo 是 [萤读 Yingdu](https://github.com/codexmasterme/yingdu)（v1.0.3，Apache License 2.0）的修改版。
 > 改动：**内置 Google 导航（海外可用）**、AI 加入 Google Gemini。其余功能与萤读相同，萤读的原说明见下文。
 
+> 非官方项目，与 Nimo 厂商、Google 都没有关系。目前是个人测试版本，导航已在 Android 16 实机上跑通。
+
+## 下载和使用
+
+1. 到 [Releases](https://github.com/sherlock202/nimogo/releases/latest) 下载最新的 `NimoGo-vX.Y.Z.apk`，传到手机安装（要允许「安装未知应用」）。
+   需要 Android 8.0 以上、有 Google Play 服务。以后的新版可以直接覆盖安装，设置不会丢。
+2. 先在系统设置里**强行停止 Nimo 官方 app**（眼镜同一时间只能连一个 app），打开 NimoGo，在「我的 → 连接眼镜」里连接。
+3. 导航要用**你自己的** Google Maps Platform API Key（安装包里没有任何 Key，费用记在你自己的 Google Cloud 账号上），步骤见下面「准备 Google 的 Key」。
+4. 在 Google Maps 里选好地点 →「共享」→ NimoGo → 选步行 / 驾车 / 骑行 →「开始」。第一次会弹出 Google 导航服务条款，同意后才能用。
+
 ## 相比萤读改了什么
 
 | 改动 | 说明 |
@@ -22,7 +32,10 @@
 **导航（Google Maps Platform）**
 1. 打开 Google Cloud 控制台，新建项目，**绑定结算账号**（要信用卡；在免费额度内不扣费）。
 2. 「API 和服务 › 库」里启用 **Navigation SDK**。
-3. 「凭据」里创建 API Key，建议「应用限制」选 Android 应用，填包名 `io.github.nimogo` 和你的签名证书 SHA-1；「API 限制」只勾 Navigation SDK。
+3. 「凭据」里创建 API Key，建议加限制：
+   - 「应用限制」选 Android 应用，包名填 `io.github.nimogo`，SHA-1 证书指纹填 `59:34:AB:05:09:DC:13:5B:5D:A1:17:35:F5:6E:3F:44:9A:45:92:55`（Releases 里的安装包都用这个证书签名；这是公开的指纹，不是密钥）；
+   - 「API 限制」只勾 Navigation SDK。
+   自己用 Android Studio 编译的调试版签名不同，要再加一条那个调试证书的 SHA-1。
 4. 建议在「配额」里给 Navigation SDK 设每日上限、在「结算 › 预算和提醒」里设预算提醒。
 5. 装好 app 后在「导航 › 设置 › API Key」里填进去。
 
@@ -40,6 +53,11 @@
 4. **建议设置固定签名**（不然每次编译的签名都不同，装新版要先卸载旧版，设置和 Key 会丢）：
    仓库「Settings › Secrets and variables › Actions」里加两个 Secret：`NIMOGO_KEYSTORE_BASE64`（签名文件的 base64）和 `NIMOGO_KEYSTORE_PASSWORD`（密码）。
    设置了就编译正式签名的 Release 版，没设置就编译调试版。签名文件和密码不要放进仓库。
+
+**发布新版本（自动发到 Releases）**
+1. 改 `app/build.gradle.kts` 里的 `versionName`（和 `versionCode` 加一），在 `docs/release-notes.md` 里写这一版的说明，提交。
+2. 打标签并推送：`git tag v1.0.1 && git push origin main v1.0.1`。
+3. Actions 编好后会自动建一个 Release，附上 `NimoGo-v1.0.1.apk`。发布版必须用固定签名（上面第 4 步的 Secrets），没设置会报错停止。
 
 **方法二：Android Studio**（必须用 Android Studio / Gradle）
 
@@ -63,17 +81,19 @@ NimoGo 依赖 Navigation SDK（从 Google Maven 下载），原版的「不用 A
 `.gitignore` 已经排除 `*.jks`、`*.keystore`、`*.p12`、`*.pem`、`local.properties`、`.env`、`*Secrets*.txt`、`signing/`。
 提交前可以再确认一下：`git status` 里不要出现这些文件；万一把 Key 提交上去了，删提交不够，要到对应的控制台**作废并重新生成 Key**。
 
-### 还没在实机上验证的地方（请先自测）
+### 实机测试情况
 
-我是在没有实机、也下载不到 Navigation SDK 的环境里写的，**SDK 相关代码按官方参考文档的签名编写、用桩代码通过了编译**，第一次在 Android Studio 里编译时可能需要小改：
+- 已在 Android 16 实机上跑通：从 Google Maps 共享目的地、Google 导航服务条款、算路线、逐向数据画到眼镜上。
+- 开发注意：**调用 Navigation SDK 的任何功能之前，都要先 `NavigationApi.setApiKey`**（见 `NavGuide.useKey`）。
+  Key 没写在清单里（免得公开的安装包带着 Key），SDK 第一次被调用时找不到 Key 会直接让 app 崩溃。
+- 还要多测的：手机锁屏 / 切到后台时引导是否持续、长距离步行和驾车、偏航重算、到达后的收尾；全天记忆用 Gemini 转文字。
+- 遇到问题：「导航」页有一行诊断，「我的 › 日志」里有以「导航：」开头的每一步记录；app 闪退后下次打开会弹出闪退记录，可以复制。
 
-1. Navigation SDK 的 API（`NavigationApi.setApiKey`、`getNavigator(Application, …)`、`registerServiceForNavUpdates`、`TurnByTurnManager` 等）是否和 7.9.0 完全一致；
-2. 服务条款对话框在萤读的主题（系统 Material，非 AppCompat）下能否正常弹出；
-3. 只用逐向数据、不显示 Google 地图时，引导能否在后台持续（SDK 会自己开前台服务）；
-4. Gemini 的 OpenAI 兼容接口对音频（`input_audio`）的支持、模型名（`gemini-3.5-flash-lite` / `gemini-3.8-flash`，可在设置里改）；
-5. Google Maps 共享出来的短链接展开后的格式（解析不出坐标时会用系统地理编码兜底）。
+### 开源许可和署名
 
-另外，Google 要求在 app 的法律声明里放 Navigation SDK 的 NOTICE 和许可文本（见官方「Set up an Android Studio project › attributions」），发布给别人用之前请补上。
+- NimoGo 以 Apache License 2.0 授权，保留萤读、MentraOS 等原作者的署名（`LICENSE`、`NOTICE`）。
+- Google Navigation SDK 的版权声明和开源许可：GitHub Actions 编译时从 Google Maven 下载 SDK 的 AAR，把里面的许可文件放进安装包，
+  在 app 的「我的 › 关于 › 开源许可」里显示。SDK 的使用受 [Google Maps Platform 服务条款](https://cloud.google.com/maps-platform/terms) 约束。
 
 ---
 

@@ -1,16 +1,20 @@
 # NimoGo：在 GitHub 上编译 APK（Actions 页里点「Run workflow」，或推送代码时自动跑）
 # 编好的安装包在这次运行的 Artifacts 里（NimoGo-apk）。
+# 推送 v 开头的标签（例如 v1.0.0）时，还会自动发布到 Releases。
 name: Build APK
 
 on:
   workflow_dispatch:
   push:
     branches: [main, master]
+    tags: ['v*']
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    permissions:
+      contents: write   # 发布 Release 要用
     steps:
       - uses: actions/checkout@v5
 
@@ -30,6 +34,22 @@ jobs:
             echo "$KS" | base64 -d > "$RUNNER_TEMP/nimogo.jks"
             echo "NIMOGO_KEYSTORE_FILE=$RUNNER_TEMP/nimogo.jks" >> "$GITHUB_ENV"
           fi
+
+      # Google 要求在 app 里附上 Navigation SDK 的版权声明和开源许可：
+      # 从 Google Maven 下载同版本的 SDK（AAR），把里面的许可文件放进 assets（「开源许可」页显示）
+      - name: Navigation SDK notices
+        continue-on-error: true
+        run: |
+          V=$(grep -oE 'libraries\.navigation:navigation:[0-9.]+' app/build.gradle.kts | cut -d: -f3)
+          D=app/src/main/assets/licenses/navsdk
+          mkdir -p "$D" "$RUNNER_TEMP/navsdk/aar" "$RUNNER_TEMP/navsdk/jar"
+          curl -sSfL -o "$RUNNER_TEMP/navsdk/nav.aar" \
+            "https://dl.google.com/dl/android/maven2/com/google/android/libraries/navigation/navigation/$V/navigation-$V.aar"
+          unzip -q -o "$RUNNER_TEMP/navsdk/nav.aar" -d "$RUNNER_TEMP/navsdk/aar"
+          [ -f "$RUNNER_TEMP/navsdk/aar/classes.jar" ] && unzip -q -o "$RUNNER_TEMP/navsdk/aar/classes.jar" 'META-INF/*' -d "$RUNNER_TEMP/navsdk/jar" || true
+          find "$RUNNER_TEMP/navsdk/aar" "$RUNNER_TEMP/navsdk/jar" -type f \( -iname '*notice*' -o -iname '*licen*' \) 2>/dev/null |
+            while read -r f; do cp "$f" "$D/$(basename "$f")"; done
+          echo "Navigation SDK $V 的许可文件："; ls -la "$D"
 
       - name: Build
         env:
@@ -52,6 +72,17 @@ jobs:
         with:
           name: NimoGo-apk
           path: NimoGo.apk
+
+      # 推送 v* 标签时：发布到 Releases（必须是固定签名的正式版）
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$NIMOGO_KEYSTORE_FILE" ]; then echo "发布版必须用固定签名：先在仓库 Secrets 里设置 NIMOGO_KEYSTORE_BASE64 和 NIMOGO_KEYSTORE_PASSWORD"; exit 1; fi
+          APK="NimoGo-${GITHUB_REF_NAME}.apk"
+          cp NimoGo.apk "$APK"
+          gh release create "$GITHUB_REF_NAME" "$APK" --title "NimoGo ${GITHUB_REF_NAME}" --notes-file docs/release-notes.md
 
       # 测试报告（打开 index.html 看哪个测试没过）
       - uses: actions/upload-artifact@v6
