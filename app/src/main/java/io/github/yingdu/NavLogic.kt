@@ -209,6 +209,21 @@ data class NavSnap(val state: Int, val current: NavStep?, val toStepMeters: Int?
     }
 }
 
+/** 剩余距离 / 时间的来源选择（不依赖 SDK，方便单元测试）。 */
+object NavLogicFix {
+    /** 超过这些就当作无效值（实测走 4 分钟的路，逐向数据报了 18183 公里、4096 小时）。 */
+    const val MAX_METERS = 2_000_000
+    const val MAX_SECONDS = 3 * 24 * 3600
+
+    /** 有 Navigator 算的剩余距离和时间（大于 0）就用它；否则用逐向数据里的值，明显不合理的不显示。 */
+    fun remaining(s: NavSnap, meters: Int?, seconds: Int?): NavSnap {
+        if (meters != null && meters > 0 && seconds != null && seconds > 0) return s.copy(remainMeters = meters, remainSeconds = seconds)
+        val m = s.remainMeters?.takeIf { it in 0..MAX_METERS }
+        val sec = s.remainSeconds?.takeIf { it in 0..MAX_SECONDS }
+        return if (m == s.remainMeters && sec == s.remainSeconds) s else s.copy(remainMeters = m, remainSeconds = sec)
+    }
+}
+
 /** 每月的目的地次数（本机自己数的，和 Google Cloud 后台的计费可能有出入）。 */
 object NavBudget {
     fun monthKey(millis: Long, tz: java.util.TimeZone = java.util.TimeZone.getDefault()): String {

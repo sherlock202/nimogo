@@ -114,3 +114,18 @@ class NavBudgetTest {
         assertTrue(NavBudget.allowed(5000, 0))
     }
 }
+
+class NavRemainTest {
+    @Test fun preferNavigatorTimeAndDistance() {
+        val raw = NavSnap(NavSnap.ENROUTE, NavStep(6, "", "向左转", 15), 15, 12, 18_183_000, 14_747_700, emptyList())
+        val fixed = NavLogicFix.remaining(raw, 300, 240)
+        assertEquals(300, fixed.remainMeters)
+        assertEquals(240, fixed.remainSeconds)
+        assertEquals(15, fixed.toStepMeters)
+        // 没有 Navigator 的值时：不合理的不显示，合理的照用
+        assertEquals(null, NavLogicFix.remaining(raw, null, null).remainMeters)
+        assertEquals(null, NavLogicFix.remaining(raw, 0, 0).remainSeconds)
+        val ok = raw.copy(remainMeters = 300, remainSeconds = 240)
+        assertEquals(ok, NavLogicFix.remaining(ok, null, null))
+    }
+}

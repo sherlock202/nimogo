@@ -200,10 +200,17 @@ object NavGuide {
         i.distanceToFinalDestinationMeters, i.timeToFinalDestinationSeconds,
         i.remainingSteps?.map { stepOf(it) } ?: emptyList())
 
-    fun deliver(snap: NavSnap) {
+    fun deliver(raw: NavSnap) {
         main.post {
             infoCount++; lastInfoAt = System.currentTimeMillis()
-            if (infoCount == 1) note("收到第一条逐向数据（状态 ${snap.state}，" + (snap.current?.let { "下一步 ${it.instruction.ifEmpty { it.road }}" } ?: "没有当前步骤") + "）")
+            // 剩余距离和时间以 Navigator 自己算的为准：实测逐向数据里「到终点」的两个值明显不对
+            // （显示成 18183 公里、4096 小时），到下一步的距离是对的；第一条数据时两边的原始值都写进日志
+            val td = runCatching { navigator?.currentTimeAndDistance }.getOrNull()
+            val snap = NavLogicFix.remaining(raw, td?.meters, td?.seconds)
+            if (infoCount == 1) {
+                note("收到第一条逐向数据（状态 ${raw.state}，" + (raw.current?.let { "下一步 ${it.instruction.ifEmpty { it.road }}" } ?: "没有当前步骤") + "）")
+                note("剩余：逐向数据 ${raw.remainMeters} 米 / ${raw.remainSeconds} 秒；Navigator ${td?.meters} 米 / ${td?.seconds} 秒")
+            }
             if (snap.state != lastState) { if (lastState >= 0) note("导航状态 $lastState → ${snap.state}"); lastState = snap.state }
             sink?.invoke(snap)
         }
