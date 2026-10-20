@@ -1833,8 +1833,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
             requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), REQ_NAV_LOC)
             return
         }
-        if (!NavGuide.termsAccepted(application)) {
-            NavGuide.askTerms(this) { ok -> if (ok) startNav(d, mode) else toast("不同意 Google 导航服务条款就不能导航") }
+        if (!NavGuide.termsAccepted(application, n.apiKey)) {
+            NavGuide.askTerms(this, n.apiKey) { ok -> if (ok) startNav(d, mode) else toast("不同意 Google 导航服务条款就不能导航") }
             return
         }
         n.start(d, mode)
@@ -1896,7 +1896,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             stopBtn.visibility = if (n.active()) View.VISIBLE else View.GONE
             // 诊断：一步步卡在哪里
             val ago = if (NavGuide.lastInfoAt > 0) "，最近 ${(System.currentTimeMillis() - NavGuide.lastInfoAt) / 1000} 秒前" else ""
-            diag.text = "诊断：Google 条款 " + (if (NavGuide.termsAccepted(application)) "已同意" else "未同意") +
+            diag.text = "诊断：" + (if (n.apiKey.isEmpty()) "还没填 API Key" else "Google 条款 " + (if (NavGuide.termsAccepted(application, n.apiKey)) "已同意" else "未同意")) +
                 " · Navigator " + (if (NavGuide.ready) "就绪" else "未初始化") +
                 " · SDK 引导 " + (if (NavGuide.guiding()) "运行中" else "未运行") +
                 " · 逐向数据 ${NavGuide.infoCount} 次$ago" + (if (NavGuide.lastState >= 0) "（状态 ${NavGuide.lastState}）" else "") +

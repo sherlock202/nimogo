@@ -73,6 +73,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         NavGuide.onArrived = { arrived() }
         NavGuide.log = { host.log(it) }
         // 上一个服务实例留下的引导（萤读被关掉后重新打开）：这里接不上它的状态，直接停掉，免得在后台空跑
+        NavGuide.useKey(apiKey)
         if (NavGuide.guiding()) NavGuide.stop()
     }
 

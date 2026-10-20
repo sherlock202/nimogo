@@ -50,10 +50,29 @@ object NavGuide {
     var lastRegisterOk: Boolean? = null; private set
     val ready get() = navigator != null
 
-    fun termsAccepted(app: Application) = runCatching { NavigationApi.areTermsAccepted(app) }.getOrDefault(false)
+    private var keyApplied: String? = null
+
+    /**
+     * 先把 API Key 交给 SDK，再调用 SDK 的任何功能：SDK 第一次被调用时就会在后台找 Key，
+     * 那时还没有 Key 的话会直接让 app 崩溃（Key 不写在清单里，免得公开的安装包带着 Key）。
+     * 没填 Key 时返回 false，调用方就不要碰 SDK。
+     */
+    fun useKey(key: String): Boolean {
+        val k = key.trim()
+        if (k.isEmpty()) return false
+        if (keyApplied != k) {
+            runCatching { NavigationApi.setApiKey(k) }.onFailure { note("设置 API Key 出错：${it.message}") }
+            keyApplied = k
+        }
+        return true
+    }
+
+    fun termsAccepted(app: Application, key: String): Boolean =
+        useKey(key) && runCatching { NavigationApi.areTermsAccepted(app) }.getOrDefault(false)
 
     /** 弹出 Google 导航服务条款（SDK 自带的对话框）。 */
-    fun askTerms(activity: Activity, done: (Boolean) -> Unit) {
+    fun askTerms(activity: Activity, key: String, done: (Boolean) -> Unit) {
+        if (!useKey(key)) { done(false); return }
         note("显示 Google 导航服务条款")
         try {
             NavigationApi.showTermsAndConditionsDialog(activity, "NimoGo", "Google 导航服务条款",
@@ -71,7 +90,7 @@ object NavGuide {
         navigator?.let { cb(it, null); return }
         waiting.add(cb)
         if (waiting.size > 1) return
-        if (apiKey.isNotBlank()) runCatching { NavigationApi.setApiKey(apiKey.trim()) }.onFailure { note("设置 API Key 出错：${it.message}") }
+        if (!useKey(apiKey)) { flush(null, "还没填 Google Maps Platform 的 API Key"); return }
         note("初始化 Navigator…")
         try { NavigationApi.getNavigator(app, object : NavigationApi.NavigatorListener {
             override fun onNavigatorReady(n: Navigator) {
