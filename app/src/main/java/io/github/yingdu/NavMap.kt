@@ -26,8 +26,14 @@ object NavMap {
     /** 从 a 到 b 的方向（度，正北 0、顺时针）。 */
     fun bearing(a: NavPoint, b: NavPoint): Double = local(a, b).let { (x, y) -> (atan2(x, y) * 180 / PI + 360) % 360 }
 
-    /** 当前位置落在路线的哪一段上：(段号 i，表示 i 到 i+1 之间；段上最近的点)。 */
-    fun snap(route: List<NavPoint>, p: NavPoint): Pair<Int, NavPoint> {
+    /** 两个方向相差多少度（0..180）。 */
+    fun angleDiff(a: Double, b: Double): Double { val d = ((a - b) % 360 + 360) % 360; return if (d > 180) 360 - d else d }
+
+    /**
+     * 当前位置落在路线的哪一段上：(段号 i，表示 i 到 i+1 之间；段上最近的点)。
+     * 知道走路的方向（course，度）时，方向对得上的段优先：刚拐过路口、位置还没离开旧路几米时，也能马上认到新的那条路上。
+     */
+    fun snap(route: List<NavPoint>, p: NavPoint, course: Double? = null): Pair<Int, NavPoint> {
         if (route.size < 2) return 0 to (route.firstOrNull() ?: p)
         var best = 0; var bestPt = route[0]; var bestD = Double.MAX_VALUE
         for (i in 0 until route.size - 1) {
@@ -36,7 +42,9 @@ object NavMap {
             val len2 = bx * bx + by * by
             val t = if (len2 == 0.0) 0.0 else ((px * bx + py * by) / len2).coerceIn(0.0, 1.0)
             val q = NavPoint(a.lat + (b.lat - a.lat) * t, a.lng + (b.lng - a.lng) * t)
-            val d = dist(q, p)
+            var d = dist(q, p)
+            // 方向每差 90 度当作远了 10 米（只在 25 米以内的段之间比较方向）
+            if (course != null && len2 > 1.0 && d < 25) d += angleDiff(course, bearing(a, b)) / 90.0 * 10.0
             if (d < bestD) { bestD = d; best = i; bestPt = q }
         }
         return best to bestPt

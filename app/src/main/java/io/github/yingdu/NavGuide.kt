@@ -59,10 +59,23 @@ object NavGuide {
     var onMapChanged: (() -> Unit)? = null
     private var locProvider: RoadSnappedLocationProvider? = null
 
+    /** 走路的方向（度，正北 0），只在走动时才有；站着不动时为 null（手机在口袋里，指南针不可靠，所以不用）。 */
+    var course: Double? = null; private set
+    private var courseAt = 0L
+
+    private fun takeCourse(l: android.location.Location) {
+        if (l.hasBearing() && l.hasSpeed() && l.speed >= 0.6f) { course = l.bearing.toDouble(); courseAt = System.currentTimeMillis() }
+        else if (System.currentTimeMillis() - courseAt > 6_000) course = null
+    }
+
     private val locListener = object : RoadSnappedLocationProvider.LocationListener {
         override fun onLocationChanged(location: android.location.Location) {
             val p = NavPoint(location.latitude, location.longitude)
-            main.post { here = p; onMapChanged?.invoke() }
+            main.post { here = p; takeCourse(location); onMapChanged?.invoke() }
+        }
+        // 原始 GPS 更新：只用来更新走路方向（位置仍用吸附到道路上的）
+        override fun onRawLocationUpdate(location: android.location.Location) {
+            main.post { val before = course; takeCourse(location); if (before != course) onMapChanged?.invoke() }
         }
     }
 
@@ -87,7 +100,7 @@ object NavGuide {
     private fun stopLocation() {
         runCatching { locProvider?.removeLocationListener(locListener) }
         locProvider = null
-        here = null; route = emptyList()
+        here = null; route = emptyList(); course = null
     }
     val ready get() = navigator != null
 

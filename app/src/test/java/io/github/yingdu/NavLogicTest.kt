@@ -143,6 +143,15 @@ class NavMapTest {
         assertEquals(270.0, NavMap.headingAt(route, seg2, on2), 1.0)        // 拐弯后往西
     }
 
+    @Test fun courseHelpsAtCorners() {
+        // 刚拐过路口 3 米、往西走：位置离旧路（南北向）和新路（东西向）差不多近，靠走路方向认到新路
+        val p = NavPoint(35.6979, 139.7740 - 3 / 90_400.0)
+        assertEquals(1, NavMap.snap(route, p, 270.0).first)
+        assertEquals(270.0, NavMap.headingAt(route, 1, NavMap.snap(route, p, 270.0).second), 1.0)
+        assertEquals(90.0, NavMap.angleDiff(0.0, 270.0), 0.001)
+        assertEquals(10.0, NavMap.angleDiff(355.0, 5.0), 0.001)
+    }
+
     @Test fun projectionHeadingUp() {
         val c = NavPoint(35.6970, 139.7740)
         // 往北 100 米、朝北：在中心正上方

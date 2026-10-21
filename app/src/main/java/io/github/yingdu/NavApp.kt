@@ -181,7 +181,8 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     private fun onMapChanged() {
         if (phase != Phase.GUIDING || !showMap) return
         val h = NavGuide.here ?: return
-        val key = "${Math.round(h.lat * 20000)},${Math.round(h.lng * 20000)},${NavGuide.route.size}"
+        // 移动约 2 米、走路方向变了 15 度以上、或路线变了，才重画（眼镜收图慢，太频繁反而卡）
+        val key = "${Math.round(h.lat * 50000)},${Math.round(h.lng * 50000)},${NavGuide.route.size}," + (NavGuide.course?.let { Math.round(it / 15) } ?: "-")
         if (key == lastMapKey) return
         lastMapKey = key
         show()
@@ -302,7 +303,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     /** 左边小地图（前进方向朝上），右边箭头、距离、说明。 */
     private fun drawWithMap(f: Frame, big: PixelText, s: NavSnap, c: NavStep, icon: NavIcon, here: NavPoint, rerouting: Boolean) {
         val mapW = 200; val top = 28
-        NavDraw.miniMap(f.canvas, NavGuide.route, here, s.toStepMeters, 0f, top.toFloat(), mapW.toFloat(), (f.h - top).toFloat(), rerouting)
+        NavDraw.miniMap(f.canvas, NavGuide.route, here, NavGuide.course, s.toStepMeters, 0f, top.toFloat(), mapW.toFloat(), (f.h - top).toFloat(), rerouting)
         // 分隔线
         var yy = top + 2; while (yy < f.h) { f.rect(mapW + 2, yy, 1, 2, Frame.FAINT); yy += 5 }
         val x = mapW + 10
@@ -438,8 +439,8 @@ object NavDraw {
      * 小地图：路线（走过的半亮、前面的全亮加粗）、下一个转弯点（圆圈）、当前位置（中下方的三角，前进方向朝上）。
      * 只画在 (left, top, w, h) 这个框里。
      */
-    fun miniMap(c: Canvas, route: List<NavPoint>, here: NavPoint, toTurn: Int?, left: Float, top: Float, w: Float, h: Float, dim: Boolean) {
-        val (seg, on) = NavMap.snap(route, here)
+    fun miniMap(c: Canvas, route: List<NavPoint>, here: NavPoint, course: Double?, toTurn: Int?, left: Float, top: Float, w: Float, h: Float, dim: Boolean) {
+        val (seg, on) = NavMap.snap(route, here, course)
         val heading = NavMap.headingAt(route, seg, on)
         val cx = left + w / 2; val cy = top + h * 0.78f
         val mpp = NavMap.scaleFor(toTurn, (cy - top - 14).toInt())
@@ -459,10 +460,14 @@ object NavDraw {
             c.drawCircle(tx, ty, 9f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt() })
             c.drawCircle(tx, ty, 7f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); style = Paint.Style.STROKE; strokeWidth = 3f })
         }
-        // 当前位置：黑底上的白色三角
-        c.drawCircle(cx, cy, 11f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt() })
-        c.drawPath(Path().apply { moveTo(cx, cy - 10); lineTo(cx + 8, cy + 8); lineTo(cx, cy + 4); lineTo(cx - 8, cy + 8); close() },
+        // 当前位置：黑底上的白色三角，指向实际走路的方向（和路线方向不一样时会歪，提醒走错了方向）
+        c.drawCircle(cx, cy, 13f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt() })
+        val tilt = course?.let { ((it - heading) % 360 + 360) % 360 }?.toFloat() ?: 0f
+        c.save()
+        c.rotate(tilt, cx, cy)
+        c.drawPath(Path().apply { moveTo(cx, cy - 12); lineTo(cx + 9, cy + 9); lineTo(cx, cy + 4); lineTo(cx - 9, cy + 9); close() },
             Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() })
+        c.restore()
         c.restore()
     }
 
