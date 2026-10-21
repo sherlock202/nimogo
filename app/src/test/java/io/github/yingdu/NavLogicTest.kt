@@ -269,3 +269,18 @@ class NavJunctionsTest {
     }
 }
 
+class NavPickTest {
+    @Test fun nearestOfSameName() {
+        val tokyo = NavPoint(35.681, 139.767)
+        val far = NavPoint(-23.55, -46.63)                // 地球另一边的同名地点
+        val ueno = NavPoint(35.7138, 139.7773)
+        assertEquals(1, NavPick.best(listOf(far, ueno), tokyo))
+        assertEquals(0, NavPick.best(listOf(far, ueno), null))
+        assertEquals(-1, NavPick.best(emptyList(), tokyo))
+        assertEquals(3_800.0, NavMap.greatCircle(tokyo, ueno), 200.0)
+        assertTrue(NavMap.greatCircle(tokyo, far) > 15_000_000)
+        assertTrue(NavPick.suspicious(NavMap.greatCircle(tokyo, far), NavMode.WALKING))
+        assertFalse(NavPick.suspicious(NavMap.greatCircle(tokyo, ueno), NavMode.WALKING))
+    }
+}
+

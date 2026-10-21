@@ -1798,7 +1798,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         if (!legalAgreed()) { toast("先同意使用说明，再从 Google Maps 共享一次"); return true }
         toast("正在查找地点…")
         Thread {
-            val d = runCatching { NavResolve.fromShare(applicationContext, text, subject) }.getOrNull()
+            val d = runCatching { NavResolve.fromShare(applicationContext, text, subject, navHere()) }.getOrNull()
             uiHandler.post {
                 if (isFinishing || isDestroyed) return@post
                 if (d == null) message("没找到地点", "没能从共享的内容里找到地点：\n\n$text") else confirmNav(d)
@@ -1807,13 +1807,34 @@ class MainActivity : Activity(), ReaderService.UiListener {
         return true
     }
 
-    /** 选出行方式，确认后开始（每次开始都算一个目的地，所以要确认）。 */
+    /** 手机最近一次的位置（没有定位权限或从没定位过时为 null）。用来挑同名地点、显示离这里多远。 */
+    private fun navHere(): NavPoint? {
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) return null
+        val lm = getSystemService(android.location.LocationManager::class.java) ?: return null
+        val last = runCatching { lm.getProviders(true).mapNotNull { lm.getLastKnownLocation(it) }.maxByOrNull { it.time } }.getOrNull() ?: return null
+        return NavPoint(last.latitude, last.longitude)
+    }
+
+    /** 选出行方式，确认后开始（每次开始都算一个目的地，所以要确认）。显示地址和离这里多远，找错了地方一眼能看出来。 */
     private fun confirmNav(d: NavDest) {
         val s = service ?: run { pendingNav = d; return }
         val modes = NavMode.values()
         var pick = modes.indexOf(s.nav.defaultMode).coerceAtLeast(0)
+        val here = navHere()
+        val meters = if (here != null && d.hasPoint) NavMap.greatCircle(here, NavPoint(d.lat!!, d.lng!!)) else null
+        val far = meters != null && NavPick.suspicious(meters, s.nav.defaultMode)
+        val info = listOfNotNull(
+            d.address?.takeIf { it.isNotBlank() && it != d.title },
+            meters?.let { "离这里直线约 " + NavText.distance(it.toInt()) },
+            if (far) "离这里很远，可能找错了地方。可以换个写法（例如「上野駅」「台東区上野」），或在 Google Maps 里找好再共享过来。" else null
+        ).joinToString("\n")
         AlertDialog.Builder(this)
-            .setTitle("导航到「${d.title}」")
+            .setCustomTitle(vbox().apply {
+                setPadding(dp(24), dp(20), dp(24), dp(4))
+                addView(text("导航到「${d.title}」", 18f, INK, bold = true))
+                if (info.isNotEmpty()) addView(text(info, 13.5f, if (far) DANGER else SUB).apply { setLineSpacing(0f, 1.25f); setPadding(0, dp(6), 0, 0) })
+            })
             .setSingleChoiceItems(modes.map { it.zh }.toTypedArray(), pick) { _, w -> pick = w }
             .setPositiveButton("开始") { _, _ -> startNav(d, modes[pick]) }
             .setNegativeButton("取消", null)
@@ -1852,7 +1873,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 if (q.isEmpty()) return@setPositiveButton
                 toast("正在查找…")
                 Thread {
-                    val d = runCatching { NavResolve.geocode(applicationContext, NavDest(q, query = q)) }.getOrNull()
+                    val d = runCatching { NavResolve.geocode(applicationContext, NavDest(q, query = q), navHere()) }.getOrNull()
                     uiHandler.post {
                         if (isFinishing || isDestroyed) return@post
                         if (d == null) toast("没找到「$q」，换个写法或从 Google Maps 共享") else confirmNav(d)

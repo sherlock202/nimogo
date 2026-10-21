@@ -385,7 +385,7 @@ class NavInfoService : Service() {
  * 短链接先跟着跳转拿到完整的 Google Maps 地址，再解析；只有地名时用系统的地理编码（免费，不走 Places API）。
  */
 object NavResolve {
-    fun fromShare(ctx: Context, text: String, subject: String = ""): NavDest? {
+    fun fromShare(ctx: Context, text: String, subject: String = "", near: NavPoint? = null): NavDest? {
         val title = NavLinks.titleOf(text).ifEmpty { subject.trim() }
         val url = NavLinks.findUrl(text)
         val dest = when {
@@ -393,18 +393,26 @@ object NavResolve {
             url != null -> NavLinks.parseUrl(if (NavLinks.isShortLink(url)) expand(url) else url, title)
             title.isNotEmpty() -> NavDest(title, query = title)
             else -> null
-        } ?: return if (title.isNotEmpty()) geocode(ctx, NavDest(title, query = title)) else null
-        return if (dest.ready) dest else geocode(ctx, dest)
+        } ?: return if (title.isNotEmpty()) geocode(ctx, NavDest(title, query = title), near) else null
+        return if (dest.ready) dest else geocode(ctx, dest, near)
     }
 
-    /** 只有地名 / 地址：交给系统地理编码，取第一个结果。 */
+    /**
+     * 只有地名 / 地址：交给系统地理编码。同名的地方可能有好几个（「上野」在别的国家也有），
+     * 知道当前位置时先在附近（约 50 公里内）找，找不到再全世界找，取离当前位置最近的。
+     */
     @Suppress("DEPRECATION")
-    fun geocode(ctx: Context, d: NavDest): NavDest? {
+    fun geocode(ctx: Context, d: NavDest, near: NavPoint? = null): NavDest? {
         if (d.ready) return d
         val q = d.query?.trim().orEmpty().ifEmpty { d.title }
         if (q.isEmpty() || !Geocoder.isPresent()) return null
-        val a = runCatching { Geocoder(ctx).getFromLocationName(q, 1)?.firstOrNull() }.getOrNull() ?: return null
-        return d.copy(lat = a.latitude, lng = a.longitude)
+        val g = Geocoder(ctx)
+        var list = near?.let { n ->
+            runCatching { g.getFromLocationName(q, 5, n.lat - 0.45, n.lng - 0.55, n.lat + 0.45, n.lng + 0.55) }.getOrNull()
+        }.orEmpty()
+        if (list.isEmpty()) list = runCatching { g.getFromLocationName(q, 5) }.getOrNull().orEmpty()
+        val a = list.getOrNull(NavPick.best(list.map { NavPoint(it.latitude, it.longitude) }, near)) ?: return null
+        return d.copy(lat = a.latitude, lng = a.longitude, address = runCatching { a.getAddressLine(0) }.getOrNull())
     }
 
     /** 跟着 maps.app.goo.gl 这类短链接跳转（最多 6 次），返回最后的地址。 */

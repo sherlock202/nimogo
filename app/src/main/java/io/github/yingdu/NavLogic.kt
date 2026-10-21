@@ -20,7 +20,7 @@ enum class NavMode(val zh: String) { WALKING("步行"), DRIVING("驾车"), CYCLI
  * [title] 只用来显示。
  */
 data class NavDest(val title: String, val lat: Double? = null, val lng: Double? = null,
-                   val placeId: String? = null, val query: String? = null) {
+                   val placeId: String? = null, val query: String? = null, val address: String? = null) {
     val hasPoint get() = lat != null && lng != null
     /** 能直接交给 Navigation SDK（不用再查）。 */
     val ready get() = hasPoint || placeId != null
@@ -258,5 +258,17 @@ object NavArrive {
         if (s.state == NavSnap.STOPPED && (lastStep || (remain != null && remain <= 100))) return true
         return false
     }
+}
+
+/** 地名查出好几个地方时选哪个：离当前位置最近的（「上野」在别的国家也有）。 */
+object NavPick {
+    fun best(candidates: List<NavPoint>, near: NavPoint?): Int {
+        if (candidates.isEmpty()) return -1
+        if (near == null) return 0
+        return candidates.indices.minByOrNull { NavMap.greatCircle(near, candidates[it]) } ?: 0
+    }
+
+    /** 离这么远（米）就提醒「可能找错了地方」。 */
+    fun suspicious(meters: Double, mode: NavMode) = meters > when (mode) { NavMode.WALKING -> 50_000.0; NavMode.CYCLING -> 150_000.0; NavMode.DRIVING -> 800_000.0 }
 }
 

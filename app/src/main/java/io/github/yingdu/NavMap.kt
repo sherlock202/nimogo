@@ -23,6 +23,14 @@ object NavMap {
 
     fun dist(a: NavPoint, b: NavPoint): Double = local(a, b).let { (x, y) -> hypot(x, y) }
 
+    /** 两点的大圆距离（米），远距离也准（dist 是平面近似，只适合几公里以内）。 */
+    fun greatCircle(a: NavPoint, b: NavPoint): Double {
+        val r = PI / 180
+        val dLat = (b.lat - a.lat) * r; val dLng = (b.lng - a.lng) * r
+        val h = sin(dLat / 2) * sin(dLat / 2) + cos(a.lat * r) * cos(b.lat * r) * sin(dLng / 2) * sin(dLng / 2)
+        return 2 * 6_371_000.0 * kotlin.math.asin(kotlin.math.sqrt(h.coerceIn(0.0, 1.0)))
+    }
+
     /** 从 a 到 b 的方向（度，正北 0、顺时针）。 */
     fun bearing(a: NavPoint, b: NavPoint): Double = local(a, b).let { (x, y) -> (atan2(x, y) * 180 / PI + 360) % 360 }
 
