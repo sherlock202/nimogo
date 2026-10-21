@@ -87,6 +87,11 @@ class FollowAligner {
 
     /** 已经念到的位置（讲稿里的字符位置，不含）：下划线画到这里。 */
     var offset = 0
+    /**
+     * 跟上了没有：刚开始、手动翻过页、或者很久没对上时为 false，这时不知道你从哪里念起，
+     * 前后更大的范围里找、对上 3 个字就跟过去；跟上以后离当前位置越远要求越严。
+     */
+    var locked = false
 
     companion object {
         const val MATCH = 2
@@ -99,10 +104,14 @@ class FollowAligner {
         const val AHEAD = 400
         /** 往前走几个音节以内算「正常往下念」。 */
         const val NEAR = 15
-        /** 各种情况下最少要多少分才移动（对上一个字 2 分）。 */
+        /** 各种情况下最少要多少分才移动（对上一个字 2 分）。2026-10-21 第二份日志：「围绕一问题」9 分、「经非常自然」往回 10 分都没跟上，调低。 */
         const val MIN_NEAR = 4
-        const val MIN_FAR = 10
-        const val MIN_BACK = 12
+        const val MIN_FAR = 8
+        const val MIN_BACK = 9
+        /** 还没跟上时：找的范围更大，对上 3 个字就跟过去。 */
+        const val BACK_UNLOCKED = 150
+        const val AHEAD_UNLOCKED = 600
+        const val MIN_UNLOCKED = 6
     }
 
     /**
@@ -113,8 +122,8 @@ class FollowAligner {
         val from = offset
         if (hyp.isEmpty() || script.size == 0) return Result(false, from, from, 0, 0, script.size, "没有内容")
         val h = if (hyp.size > TAIL) hyp.copyOfRange(hyp.size - TAIL, hyp.size) else hyp
-        val lo = (cur - BACK).coerceAtLeast(0)
-        val hi = (cur + AHEAD).coerceAtMost(script.size)
+        val lo = (cur - if (locked) BACK else BACK_UNLOCKED).coerceAtLeast(0)
+        val hi = (cur + if (locked) AHEAD else AHEAD_UNLOCKED).coerceAtMost(script.size)
         val m = hi - lo
         val n = h.size
         // Smith-Waterman 局部对齐：d[i][j] = 以 h[i-1]、script[lo+j-1] 结尾的最高分
@@ -146,7 +155,7 @@ class FollowAligner {
         }
         if (best < 0) return Result(false, from, from, 0, 0, m, "没对上")
         val d = best - (cur - 1)
-        val need = when { d in 0..NEAR -> MIN_NEAR; d > NEAR -> MIN_FAR; else -> MIN_BACK }
+        val need = when { !locked -> maxOf(MIN_UNLOCKED, if (d in 0..NEAR) MIN_NEAR else 0); d in 0..NEAR -> MIN_NEAR; d > NEAR -> MIN_FAR; else -> MIN_BACK }
         val to = script.ends[best]
         // 识别结果很长、却只有一小段对得上：多半是在说讲稿以外的话，结尾碰巧有「就是」这种常见词（2026-10-21 日志）
         val minForLength = if (n >= 6) (n * 3 + 3) / 4 else 0
@@ -154,7 +163,11 @@ class FollowAligner {
             d == 0 || (d < 0 && d >= -3) -> Result(false, from, from, bestScore, d, m, "原地")
             bestScore < need -> Result(false, from, to, bestScore, d, m, "分数不够（要 $need）")
             bestScore < minForLength -> Result(false, from, to, bestScore, d, m, "像是讲稿以外的话（$n 个音节只对上一小段，要 $minForLength 分）")
-            else -> { offset = to; Result(true, from, to, bestScore, d, m, if (d > NEAR) "跳过" else if (d < 0) "往回" else "前进") }
+            else -> {
+                val wasLocked = locked
+                offset = to; locked = true
+                Result(true, from, to, bestScore, d, m, if (!wasLocked) "找到位置" else if (d > NEAR) "跳过" else if (d < 0) "往回" else "前进")
+            }
         }
     }
 }

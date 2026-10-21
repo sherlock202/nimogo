@@ -94,4 +94,28 @@ class FollowTest {
         val h2 = FollowText.tokenize("就是亚流所以今天", 0, 8, table, dict)
         assertTrue(a.update(h2.ids, s, cur).moved)
     }
+
+    @Test fun findsStartAnywhereAndAcceptsShortJumpsAndRereads() {
+        // 2026-10-21 第二份日志：从眼镜第 10 行开始，人却在念后面的「重点就围绕一个问题」（漏了「个」）
+        val script3 = "有人说耶稣很伟大是上帝的儿子但不是和父同等的神。这个观点的代表人物就是亚流。所以今天整堂课重点就围绕一个问题：" +
+            "如果耶稣不是完全的真神，那么基督教的救恩还成立吗？对早期教会来说，承认耶稣是真神已经非常自然。"
+        val dict = HashMap<String, Int>()
+        val s = FollowText.tokenize(script3, 0, script3.length, table, dict)
+        fun go(a: FollowAligner, said: String): FollowAligner.Result {
+            var cur = 0
+            while (cur < s.size && s.starts[cur] < a.offset) cur++
+            return a.update(FollowText.tokenize(said, 0, said.length, table, dict).ids, s, cur)
+        }
+        val a = FollowAligner()
+        val r1 = go(a, "围绕一问题")
+        assertTrue(r1.reason, r1.moved); assertEquals("找到位置", r1.reason)
+        assertEquals(script3.indexOf("问题") + 2, a.offset)
+        // 「还成立吗」识别成「还沉立吗」：前后鼻音
+        assertTrue(go(a, "这还沉立吗").moved)
+        assertEquals(script3.indexOf("立吗") + 2, a.offset)
+        // 回头重念前面一句（往回）
+        val back = FollowAligner().apply { offset = script3.indexOf("所以"); locked = true }
+        val rb = go(back, "已经非常自然")
+        assertTrue(rb.reason, rb.moved)
+    }
 }

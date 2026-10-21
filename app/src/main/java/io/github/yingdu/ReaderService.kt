@@ -1243,6 +1243,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private var followStartAt = 0L
     private var followLastPartialAt = 0L
     private var followUiAt = 0L
+    private var followLastMoveAt = 0L
 
     fun toggleFollow() { if (followOn || followDownloading) stopFollow("手动关掉") else startFollow() }
 
@@ -1276,6 +1277,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (glassesPaused) resumeGlasses()
         val m = followModel
         followAligner = FollowAligner().apply { offset = p.lineStartOf(topLine) }
+        followLastMoveAt = System.currentTimeMillis()
         followDict.clear()
         followHeard = ""; followN = 0; followFrames = 0; followMoves = 0; followJumps = 0
         followStartAt = System.currentTimeMillis(); followStatFramesAt = followStartAt; followLastFrameAt = followStartAt
@@ -1358,8 +1360,10 @@ class ReaderService : Service(), NimoListener, AppHost {
         val now = System.currentTimeMillis()
         followHeard = text
         followLog.d(if (final) "整句" else "识别", "「$text」 声音收到后 ${now - audioAt} ms 出字（这次解码 $decodeMs ms）")
+        // 一直在说、却 10 秒没对上：多半是跟丢了，放宽范围重新找
+        if (followAligner.locked && now - followLastMoveAt > 10_000) { followAligner.locked = false; followLog.d("对齐", "10 秒没对上，放宽范围重新找") }
         val off = followAligner.offset
-        val from = (off - 400).coerceAtLeast(0)
+        val from = (off - 600).coerceAtLeast(0)
         val to = (off + 4_000).coerceAtMost(b.text.length)
         val t0 = System.nanoTime()
         val script = FollowText.tokenize(b.text, from, to, pinyin, followDict)
@@ -1372,7 +1376,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         followLog.d("对齐", "${r.reason}：第 ${r.from} → ${r.to} 字（${r.distance} 个音节，得分 ${r.score}，窗口 ${r.window}，用了 $us µs）…「$ctx」")
         if (r.moved) {
             followMoves++
-            if (r.reason == "跳过") followJumps++
+            followLastMoveAt = now
+            if (r.reason == "跳过" || r.reason == "找到位置") followJumps++
             followApply(r.to, r.reason)
         } else if (displayPage == DisplayPage.PROMPTER && now - followLastPartialAt > 500) {
             // 文字显示：状态行显示听到的字（最多半秒刷一次）
@@ -1484,6 +1489,12 @@ class ReaderService : Service(), NimoListener, AppHost {
         val rows = paginator?.rows ?: return false
         if (glassesPaused) resumeGlasses()
         moveBy(lines + pages * rows)
+        if (followOn) {
+            // 跟读时手动翻了：从眼镜上这一屏的开头重新找（可能跟丢了，或者跳到了别处）
+            val p = paginator!!
+            followAligner.offset = p.lineStartOf(topLine); followAligner.locked = false
+            followLog.d("对齐", "手动翻到第 $topLine 行，从这里重新找")
+        }
         return true
     }
 
