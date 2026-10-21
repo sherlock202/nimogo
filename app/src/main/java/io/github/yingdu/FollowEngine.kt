@@ -125,6 +125,8 @@ interface FollowRecognizer {
     val totalDecodeMs: Long
     fun start()
     fun feed(samples: FloatArray, receivedAt: Long)
+    /** 丢掉留着的声音（手动翻页后：之前念的话不要再把位置拉回去）。 */
+    fun reset()
     fun stop()
 }
 
@@ -206,6 +208,8 @@ class FollowSenseAsr(
             }
         }
     }
+
+    override fun reset() = exec.execute { filled = 0; sinceDecode = 0; lastText = "" }
 
     override fun stop() { exec.shutdown() }
 }

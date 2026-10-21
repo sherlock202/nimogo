@@ -229,8 +229,9 @@ object WavPcm {
 }
 
 /**
- * 文字显示时换掉眼镜自带字库里没有的字（2026-10-21：「欅」在提词器里显示不出来）。
- * 数据是 assets/follow/simplify.txt：每行两个字，前一个换成后一个（繁体、日文新字体 → 简体，只收 GB2312 以外的字）。
+ * 文字显示时换掉眼镜自带字库里没有的字（2026-10-21：「欅」在提词器里显示不出来，繁体字大多能显示）。
+ * 数据是 assets/follow/simplify.txt：每行两个字，前一个换成后一个。只收 GB2312 和 Big5 都没有的字（主要是日文新字体），
+ * 先换成繁体（欅→櫸、駅→驛），没有繁体再换成简体。
  */
 class GlyphFallback(data: String) {
     private val map = HashMap<Char, Char>(4_000)

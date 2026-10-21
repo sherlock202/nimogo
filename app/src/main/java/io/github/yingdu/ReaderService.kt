@@ -144,7 +144,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     var scrollLines: Int
         get() = prefs.getInt("scrollLines", 0)
         set(v) { prefs.edit().putInt("scrollLines", v.coerceIn(0, 20)).apply() }
-    /** 文字显示时，把眼镜字库里没有的字（繁体、日文汉字）换成简体（默认开）。 */
+    /** 文字显示时，把眼镜字库里没有的字（主要是日文新字体，例如欅、駅）换成繁体或简体写法（默认开）。 */
     var textFallback: Boolean
         get() = prefs.getBoolean("textFallback", true)
         set(v) { prefs.edit().putBoolean("textFallback", v).apply(); pushPage() }
@@ -1251,6 +1251,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private var followLastPartialAt = 0L
     private var followUiAt = 0L
     private var followLastMoveAt = 0L
+    private var followFlipAt = 0L
 
     fun toggleFollow() { if (followOn || followDownloading) stopFollow("手动关掉") else startFollow() }
 
@@ -1366,6 +1367,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         val now = System.currentTimeMillis()
         followHeard = text
         followLog.d(if (final) "整句" else "识别", "「$text」 声音收到后 ${now - audioAt} ms 出字（这次解码 $decodeMs ms）")
+        if (audioAt < followFlipAt) { followLog.d("对齐", "这段声音是手动翻页前的，不用"); return }
         // 一直在说、却 10 秒没对上：多半是跟丢了，放宽范围重新找
         if (followAligner.locked && now - followLastMoveAt > 10_000) { followAligner.locked = false; followLog.d("对齐", "10 秒没对上，放宽范围重新找") }
         val off = followAligner.offset
@@ -1557,9 +1559,11 @@ class ReaderService : Service(), NimoListener, AppHost {
         val p = paginator ?: return
         topLine = line.coerceIn(0, p.lineCount - 1)
         if (followOn && !byFollow) {
-            // 跟读时手动翻了（戒指、镜腿、音量键、手机上的按钮）：从眼镜上这一屏的开头重新找
+            // 跟读时手动翻了（戒指、镜腿、音量键、手机上的按钮）：从眼镜上这一屏的开头重新找。
+            // 翻页前念的话（还在 4 秒的声音里）不能再把位置拉回去：丢掉留着的声音，翻页前的识别结果也不要
             followAligner.offset = p.lineStartOf(topLine); followAligner.locked = false
-            followLastMoveAt = System.currentTimeMillis()
+            followLastMoveAt = System.currentTimeMillis(); followFlipAt = followLastMoveAt
+            followAsr?.reset()
             followLog.d("对齐", "手动翻到第 $topLine 行，从这里重新找")
         }
         pushPage()

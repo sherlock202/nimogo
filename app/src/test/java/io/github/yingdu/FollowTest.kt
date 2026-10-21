@@ -152,8 +152,9 @@ class FollowTest {
     @Test fun glyphFallback() {
         val f = java.io.File(listOf("src/main/assets/follow/simplify.txt", "app/src/main/assets/follow/simplify.txt").first { java.io.File(it).isFile })
         val g = GlyphFallback(f.readText())
-        assertTrue(g.size > 2000)
-        assertEquals("原唱：榉坂46 东京驿", g.apply("原唱：欅坂46 東京駅"))
+        assertTrue(g.size > 300)
+        // 繁体字眼镜大多能显示，不换；日文新字体换成繁体
+        assertEquals("原唱：櫸坂46 東京驛", g.apply("原唱：欅坂46 東京駅"))
         assertEquals("红绿灯", g.apply("红绿灯"))
     }
 }
