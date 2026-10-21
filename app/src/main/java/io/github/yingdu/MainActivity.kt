@@ -131,6 +131,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             if (!loaded) { loaded = true; loaders.forEach { it(s) } }
             refreshNow()
             pendingNav?.let { pendingNav = null; confirmNav(it) }
+            pendingOpen?.let { pendingOpen = null; s.openBook(it) }
             uiHandler.removeCallbacks(pageTicker); uiHandler.postDelayed(pageTicker, 1000)
         }
         override fun onServiceDisconnected(name: ComponentName?) { service = null }
@@ -3703,8 +3704,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val uri = data?.data ?: return
         // 持久授权，下次启动能自动打开上次的书
         runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-        service?.openBook(uri)
+        // 从文件选择器回来时 onStart 刚重新绑定服务，连上之前 service 还是 null：先记下，连上后再打开（以前这里直接丢掉了）
+        val s = service
+        if (s != null) s.openBook(uri) else { pendingOpen = uri; toast("正在打开…") }
     }
+
+    /** 选好了文件、但服务还没连上：连上后打开。 */
+    private var pendingOpen: android.net.Uri? = null
 
     private fun showChapters() {
         val s = service ?: return
