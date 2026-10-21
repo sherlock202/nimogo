@@ -401,7 +401,7 @@ object NavResolve {
     fun geocode(ctx: Context, d: NavDest, near: NavPoint? = null): NavDest? {
         if (d.ready) return d
         val q = d.query?.trim().orEmpty().ifEmpty { d.title }
-        val p = search(ctx, q, near).second.firstOrNull() ?: return null
+        val p = search(ctx, q).places.firstOrNull() ?: return null
         return d.copy(lat = p.point.lat, lng = p.point.lng, address = p.address)
     }
 
@@ -413,26 +413,88 @@ object NavResolve {
         return NavArea(a.locality.orEmpty(), a.adminArea.orEmpty(), a.countryCode.orEmpty())
     }
 
+    /** 手机连着的移动网络（或 SIM 卡）是哪个国家的：定位不到时用它判断在哪个国家。 */
+    fun networkCountry(ctx: Context): String {
+        val tm = ctx.getSystemService(Context.TELEPHONY_SERVICE) as? android.telephony.TelephonyManager ?: return ""
+        return listOf(runCatching { tm.networkCountryIso }.getOrNull(), runCatching { tm.simCountryIso }.getOrNull())
+            .firstOrNull { !it.isNullOrBlank() }.orEmpty().uppercase(java.util.Locale.ROOT)
+    }
+
+    /** 这个国家的语言（日本 → 日语）：用当地语言查地名，查到的才是当地的地方。 */
+    fun localeOf(country: String): java.util.Locale? =
+        if (country.isEmpty()) null
+        else java.util.Locale.getAvailableLocales().firstOrNull { it.country.equals(country, true) && it.language.isNotEmpty() && it.variant.isEmpty() && it.script.isEmpty() }
+
     /**
-     * 查地名：先在所在城市找，再在本国找，最后全世界（规则见 [NavPick.choose]）。
-     * 系统地理编码一次最多给 10 个结果，所以分别在附近、本国（地名后面加上国名）、全世界各查一次再合起来。
+     * 现在的位置：先看系统记着的最近位置（10 分钟内的），没有就现在定位一次（最多等 timeoutMs）。
+     * 会阻塞，只在后台线程调用。没有定位权限时为 null。
+     */
+    @Suppress("DEPRECATION", "MissingPermission")
+    fun currentLocation(ctx: Context, timeoutMs: Long = 8_000): NavPoint? {
+        val fine = ctx.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val coarse = ctx.checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!fine && !coarse) return null
+        val lm = ctx.getSystemService(android.location.LocationManager::class.java) ?: return null
+        val enabled = runCatching { lm.getProviders(true) }.getOrNull().orEmpty()
+        val last = enabled.mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }.maxByOrNull { it.time }
+        if (last != null && System.currentTimeMillis() - last.time < 10 * 60_000L) return NavPoint(last.latitude, last.longitude)
+        val provider = listOf("fused", android.location.LocationManager.NETWORK_PROVIDER, android.location.LocationManager.GPS_PROVIDER).firstOrNull { it in enabled }
+        val fresh = provider?.let { p ->
+            val latch = java.util.concurrent.CountDownLatch(1)
+            var got: android.location.Location? = null
+            runCatching {
+                if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    lm.getCurrentLocation(p, null, ctx.mainExecutor) { l -> got = l; latch.countDown() }
+                } else {
+                    lm.requestSingleUpdate(p, object : android.location.LocationListener {
+                        override fun onLocationChanged(l: android.location.Location) { got = l; latch.countDown() }
+                        override fun onProviderDisabled(provider: String) { latch.countDown() }
+                        override fun onProviderEnabled(provider: String) {}
+                        override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+                    }, Looper.getMainLooper())
+                }
+            }.onFailure { latch.countDown() }
+            latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            got
+        }
+        val l = fresh ?: last ?: return null
+        return NavPoint(l.latitude, l.longitude)
+    }
+
+    /** 查地名的结果：在哪个范围找到的、找到的地点（按远近排）、当前位置和所在地区（不知道时为 null）。 */
+    class Found(val scope: NavPick.Scope, val places: List<NavPlace>, val here: NavPoint?, val area: NavArea?)
+
+    /**
+     * 查地名：先确定自己在哪（定位，反查城市和国家；定位不到就看手机网络是哪个国家的），
+     * 然后先在所在城市找，再在本国找，最后才是全世界（规则见 [NavPick.choose]）。
+     * 用当地语言查（在日本就用日语），不然手机是中文时「上野」会查到中国的同名地方。会阻塞，只在后台线程调用。
      */
     @Suppress("DEPRECATION")
-    fun search(ctx: Context, q: String, here: NavPoint?): Pair<NavPick.Scope, List<NavPlace>> {
-        if (q.isEmpty() || !Geocoder.isPresent()) return NavPick.Scope.WORLD to emptyList()
-        val g = Geocoder(ctx)
-        val area = here?.let { areaOf(ctx, it) }
+    fun search(ctx: Context, q: String): Found {
+        val here = currentLocation(ctx)
+        var area = here?.let { areaOf(ctx, it) }
+        if (area == null || area.country.isEmpty()) {
+            val cc = networkCountry(ctx)
+            if (cc.isNotEmpty()) area = NavArea(area?.locality.orEmpty(), area?.admin.orEmpty(), cc)
+        }
+        if (q.isEmpty() || !Geocoder.isPresent()) return Found(NavPick.Scope.WORLD, emptyList(), here, area)
+        val local = localeOf(area?.country.orEmpty())
+        val lg = if (local != null) Geocoder(ctx, local) else Geocoder(ctx)
         val found = ArrayList<android.location.Address>()
-        if (here != null) runCatching { g.getFromLocationName(q, 10, here.lat - 0.5, here.lng - 0.6, here.lat + 0.5, here.lng + 0.6) }.getOrNull()?.let { found += it }
-        val countryName = runCatching { java.util.Locale("", area?.country.orEmpty()).displayCountry }.getOrNull().orEmpty()
-        if (area != null && countryName.isNotEmpty()) runCatching { g.getFromLocationName("$q $countryName", 10) }.getOrNull()?.let { found += it }
-        runCatching { g.getFromLocationName(q, 10) }.getOrNull()?.let { found += it }
+        if (here != null) runCatching { lg.getFromLocationName(q, 10, here.lat - 0.5, here.lng - 0.6, here.lat + 0.5, here.lng + 0.6) }.getOrNull()?.let { found += it }
+        if (local != null) {
+            runCatching { lg.getFromLocationName(q, 10) }.getOrNull()?.let { found += it }
+            val countryName = java.util.Locale("", area!!.country).getDisplayCountry(local)
+            if (countryName.isNotEmpty()) runCatching { lg.getFromLocationName("$countryName $q", 10) }.getOrNull()?.let { found += it }
+        }
+        runCatching { Geocoder(ctx).getFromLocationName(q, 10) }.getOrNull()?.let { found += it }
         val places = found.map { a ->
             val addr = runCatching { a.getAddressLine(0) }.getOrNull().orEmpty()
             NavPlace(NavPoint(a.latitude, a.longitude), a.featureName?.takeIf { it.isNotBlank() && it != a.subThoroughfare } ?: q, addr,
                 a.locality.orEmpty(), a.adminArea.orEmpty(), a.countryCode.orEmpty())
         }
-        return NavPick.choose(places, here, area)
+        val (scope, list) = NavPick.choose(places, here, area)
+        return Found(scope, list, here, area)
     }
 
     /** 跟着 maps.app.goo.gl 这类短链接跳转（最多 6 次），返回最后的地址。 */

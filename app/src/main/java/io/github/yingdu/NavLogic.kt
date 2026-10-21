@@ -284,8 +284,9 @@ object NavPick {
 
     fun choose(found: List<NavPlace>, here: NavPoint?, area: NavArea?): Pair<Scope, List<NavPlace>> {
         val all = dedupe(found).let { l -> if (here == null) l else l.sortedBy { NavMap.greatCircle(here, it.point) } }
-        if (here == null || area == null) return Scope.WORLD to all
-        val city = all.filter {
+        if (area == null) return Scope.WORLD to all
+        // 不知道精确位置（只从手机网络知道在哪个国家）时跳过城市这一级
+        val city = if (here == null) emptyList() else all.filter {
             (area.locality.isNotEmpty() && it.locality == area.locality) ||
                 (area.admin.isNotEmpty() && it.admin == area.admin && NavMap.greatCircle(here, it.point) <= 60_000)
         }

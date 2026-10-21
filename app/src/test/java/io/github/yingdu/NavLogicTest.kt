@@ -289,7 +289,14 @@ class NavPickTest {
         }
         // 本国也没有：全世界
         NavPick.choose(listOf(far), tokyo, here).let { (scope, l) -> assertEquals(NavPick.Scope.WORLD, scope); assertEquals(1, l.size) }
-        // 不知道当前位置：不筛
+        // 中国的同名地点不会排在日本的前面
+        val liaoning = NavPlace(NavPoint(41.8, 123.4), "上野", "中国辽宁省", "沈阳市", "辽宁省", "CN")
+        NavPick.choose(listOf(liaoning, uenoMie), tokyo, here).let { (scope, l) -> assertEquals(NavPick.Scope.COUNTRY, scope); assertEquals(listOf(uenoMie), l) }
+        // 定位不到、只从手机网络知道在日本：跳过城市，只要日本的
+        NavPick.choose(listOf(liaoning, uenoMie, uenoTokyo), null, NavArea("", "", "JP")).let { (scope, l) ->
+            assertEquals(NavPick.Scope.COUNTRY, scope); assertEquals(listOf(uenoMie, uenoTokyo), l)
+        }
+        // 什么都不知道：不筛
         assertEquals(NavPick.Scope.WORLD, NavPick.choose(listOf(far, uenoMie), null, null).first)
     }
 

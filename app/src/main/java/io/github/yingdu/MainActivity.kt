@@ -1873,14 +1873,14 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 if (q.isEmpty()) return@setPositiveButton
                 toast("正在查找…")
                 Thread {
-                    val here = navHere()
-                    val (scope, list) = runCatching { NavResolve.search(applicationContext, q, here) }.getOrDefault(NavPick.Scope.WORLD to emptyList())
+                    val r = runCatching { NavResolve.search(applicationContext, q) }.getOrNull()
                     uiHandler.post {
                         if (isFinishing || isDestroyed) return@post
-                        when (list.size) {
-                            0 -> toast("没找到「$q」，换个写法或从 Google Maps 共享")
-                            1 -> confirmNav(placeDest(q, list[0]))
-                            else -> pickNavPlace(q, scope, list, here)
+                        val list = r?.places.orEmpty()
+                        when {
+                            r == null || list.isEmpty() -> toast("没找到「$q」，换个写法或从 Google Maps 共享")
+                            list.size == 1 && r.scope != NavPick.Scope.WORLD -> confirmNav(placeDest(q, list[0]))
+                            else -> pickNavPlace(q, r)
                         }
                     }
                 }.start()
@@ -1890,16 +1890,22 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
     private fun placeDest(q: String, p: NavPlace) = NavDest(p.name.ifBlank { q }, p.point.lat, p.point.lng, query = q, address = p.address)
 
-    /** 同名的地点有好几个：按远近列出来让用户选。 */
-    private fun pickNavPlace(q: String, scope: NavPick.Scope, list: List<NavPlace>, here: NavPoint?) {
-        val where = when (scope) { NavPick.Scope.CITY -> "在你所在的城市"; NavPick.Scope.COUNTRY -> "在国内"; NavPick.Scope.WORLD -> "" }
+    /** 同名的地点有好几个（或只在国外找到）：按远近列出来让用户选；标题写明是在哪个范围找到的。 */
+    private fun pickNavPlace(q: String, r: NavResolve.Found) {
+        val list = r.places; val here = r.here; val area = r.area
+        val country = area?.country?.takeIf { it.isNotEmpty() }?.let { java.util.Locale("", it).displayCountry }
+        val title = when (r.scope) {
+            NavPick.Scope.CITY -> "在${area?.locality?.ifEmpty { null } ?: area?.admin ?: "附近"}找到 ${list.size} 个「$q」"
+            NavPick.Scope.COUNTRY -> "在${country ?: "国内"}找到 ${list.size} 个「$q」"
+            NavPick.Scope.WORLD -> if (country != null) "${country}没找到「$q」，下面是其他地方的" else "定位不到，不知道你在哪个国家；全世界找到 ${list.size} 个「$q」"
+        }
         val items = list.take(10).map { p ->
             val km = here?.let { "  ·  " + NavText.distance(NavMap.greatCircle(it, p.point).toInt()) }.orEmpty()
             val addr = p.address.ifBlank { p.name }
             (if (p.name != q && !addr.contains(p.name)) "${p.name}\n$addr" else addr) + km
         }
         AlertDialog.Builder(this)
-            .setTitle("${where}找到 ${list.size} 个「$q」")
+            .setTitle(title)
             .setItems(items.toTypedArray()) { _, i -> confirmNav(placeDest(q, list[i])) }
             .setNegativeButton("取消", null)
             .show()
