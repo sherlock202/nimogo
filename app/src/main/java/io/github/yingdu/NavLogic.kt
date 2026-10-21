@@ -260,12 +260,39 @@ object NavArrive {
     }
 }
 
-/** 地名查出好几个地方时选哪个：离当前位置最近的（「上野」在别的国家也有）。 */
+/** 地名查到的一个地点（从系统地理编码的结果转过来）。 */
+data class NavPlace(val point: NavPoint, val name: String, val address: String,
+                    val locality: String = "", val admin: String = "", val country: String = "")
+
+/** 当前所在的城市、都道府县 / 州、国家（ISO 代码）。 */
+data class NavArea(val locality: String, val admin: String, val country: String)
+
+/**
+ * 同名地点怎么挑（「上野」在别的地方、别的国家也有）：
+ * 先找所在城市里的（同一个市区町村，或同一个都道府县 / 州且在 60 公里内），没有再找本国的，再没有才用全世界的；
+ * 同一范围里有好几个时，按离当前位置的远近排好，让用户自己选。
+ */
 object NavPick {
-    fun best(candidates: List<NavPoint>, near: NavPoint?): Int {
-        if (candidates.isEmpty()) return -1
-        if (near == null) return 0
-        return candidates.indices.minByOrNull { NavMap.greatCircle(near, candidates[it]) } ?: 0
+    enum class Scope { CITY, COUNTRY, WORLD }
+
+    /** 200 米以内的当作同一个地点（同一个地名常常查出好几条几乎一样的结果）。 */
+    fun dedupe(list: List<NavPlace>): List<NavPlace> {
+        val out = ArrayList<NavPlace>()
+        for (p in list) if (out.none { NavMap.greatCircle(it.point, p.point) < 200 }) out.add(p)
+        return out
+    }
+
+    fun choose(found: List<NavPlace>, here: NavPoint?, area: NavArea?): Pair<Scope, List<NavPlace>> {
+        val all = dedupe(found).let { l -> if (here == null) l else l.sortedBy { NavMap.greatCircle(here, it.point) } }
+        if (here == null || area == null) return Scope.WORLD to all
+        val city = all.filter {
+            (area.locality.isNotEmpty() && it.locality == area.locality) ||
+                (area.admin.isNotEmpty() && it.admin == area.admin && NavMap.greatCircle(here, it.point) <= 60_000)
+        }
+        if (city.isNotEmpty()) return Scope.CITY to city
+        val country = all.filter { area.country.isNotEmpty() && it.country.equals(area.country, true) }
+        if (country.isNotEmpty()) return Scope.COUNTRY to country
+        return Scope.WORLD to all
     }
 
     /** 离这么远（米）就提醒「可能找错了地方」。 */

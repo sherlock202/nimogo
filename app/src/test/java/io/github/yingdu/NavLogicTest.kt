@@ -270,17 +270,33 @@ class NavJunctionsTest {
 }
 
 class NavPickTest {
-    @Test fun nearestOfSameName() {
-        val tokyo = NavPoint(35.681, 139.767)
-        val far = NavPoint(-23.55, -46.63)                // 地球另一边的同名地点
-        val ueno = NavPoint(35.7138, 139.7773)
-        assertEquals(1, NavPick.best(listOf(far, ueno), tokyo))
-        assertEquals(0, NavPick.best(listOf(far, ueno), null))
-        assertEquals(-1, NavPick.best(emptyList(), tokyo))
-        assertEquals(3_800.0, NavMap.greatCircle(tokyo, ueno), 200.0)
-        assertTrue(NavMap.greatCircle(tokyo, far) > 15_000_000)
-        assertTrue(NavPick.suspicious(NavMap.greatCircle(tokyo, far), NavMode.WALKING))
-        assertFalse(NavPick.suspicious(NavMap.greatCircle(tokyo, ueno), NavMode.WALKING))
+    private val tokyo = NavPoint(35.681, 139.767)
+    private val here = NavArea("千代田区", "東京都", "JP")
+    private val uenoTokyo = NavPlace(NavPoint(35.7138, 139.7773), "上野", "日本、東京都台東区上野", "台東区", "東京都", "JP")
+    private val uenoTokyo2 = NavPlace(NavPoint(35.7139, 139.7774), "上野", "日本、東京都台東区上野", "台東区", "東京都", "JP")
+    private val uenoMie = NavPlace(NavPoint(34.768, 136.130), "上野", "日本、三重県伊賀市上野", "伊賀市", "三重県", "JP")
+    private val uenoGunma = NavPlace(NavPoint(36.08, 138.78), "上野村", "日本、群馬県多野郡上野村", "上野村", "群馬県", "JP")
+    private val far = NavPlace(NavPoint(-23.55, -46.63), "Ueno", "Brazil", "São Paulo", "SP", "BR")
+
+    @Test fun cityFirstThenCountryThenWorld() {
+        // 东京都内有：只给东京的（重复的合并）
+        NavPick.choose(listOf(far, uenoMie, uenoTokyo, uenoTokyo2), tokyo, here).let { (scope, l) ->
+            assertEquals(NavPick.Scope.CITY, scope); assertEquals(listOf(uenoTokyo), l)
+        }
+        // 东京都内没有：本国的，按远近排
+        NavPick.choose(listOf(far, uenoMie, uenoGunma), tokyo, here).let { (scope, l) ->
+            assertEquals(NavPick.Scope.COUNTRY, scope); assertEquals(listOf(uenoGunma, uenoMie), l)
+        }
+        // 本国也没有：全世界
+        NavPick.choose(listOf(far), tokyo, here).let { (scope, l) -> assertEquals(NavPick.Scope.WORLD, scope); assertEquals(1, l.size) }
+        // 不知道当前位置：不筛
+        assertEquals(NavPick.Scope.WORLD, NavPick.choose(listOf(far, uenoMie), null, null).first)
+    }
+
+    @Test fun distances() {
+        assertEquals(3_800.0, NavMap.greatCircle(tokyo, uenoTokyo.point), 200.0)
+        assertTrue(NavMap.greatCircle(tokyo, far.point) > 15_000_000)
+        assertTrue(NavPick.suspicious(NavMap.greatCircle(tokyo, far.point), NavMode.WALKING))
+        assertFalse(NavPick.suspicious(NavMap.greatCircle(tokyo, uenoTokyo.point), NavMode.WALKING))
     }
 }
-

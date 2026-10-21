@@ -1873,14 +1873,36 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 if (q.isEmpty()) return@setPositiveButton
                 toast("正在查找…")
                 Thread {
-                    val d = runCatching { NavResolve.geocode(applicationContext, NavDest(q, query = q), navHere()) }.getOrNull()
+                    val here = navHere()
+                    val (scope, list) = runCatching { NavResolve.search(applicationContext, q, here) }.getOrDefault(NavPick.Scope.WORLD to emptyList())
                     uiHandler.post {
                         if (isFinishing || isDestroyed) return@post
-                        if (d == null) toast("没找到「$q」，换个写法或从 Google Maps 共享") else confirmNav(d)
+                        when (list.size) {
+                            0 -> toast("没找到「$q」，换个写法或从 Google Maps 共享")
+                            1 -> confirmNav(placeDest(q, list[0]))
+                            else -> pickNavPlace(q, scope, list, here)
+                        }
                     }
                 }.start()
             }
             .setNegativeButton("取消", null).show()
+    }
+
+    private fun placeDest(q: String, p: NavPlace) = NavDest(p.name.ifBlank { q }, p.point.lat, p.point.lng, query = q, address = p.address)
+
+    /** 同名的地点有好几个：按远近列出来让用户选。 */
+    private fun pickNavPlace(q: String, scope: NavPick.Scope, list: List<NavPlace>, here: NavPoint?) {
+        val where = when (scope) { NavPick.Scope.CITY -> "在你所在的城市"; NavPick.Scope.COUNTRY -> "在国内"; NavPick.Scope.WORLD -> "" }
+        val items = list.take(10).map { p ->
+            val km = here?.let { "  ·  " + NavText.distance(NavMap.greatCircle(it, p.point).toInt()) }.orEmpty()
+            val addr = p.address.ifBlank { p.name }
+            (if (p.name != q && !addr.contains(p.name)) "${p.name}\n$addr" else addr) + km
+        }
+        AlertDialog.Builder(this)
+            .setTitle("${where}找到 ${list.size} 个「$q」")
+            .setItems(items.toTypedArray()) { _, i -> confirmNav(placeDest(q, list[i])) }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun buildNav(): View {

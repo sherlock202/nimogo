@@ -397,22 +397,42 @@ object NavResolve {
         return if (dest.ready) dest else geocode(ctx, dest, near)
     }
 
-    /**
-     * 只有地名 / 地址：交给系统地理编码。同名的地方可能有好几个（「上野」在别的国家也有），
-     * 知道当前位置时先在附近（约 50 公里内）找，找不到再全世界找，取离当前位置最近的。
-     */
-    @Suppress("DEPRECATION")
+    /** 只有地名 / 地址：交给系统地理编码，按 [NavPick] 的规则取最合适的一个（共享过来的链接用这个；手动输入的用 [search] 让用户选）。 */
     fun geocode(ctx: Context, d: NavDest, near: NavPoint? = null): NavDest? {
         if (d.ready) return d
         val q = d.query?.trim().orEmpty().ifEmpty { d.title }
-        if (q.isEmpty() || !Geocoder.isPresent()) return null
+        val p = search(ctx, q, near).second.firstOrNull() ?: return null
+        return d.copy(lat = p.point.lat, lng = p.point.lng, address = p.address)
+    }
+
+    /** 当前位置所在的城市、都道府县 / 州、国家。 */
+    @Suppress("DEPRECATION")
+    fun areaOf(ctx: Context, here: NavPoint): NavArea? {
+        if (!Geocoder.isPresent()) return null
+        val a = runCatching { Geocoder(ctx).getFromLocation(here.lat, here.lng, 1)?.firstOrNull() }.getOrNull() ?: return null
+        return NavArea(a.locality.orEmpty(), a.adminArea.orEmpty(), a.countryCode.orEmpty())
+    }
+
+    /**
+     * 查地名：先在所在城市找，再在本国找，最后全世界（规则见 [NavPick.choose]）。
+     * 系统地理编码一次最多给 10 个结果，所以分别在附近、本国（地名后面加上国名）、全世界各查一次再合起来。
+     */
+    @Suppress("DEPRECATION")
+    fun search(ctx: Context, q: String, here: NavPoint?): Pair<NavPick.Scope, List<NavPlace>> {
+        if (q.isEmpty() || !Geocoder.isPresent()) return NavPick.Scope.WORLD to emptyList()
         val g = Geocoder(ctx)
-        var list = near?.let { n ->
-            runCatching { g.getFromLocationName(q, 5, n.lat - 0.45, n.lng - 0.55, n.lat + 0.45, n.lng + 0.55) }.getOrNull()
-        }.orEmpty()
-        if (list.isEmpty()) list = runCatching { g.getFromLocationName(q, 5) }.getOrNull().orEmpty()
-        val a = list.getOrNull(NavPick.best(list.map { NavPoint(it.latitude, it.longitude) }, near)) ?: return null
-        return d.copy(lat = a.latitude, lng = a.longitude, address = runCatching { a.getAddressLine(0) }.getOrNull())
+        val area = here?.let { areaOf(ctx, it) }
+        val found = ArrayList<android.location.Address>()
+        if (here != null) runCatching { g.getFromLocationName(q, 10, here.lat - 0.5, here.lng - 0.6, here.lat + 0.5, here.lng + 0.6) }.getOrNull()?.let { found += it }
+        val countryName = runCatching { java.util.Locale("", area?.country.orEmpty()).displayCountry }.getOrNull().orEmpty()
+        if (area != null && countryName.isNotEmpty()) runCatching { g.getFromLocationName("$q $countryName", 10) }.getOrNull()?.let { found += it }
+        runCatching { g.getFromLocationName(q, 10) }.getOrNull()?.let { found += it }
+        val places = found.map { a ->
+            val addr = runCatching { a.getAddressLine(0) }.getOrNull().orEmpty()
+            NavPlace(NavPoint(a.latitude, a.longitude), a.featureName?.takeIf { it.isNotBlank() && it != a.subThoroughfare } ?: q, addr,
+                a.locality.orEmpty(), a.adminArea.orEmpty(), a.countryCode.orEmpty())
+        }
+        return NavPick.choose(places, here, area)
     }
 
     /** 跟着 maps.app.goo.gl 这类短链接跳转（最多 6 次），返回最后的地址。 */
