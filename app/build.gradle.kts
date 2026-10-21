@@ -14,8 +14,8 @@ android {
         minSdk = 26
         // targetSdk 保持 34：萤读的界面没有适配 Android 15 起强制的全面屏（edge-to-edge），升上去状态栏会盖住内容
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.0.4"
+        versionCode = 9
+        versionName = "1.0.5"
     }
 
     // 固定的签名（GitHub Actions 里用仓库 Secrets 传进来）：每次编译签名相同，新版可以直接覆盖安装、设置不丢
