@@ -946,6 +946,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         LocalAsr.appCtx = applicationContext
         LocalAsr.log = { log(it) }
         LocalAsr.onChanged = { notifyUi(); if (LocalAsr.ready() && asrLocal) memKickTranscribe() }
+        io.execute { runCatching { FollowModel.cleanupOld(this) } }
         GlassesFonts.init(this)
         steps = StepsProvider(this) { if (appMode == AppMode.DASHBOARD) pushDashboard(force = false); notifyUi() }
         client = NimoClient(this, this)
@@ -1211,9 +1212,8 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     private val followPrefs by lazy { getSharedPreferences("follow", MODE_PRIVATE) }
     val followLog by lazy { FollowLog(java.io.File(filesDir, "follow")) }
-    var followModel: FollowModel
-        get() = runCatching { FollowModel.valueOf(followPrefs.getString("model", FollowModel.SENSE_VOICE.name)!!) }.getOrDefault(FollowModel.SENSE_VOICE)
-        set(v) { followPrefs.edit().putString("model", v.name).apply(); notifyUi() }
+    /** 跟读用的模型（2026-10-21 实测后统一用 SenseVoice，和「手机离线」转文字共用）。 */
+    val followModel get() = FollowModel.SENSE_VOICE
     /** 正在念的行放在倒数第几行（1 = 最后一行，0 = 中间）。 */
     var followFromBottom: Int
         get() = followPrefs.getInt("fromBottom", 2)
@@ -1288,8 +1288,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         followDecoder = OpusDecoder(NimoMic.SAMPLE_RATE, 1)
         val onText: (String, Boolean, Long, Long) -> Unit = { text, final, audioAt, decodeMs -> onFollowText(text, final, audioAt, decodeMs) }
         val onErr: (String) -> Unit = { err -> followStatus = err; log("跟读：$err"); stopFollow(err) }
-        followAsr = (if (m == FollowModel.SENSE_VOICE) FollowSenseAsr(followLog, onText, onErr) else FollowAsr(this, m, followLog, onText, onErr))
-            .also { it.start() }
+        followAsr = FollowSenseAsr(followLog, onText, onErr).also { it.start() }
         followWantsMic = true; glassesMic(true)
         followOn = true
         followStatus = "正在听…"

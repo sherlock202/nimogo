@@ -4,44 +4,29 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import com.k2fsa.sherpa.onnx.FeatureConfig
-import com.k2fsa.sherpa.onnx.OnlineModelConfig
-import com.k2fsa.sherpa.onnx.OnlineRecognizer
-import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
-import com.k2fsa.sherpa.onnx.OnlineStream
-import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
-import com.k2fsa.sherpa.onnx.OnlineZipformer2CtcModelConfig
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
 
 /**
- * 语音跟读用的离线识别模型（sherpa-onnx，Apache-2.0）。第一次用时从 sherpa-onnx 的 GitHub 发布页下载 .tar.bz2，
+ * 离线识别模型（sherpa-onnx，Apache-2.0）。第一次用时从 sherpa-onnx 的 GitHub 发布页下载 .tar.bz2，
  * 边下边解压，只留需要的文件，放在 files/asr/<名字>/。识别全在手机上做，不联网。
  */
-enum class FollowModel(val zh: String, val mb: Int, val archive: String, val files: List<String>, val streaming: Boolean = true) {
-    ZH_SMALL("中文（小，约 21 MB）", 21, "sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01",
-        listOf("model.int8.onnx", "tokens.txt")),
-    ZH_EN("中英（大，约 134 MB）", 134, "sherpa-onnx-x-asr-160ms-streaming-zipformer-transducer-zh-en-int8-2026-06-05",
-        listOf("encoder.int8.onnx", "decoder.onnx", "joiner.int8.onnx", "tokens.txt")),
-    /** 非流式（一句说完再转）：全天记忆、实时字幕的「手机离线」用。中、英、日、韩、粤语。 */
-    SENSE_VOICE("中日英 SenseVoice（约 166 MB，和「手机离线」转文字共用）", 166, "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09",
-        listOf("model.int8.onnx", "tokens.txt"), streaming = false);
+enum class FollowModel(val zh: String, val mb: Int, val archive: String, val files: List<String>) {
+    /** 非流式（一段声音整段转）：语音跟读、全天记忆和实时字幕的「手机离线」共用。中、英、日、韩、粤语。 */
+    SENSE_VOICE("SenseVoice（中日英，约 166 MB）", 166, "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09",
+        listOf("model.int8.onnx", "tokens.txt"));
 
     val url get() = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$archive.tar.bz2"
     fun folder(ctx: Context) = File(ctx.filesDir, "asr/$name")
     fun ready(ctx: Context) = File(folder(ctx), ".ok").isFile && files.all { File(folder(ctx), it).isFile }
 
-    fun config(ctx: Context, threads: Int): OnlineRecognizerConfig {
-        val d = folder(ctx).absolutePath
-        val model = when (this) {
-            ZH_SMALL -> OnlineModelConfig(zipformer2Ctc = OnlineZipformer2CtcModelConfig("$d/model.int8.onnx"),
-                tokens = "$d/tokens.txt", numThreads = threads)
-            ZH_EN -> OnlineModelConfig(transducer = OnlineTransducerModelConfig("$d/encoder.int8.onnx", "$d/decoder.onnx", "$d/joiner.int8.onnx"),
-                tokens = "$d/tokens.txt", numThreads = threads)
-            SENSE_VOICE -> throw IllegalStateException("SenseVoice 不是流式模型")
+    companion object {
+        /** 测试版用过的流式模型（2026-10-21 实测后统一成 SenseVoice）：删掉，腾出空间。 */
+        fun cleanupOld(ctx: Context) {
+            for (old in listOf("ZH_SMALL", "ZH_EN")) File(ctx.filesDir, "asr/$old").takeIf { it.exists() }?.deleteRecursively()
         }
-        return OnlineRecognizerConfig(featConfig = FeatureConfig(16_000, 80), modelConfig = model, enableEndpoint = true)
     }
 
     /** 下载并解压（阻塞，后台线程调用）。progress(已下载字节, 总字节)；cancel 返回 true 时中止。 */
@@ -133,7 +118,7 @@ class FollowLog(private val dir: File) {
     fun latest(): File? = file?.takeIf { it.isFile } ?: dir.listFiles()?.filter { it.name.startsWith("follow-") }?.maxByOrNull { it.name }
 }
 
-/** 跟读用的识别器（流式模型，或者 SenseVoice 滑动窗口）。 */
+/** 跟读用的识别器。 */
 interface FollowRecognizer {
     val loaded: Boolean
     val totalAudioMs: Long
@@ -225,97 +210,6 @@ class FollowSenseAsr(
     override fun stop() { exec.shutdown() }
 }
 
-/**
- * 离线流式识别：眼镜麦克风的声音（16 kHz）一段一段送进来，后台线程解码，文字有变化就回调（主线程）。
- * 记下每段声音收到的时间，回调时带上「这段文字对应的声音是什么时候收到的」，用来算识别延迟。
- */
-class FollowAsr(
-    private val ctx: Context,
-    private val model: FollowModel,
-    private val log: FollowLog,
-    private val onText: (text: String, final: Boolean, audioAt: Long, decodeMs: Long) -> Unit,
-    private val onError: (String) -> Unit,
-) : FollowRecognizer {
-    private val exec = Executors.newSingleThreadExecutor { r -> Thread(r, "follow-asr").apply { priority = Thread.MAX_PRIORITY - 1 } }
-    private val main = Handler(Looper.getMainLooper())
-    private var rec: OnlineRecognizer? = null
-    private var stream: OnlineStream? = null
-    @Volatile private var queued = 0
-    @Volatile override var loaded = false; private set
-    private var lastText = ""
-    private var segments = 0
-
-    // 统计（每 5 秒写一次日志）
-    private var statAudioMs = 0L
-    private var statDecodeMs = 0L
-    private var statMaxQueue = 0
-    private var statAt = System.currentTimeMillis()
-    override var totalAudioMs = 0L; private set
-    override var totalDecodeMs = 0L; private set
-
-    override fun start() = exec.execute {
-        val t0 = System.currentTimeMillis()
-        try {
-            val threads = if (Runtime.getRuntime().availableProcessors() >= 6) 2 else 1
-            rec = OnlineRecognizer(null, model.config(ctx, threads))
-            stream = rec!!.createStream()
-            loaded = true
-            log.d("识别", "模型 ${model.name} 加载完成，用了 ${System.currentTimeMillis() - t0} ms，线程 $threads，CPU 核数 ${Runtime.getRuntime().availableProcessors()}")
-        } catch (e: Throwable) {
-            log.d("错误", "模型加载失败：$e")
-            main.post { onError("识别模型加载失败：${e.message ?: e.javaClass.simpleName}") }
-        }
-    }
-
-    /** 送一段声音（-1..1 的浮点，16 kHz）。receivedAt：这段声音最后一帧从蓝牙收到的时间。 */
-    override fun feed(samples: FloatArray, receivedAt: Long) {
-        queued++
-        if (queued > statMaxQueue) statMaxQueue = queued
-        exec.execute {
-            queued--
-            val r = rec ?: return@execute
-            val s = stream ?: return@execute
-            val t0 = System.nanoTime()
-            try {
-                s.acceptWaveform(samples, 16_000)
-                while (r.isReady(s)) r.decode(s)
-                val text = r.getResult(s).text.trim()
-                val endpoint = r.isEndpoint(s)
-                val ms = (System.nanoTime() - t0) / 1_000_000
-                val audioMs = samples.size * 1000L / 16_000
-                statAudioMs += audioMs; statDecodeMs += ms; totalAudioMs += audioMs; totalDecodeMs += ms
-                if (text != lastText) {
-                    lastText = text
-                    main.post { onText(text, false, receivedAt, ms) }
-                }
-                if (endpoint) {
-                    if (text.isNotEmpty()) {
-                        segments++
-                        val t = text
-                        main.post { onText(t, true, receivedAt, ms) }
-                    }
-                    r.reset(s); lastText = ""
-                }
-                val now = System.currentTimeMillis()
-                if (now - statAt >= 5_000) {
-                    log.d("识别", "最近 ${(now - statAt) / 1000} 秒：声音 ${statAudioMs} ms，解码 ${statDecodeMs} ms（实时率 %.2f），最多排队 $statMaxQueue 段，已识别 $segments 句".format(
-                        if (statAudioMs > 0) statDecodeMs.toDouble() / statAudioMs else 0.0))
-                    statAt = now; statAudioMs = 0; statDecodeMs = 0; statMaxQueue = queued
-                }
-            } catch (e: Throwable) {
-                log.d("错误", "识别出错：$e")
-            }
-        }
-    }
-
-    override fun stop() {
-        exec.execute {
-            runCatching { stream?.release(); rec?.release() }
-            stream = null; rec = null; loaded = false
-        }
-        exec.shutdown()
-    }
-}
 
 /**
  * 手机离线转文字（SenseVoice，非流式，一句一句转）：全天记忆、实时字幕的转文字服务选「手机离线」时用。

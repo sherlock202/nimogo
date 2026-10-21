@@ -1353,13 +1353,6 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val followT = Toggle { service?.toggleFollow(); refreshNow() }
         followRow.accessory(followT.root)
         fl.addRow(followRow.root)
-        val models = listOf(FollowModel.SENSE_VOICE, FollowModel.ZH_SMALL, FollowModel.ZH_EN)
-        val modelSeg = Seg(listOf("SenseVoice", "中文小", "中英大")) { i ->
-            val s = service ?: return@Seg
-            if (s.followOn) toast("先关掉跟读再换模型") else s.followModel = models[i]
-            refreshNow()
-        }
-        fl.addRow(FrameLayout(this).apply { setPadding(dp(14), dp(10), dp(14), dp(10)); addView(modelSeg.root) })
         val rowChoices = listOf(1, 2, 0)
         val rowSeg = Seg(listOf("念的行在最后一行", "倒数第二行", "中间")) { i -> service?.followFromBottom = rowChoices[i]; refreshNow() }
         fl.addRow(FrameLayout(this).apply { setPadding(dp(14), dp(4), dp(14), dp(10)); addView(rowSeg.root) })
@@ -1374,12 +1367,12 @@ class MainActivity : Activity(), ReaderService.UiListener {
         }
         fl.addRow(logRow.root)
         page.addView(fl)
-        page.addView(note("识别在手机上离线做，第一次要下载识别模型（建议连 Wi-Fi）。SenseVoice 认中日英，和全天记忆、实时字幕的「手机离线」共用一个模型；" +
-            "「中文小」「中英大」是边说边出字的模型，只认中文 / 中英。讲稿和识别结果按拼音对齐，繁体、简体、同音字都对得上；" +
-            "跳过几句也能跟上，说讲稿以外的话会停在原地。跟读时眼镜用文字显示（比图片快），提词器顶部状态行显示听到的字。每一步都记在跟读日志里。").apply { setPadding(dp(4), dp(8), dp(4), 0) })
+        page.addView(note("识别在手机上离线做（SenseVoice，中日英都认），第一次要下载模型（约 166 MB，建议连 Wi-Fi），" +
+            "和全天记忆、实时字幕的「手机离线」共用。讲稿和识别结果按拼音对齐，繁体、简体、同音字都对得上；" +
+            "从这一屏哪里开始念都能找到，跳过几句也能跟上，说讲稿以外的话会停在原地；跟丢了用戒指翻一下，从那一屏重新找。" +
+            "跟读时眼镜用文字显示，提词器顶部状态行显示听到的字。每一步都记在跟读日志里。").apply { setPadding(dp(4), dp(8), dp(4), 0) })
         onUpdate(Sub.READ) { s ->
             followT.set(s.followOn || s.followDownloading)
-            modelSeg.select(models.indexOf(s.followModel))
             rowSeg.select(rowChoices.indexOf(s.followFromBottom).coerceAtLeast(0))
             val img = s.textIntervalMs()?.let { "眼镜收一次文字约 $it ms" }
             followRow.desc(when {
