@@ -345,10 +345,11 @@ class ReaderService : Service(), NimoListener, AppHost {
     var dashHideMode: Int
         get() = if (prefs.getInt("dashHide36", HIDE_SCREEN_OFF) == HIDE_HOME) HIDE_HOME else HIDE_SCREEN_OFF
         set(v) { prefs.edit().putInt("dashHide36", v).apply(); notifyUi() }
-    /** 关屏收起时：抬头就开屏显示看板（从第一屏开始），低头再关。 */
-    var dashHeadWake: Boolean
-        get() = prefs.getBoolean("dashHeadWake", true)
-        set(v) { prefs.edit().putBoolean("dashHeadWake", v).apply(); notifyUi() }
+    /**
+     * 抬头显示看板：跟着眼镜自己的「抬头显示」设置（官方 app 和 NimoGo 里改的是同一个），不再单独设置（2026-10-22）。
+     * 开着：抬头开屏显示看板（从第一屏开始），低头再关。关着：按右镜腿显示看板，再按一下收起。
+     */
+    val dashHeadWake: Boolean get() = headUpDisplay == true
     private val headWakeOn get() = dashHeadWake && dashHideMode == HIDE_SCREEN_OFF
     /** 是萤读把屏幕关掉的（恢复显示时要打开）。 */
     private var screenOffByUs = false
@@ -399,7 +400,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         } else {
             screenOffByUs = true; client.screenOff(true)
             main.postDelayed(standbyRefresh, 300)
-            log("$why（关屏；" + (if (dashHeadWake) "抬头再看" else "手机上点「显示看板」再看") + "）")
+            log("$why（关屏；" + (if (dashHeadWake) "抬头再看" else "按右镜腿再看") + "）")
         }
         updateNotification(); notifyUi()
     }
@@ -2219,14 +2220,22 @@ class ReaderService : Service(), NimoListener, AppHost {
                 // 但左击会报（官方 app 里左击设成「切换看板应用」时）——点一下就叫回看板
                 val click = input == GlassesInput.CLICK_LEFT || input == GlassesInput.CLICK_RIGHT ||
                     input == GlassesInput.DOUBLE_LEFT || input == GlassesInput.DOUBLE_RIGHT
-                if (click) wakeFromHome("主界面上点了镜腿：显示看板")
+                if (click) {
+                    // 关屏收起（页面还开着）：点镜腿直接开屏显示看板（眼镜「抬头显示」关着时就靠右镜腿叫出来）
+                    if (screenOffByUs && client.enteredAppId() == NimoProtocol.APP_ID_NAV && !dashAtHome && !showingPopup) {
+                        log("点了镜腿：显示看板"); wakeDashboard()
+                    } else wakeFromHome("主界面上点了镜腿：显示看板")
+                }
                 return
             }
         }
         if (appMode == AppMode.DASHBOARD) {
             when (input) {
-                GlassesInput.CLICK_RIGHT, GlassesInput.DOUBLE_RIGHT -> dashFlip(1)
-                GlassesInput.CLICK_LEFT, GlassesInput.DOUBLE_LEFT -> dashFlip(-1)
+                // 眼镜「抬头显示」关着时：右单击收起看板（再按一下显示），左单击翻到下一屏
+                GlassesInput.CLICK_RIGHT -> if (!dashHeadWake) hideDashboard("右镜腿：收起看板") else dashFlip(1)
+                GlassesInput.DOUBLE_RIGHT -> dashFlip(1)
+                GlassesInput.CLICK_LEFT -> dashFlip(if (dashHeadWake) -1 else 1)
+                GlassesInput.DOUBLE_LEFT -> dashFlip(-1)
                 GlassesInput.LONG_PRESS -> { log("手动刷新"); refreshDashboard(forceWeather = true) }
                 else -> {}
             }
