@@ -92,3 +92,52 @@ object NavMap {
         return SCALES.firstOrNull { it >= want } ?: SCALES.last()
     }
 }
+
+/**
+ * 手机指南针 → 人面朝的方向。手机竖着放在胸前口袋时，屏幕垂直于地面，背面（或屏幕）朝着人的正前方；
+ * 手机朝向和人的朝向差多少度（0 度左右或 180 度左右，看手机怎么放），走路时用 GPS 方向自动学出来。
+ * 学到的差值前后一致才用；手机换了放法，几步之内就会发现对不上，先不用，重新学。
+ */
+class NavFacing(offset: Double? = null) {
+    private var sx = 0.0
+    private var sy = 0.0
+    var samples = 0; private set
+
+    init {
+        // 上次学到的差值：先当作有把握，但只要对不上就先不用
+        if (offset != null) { val r = offset * PI / 180; sx = cos(r) * 0.9; sy = sin(r) * 0.9; samples = 5 }
+    }
+
+    /** 连续对不上几次了（手机可能换了放法）。 */
+    private var misses = 0
+
+    /** 走路时：GPS 方向 course 和手机方向 phone 同时有，学两者的差。 */
+    fun learn(course: Double, phone: Double) {
+        val diff = ((course - phone) % 360 + 360) % 360
+        // 已经学会了、却差了 60 度以上：偶尔一次当作噪声跳过；连续 3 次就是手机换了放法，从头学
+        if (samples >= 5 && hypot(sx, sy) > 0.5 && NavMap.angleDiff(diff, offset) > 60) {
+            if (++misses < 3) return
+            sx = 0.0; sy = 0.0; samples = 0
+        }
+        misses = 0
+        val d = diff * PI / 180
+        val a = if (samples < 10) 1.0 / (samples + 1) else 0.1
+        sx += (cos(d) - sx) * a; sy += (sin(d) - sy) * a; samples++
+    }
+
+    /** 学到的差值够一致（样本里方向差的离散度小）。 */
+    val confident get() = samples >= 5 && misses == 0 && hypot(sx, sy) > 0.8
+    val offset: Double get() = (atan2(sy, sx) * 180 / PI + 360) % 360
+
+    /** 人面朝的方向（度，正北 0）；还没把握时为 null。 */
+    fun facing(phone: Double): Double? = if (confident) (phone + offset) % 360 else null
+
+    companion object {
+        /** 旋转矩阵（手机坐标 → 东/北/上，行优先 3×3）中，手机屏幕法线（z 轴）的水平方向；手机平放时没法用，返回 null。 */
+        fun phoneHeading(r: FloatArray): Double? {
+            val e = r[2].toDouble(); val n = r[5].toDouble()
+            if (hypot(e, n) < 0.5) return null
+            return (atan2(e, n) * 180 / PI + 360) % 360
+        }
+    }
+}

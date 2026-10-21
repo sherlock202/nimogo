@@ -5,6 +5,10 @@ import android.app.Application
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.Geocoder
 import android.os.Handler
 import android.os.IBinder
@@ -59,13 +63,90 @@ object NavGuide {
     var onMapChanged: (() -> Unit)? = null
     private var locProvider: RoadSnappedLocationProvider? = null
 
-    /** 走路的方向（度，正北 0），只在走动时才有；站着不动时为 null（手机在口袋里，指南针不可靠，所以不用）。 */
+    /** 走路的方向（度，正北 0，来自 GPS），只在走动时才有；站着不动时为 null。认路口用这个。 */
     var course: Double? = null; private set
     private var courseAt = 0L
 
+    /**
+     * 人面朝的方向（度，正北 0，来自手机指南针），站着原地转身也会变；手机放在胸前口袋时才准。
+     * 走路时先用 GPS 方向学会「手机朝向 → 人的朝向」，学会之前为 null。小地图上的三角用这个。
+     */
+    var facing: Double? = null; private set
+
     private fun takeCourse(l: android.location.Location) {
-        if (l.hasBearing() && l.hasSpeed() && l.speed >= 0.6f) { course = l.bearing.toDouble(); courseAt = System.currentTimeMillis() }
-        else if (System.currentTimeMillis() - courseAt > 6_000) course = null
+        if (l.hasBearing() && l.hasSpeed() && l.speed >= 0.6f) {
+            course = l.bearing.toDouble(); courseAt = System.currentTimeMillis()
+            learnFacing(l)
+        } else if (System.currentTimeMillis() - courseAt > 6_000) course = null
+    }
+
+    // ---------- 指南针 ----------
+
+    private var sensors: SensorManager? = null
+    private var prefs: android.content.SharedPreferences? = null
+    private var facingModel = NavFacing()
+    private var wasConfident = false
+    private var phone: Double? = null
+    private var phoneAt = 0L
+    private var px = 0.0; private var py = 0.0; private var hasPhone = false
+    private val rot = FloatArray(9)
+
+    private val compass = object : SensorEventListener {
+        override fun onSensorChanged(e: SensorEvent) {
+            runCatching { SensorManager.getRotationMatrixFromVector(rot, e.values) }.onFailure { return }
+            val h = NavFacing.phoneHeading(rot)
+            if (h == null) { phone = null; hasPhone = false; updateFacing(); return }
+            val r = Math.toRadians(h)
+            if (!hasPhone) { px = Math.cos(r); py = Math.sin(r); hasPhone = true }
+            else { px += (Math.cos(r) - px) * 0.25; py += (Math.sin(r) - py) * 0.25 }   // 平滑掉走路时的晃动
+            phone = (Math.toDegrees(Math.atan2(py, px)) + 360) % 360; phoneAt = System.currentTimeMillis()
+            updateFacing()
+        }
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    }
+
+    /** 走路、GPS 方向可靠时，学手机朝向和人的朝向差多少。 */
+    private fun learnFacing(l: android.location.Location) {
+        val p = phone ?: return
+        if (System.currentTimeMillis() - phoneAt > 1_000 || l.speed < 0.8f) return
+        if (l.hasBearingAccuracy() && l.bearingAccuracyDegrees > 30f) return
+        facingModel.learn(l.bearing.toDouble(), p)
+        if (facingModel.confident != wasConfident) {
+            wasConfident = facingModel.confident
+            note(if (wasConfident) "指南针：已对准（手机朝向差 ${facingModel.offset.toInt()} 度）" else "指南针：和走路方向对不上，重新学")
+        }
+        if (facingModel.samples % 10 == 0) saveFacing()
+        updateFacing()
+    }
+
+    /** 方向变了 10 度以上才更新（免得指南针抖动让眼镜一直重画）。 */
+    private fun updateFacing() {
+        val f = phone?.let { facingModel.facing(it) }
+        val old = facing
+        if (f == null) { if (old != null) { facing = null; onMapChanged?.invoke() }; return }
+        if (old == null || NavMap.angleDiff(old, f) >= 10.0) { facing = f; onMapChanged?.invoke() }
+    }
+
+    private fun saveFacing() {
+        if (facingModel.confident) prefs?.edit()?.putFloat("facing_offset", facingModel.offset.toFloat())?.apply()
+    }
+
+    private fun startCompass(app: Application) {
+        if (sensors != null) return
+        prefs = app.getSharedPreferences("nav_compass", Context.MODE_PRIVATE)
+        facingModel = NavFacing(prefs?.takeIf { it.contains("facing_offset") }?.getFloat("facing_offset", 0f)?.toDouble())
+        wasConfident = facingModel.confident
+        val sm = app.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        val s = sm?.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        if (s == null) { note("这台手机没有指南针，只能走动时判断方向"); return }
+        sensors = sm
+        sm.registerListener(compass, s, SensorManager.SENSOR_DELAY_UI)
+    }
+
+    private fun stopCompass() {
+        saveFacing()
+        runCatching { sensors?.unregisterListener(compass) }
+        sensors = null; phone = null; hasPhone = false; facing = null
     }
 
     private val locListener = object : RoadSnappedLocationProvider.LocationListener {
@@ -95,11 +176,13 @@ object NavGuide {
         if (locProvider != null) return
         locProvider = runCatching { NavigationApi.getRoadSnappedLocationProvider(app) }.onFailure { note("拿不到位置：$it") }.getOrNull()
         runCatching { locProvider?.addLocationListener(locListener) }.onFailure { note("位置监听出错：$it") }
+        runCatching { startCompass(app) }.onFailure { note("指南针出错：$it") }
     }
 
     private fun stopLocation() {
         runCatching { locProvider?.removeLocationListener(locListener) }
         locProvider = null
+        runCatching { stopCompass() }
         here = null; route = emptyList(); course = null
     }
     val ready get() = navigator != null

@@ -171,3 +171,50 @@ class NavMapTest {
         assertEquals(8.0, NavMap.scaleFor(5000, 100), 0.0)
     }
 }
+
+class NavFacingTest {
+    @Test fun learnsPocketOffset() {
+        // 手机屏幕朝着身体：手机 z 轴朝后，和走路方向差 180 度
+        val f = NavFacing()
+        assertNull(f.facing(10.0))
+        for (c in listOf(90.0, 92.0, 88.0, 91.0)) f.learn(c, c + 180 + 5)
+        assertNull(f.facing(10.0))                        // 样本还不够
+        f.learn(90.0, 275.0)
+        assertTrue(f.confident)
+        assertEquals(175.0, f.offset, 2.0)
+        // 站着原地转向东北：手机朝西南（225 度附近）
+        assertEquals(45.0, f.facing(230.0)!!, 3.0)
+    }
+
+    @Test fun relearnsWhenPhoneMoved() {
+        val f = NavFacing(0.0)                            // 上次手机背面朝前
+        assertTrue(f.confident)
+        f.learn(0.0, 180.0)                               // 这次手机反过来放了
+        assertFalse(f.confident)
+        f.learn(0.0, 180.0); f.learn(0.0, 180.0)        // 连续 3 次对不上：从头学（这次算第 1 个样本）
+        repeat(3) { f.learn(0.0, 180.0) }
+        assertFalse(f.confident)
+        f.learn(0.0, 180.0)
+        assertTrue(f.confident)
+        assertEquals(180.0, f.offset, 5.0)
+        // 偶尔一次对不上（比如掏出手机看一眼）：跳过，不打乱学到的值
+        f.learn(0.0, 0.0)
+        assertFalse(f.confident)
+        f.learn(0.0, 181.0)
+        assertTrue(f.confident)
+        assertEquals(180.0, f.offset, 5.0)
+    }
+
+    @Test fun phoneHeadingFromRotationMatrix() {
+        // 手机竖直、屏幕朝北：z 轴 (东 0, 北 1, 上 0)
+        val north = floatArrayOf(1f, 0f, 0f, 0f, 0f, 1f, 0f, -1f, 0f)
+        assertEquals(0.0, NavFacing.phoneHeading(north)!!, 0.01)
+        // 屏幕朝东
+        val east = floatArrayOf(0f, 0f, 1f, 1f, 0f, 0f, 0f, 1f, 0f)
+        assertEquals(90.0, NavFacing.phoneHeading(east)!!, 0.01)
+        // 平放（z 轴朝上）：没法用
+        val flat = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+        assertNull(NavFacing.phoneHeading(flat))
+    }
+}
+
