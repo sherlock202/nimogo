@@ -1305,7 +1305,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         pushPage()
     }
 
-    fun stopFollow(reason: String) {
+    /** push = false：不重新发画面（眼镜刚退出页面时，发了会把页面又打开）。 */
+    fun stopFollow(reason: String, push: Boolean = true) {
         if (followDownloading) { followCancel = true; return }
         if (!followOn) return
         followOn = false
@@ -1322,7 +1323,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         followWantsMic = false; glassesMic(false)
         followStatus = "已停止（$reason）"
         log("跟读：停止（$reason）")
-        pushPage()
+        if (push) pushPage() else notifyUi()
     }
 
     /** 几秒没收到声音：记下来，再开一次麦克风（蓝牙偶尔丢了开麦的命令）。 */
@@ -2145,8 +2146,9 @@ class ReaderService : Service(), NimoListener, AppHost {
                 "，收起方式 ${if (dashHideMode == HIDE_HOME) "回主界面" else "关屏"}，抬头显示看板 ${if (dashHeadWake) "开" else "关"}，" +
                 "使用看板 ${if (dashEnabled) "开" else "关"}，眼镜页面 ${client.enteredAppId() ?: "主界面"}")
         if (input == GlassesInput.EXITED) {
-            // 眼镜退出了页面（长按右镜腿）：停止自动滚动，暂停显示
+            // 眼镜退出了页面（长按右镜腿）：停止自动滚动、语音跟读，暂停显示
             stopAutoFlip()
+            if (followOn) stopFollow("眼镜上长按退出了", push = false)
             if (appMode == AppMode.DASHBOARD) cancelDashTimers()
             glassesPaused = true
             // 退到了官方主界面，屏幕是我们关的就要打开

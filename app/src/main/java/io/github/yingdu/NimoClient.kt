@@ -921,6 +921,7 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             onUserExited("长按镜腿")
             return
         }
+        if (code == NimoProtocol.INPUT_LONG_PRESS_RIGHT && enteredApp == NimoProtocol.APP_ID_PROMPTER) { onPrompterExit(); return }
         listener.onInput(input)
     }
 
@@ -994,6 +995,18 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         }
     }
 
+    /**
+     * 提词器里长按右镜腿：眼镜显示「正在退出」，然后等手机把会话结束掉（官方 app 会发退出指令）。
+     * 以前这里没回应，「正在退出」一直挂在眼镜上（2026-10-21）。现在发退出指令，当作用户退出了页面。
+     */
+    private fun onPrompterExit() {
+        if (enteredApp != NimoProtocol.APP_ID_PROMPTER) return
+        log("提词器里长按右镜腿：结束提词器会话")
+        sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_CONTROL_INSTRUCTION, NimoProtocol.CTRL_QUIT_APP,
+            byteArrayOf(NimoProtocol.APP_ID_PROMPTER.toByte())))
+        onUserExited("长按右镜腿")
+    }
+
     /** 眼镜自己退出了我们的页面（长按右镜腿）。 */
     private fun onUserExited(how: String) {
         log("眼镜退出了当前页面（$how）")
@@ -1041,7 +1054,11 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         }
         if (cmd == NimoProtocol.CMD_CONTROL_INSTRUCTION && key == 9) {
             when (status) {
-                NimoProtocol.INPUT_LONG_PRESS_RIGHT -> if (enteredApp == NimoProtocol.APP_ID_NAV) onNavAction05()
+                NimoProtocol.INPUT_LONG_PRESS_RIGHT -> when (enteredApp) {
+                    NimoProtocol.APP_ID_NAV -> onNavAction05()
+                    NimoProtocol.APP_ID_PROMPTER -> onPrompterExit()
+                    else -> {}
+                }
                 else -> {}
             }
             return
