@@ -1212,7 +1212,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private val followPrefs by lazy { getSharedPreferences("follow", MODE_PRIVATE) }
     val followLog by lazy { FollowLog(java.io.File(filesDir, "follow")) }
     var followModel: FollowModel
-        get() = runCatching { FollowModel.valueOf(followPrefs.getString("model", FollowModel.ZH_SMALL.name)!!) }.getOrDefault(FollowModel.ZH_SMALL)
+        get() = runCatching { FollowModel.valueOf(followPrefs.getString("model", FollowModel.SENSE_VOICE.name)!!) }.getOrDefault(FollowModel.SENSE_VOICE)
         set(v) { followPrefs.edit().putString("model", v.name).apply(); notifyUi() }
     /** 正在念的行放在倒数第几行（1 = 最后一行，0 = 中间）。 */
     var followFromBottom: Int
@@ -1227,7 +1227,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     var followDownloading = false; private set
     private var followCancel = false
     private var followWantsMic = false
-    private var followAsr: FollowAsr? = null
+    private var followAsr: FollowRecognizer? = null
     private var followAligner = FollowAligner()
     private val followDict = HashMap<String, Int>()
     private val pinyin by lazy { PinyinTable(assets.open("follow/pinyin.txt").bufferedReader().readText()) }
@@ -1280,12 +1280,14 @@ class ReaderService : Service(), NimoListener, AppHost {
         followHeard = ""; followN = 0; followFrames = 0; followMoves = 0; followJumps = 0
         followStartAt = System.currentTimeMillis(); followStatFramesAt = followStartAt; followLastFrameAt = followStartAt
         followLog.start("模型 ${m.name}；${Build.MANUFACTURER} ${Build.MODEL}，Android ${Build.VERSION.RELEASE}；NimoGo ${runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()}；" +
-            "《${book?.title}》${book?.text?.length} 字；显示 ${if (readerAsImage) "图片 ${glassesFontPx}px" else "文字（${displayPage.name}）"}，" +
+            "《${book?.title}》${book?.text?.length} 字；显示 文字（${displayPage.name}，跟读时不用图片），" +
             "每屏 ${p.rows} 行、每行约 $charsPerLine 字；正在念的行放在倒数第 ${followFromBottom} 行（0 = 中间）；从第 $topLine 行（第 ${followAligner.offset} 字）开始")
         followLog.d("对齐", "拼音表 ${pinyin.size} 字")
         followDecoder = OpusDecoder(NimoMic.SAMPLE_RATE, 1)
-        followAsr = FollowAsr(this, m, followLog, { text, final, audioAt, decodeMs -> onFollowText(text, final, audioAt, decodeMs) },
-            { err -> followStatus = err; log("跟读：$err"); stopFollow(err) }).also { it.start() }
+        val onText: (String, Boolean, Long, Long) -> Unit = { text, final, audioAt, decodeMs -> onFollowText(text, final, audioAt, decodeMs) }
+        val onErr: (String) -> Unit = { err -> followStatus = err; log("跟读：$err"); stopFollow(err) }
+        followAsr = (if (m == FollowModel.SENSE_VOICE) FollowSenseAsr(followLog, onText, onErr) else FollowAsr(this, m, followLog, onText, onErr))
+            .also { it.start() }
         followWantsMic = true; glassesMic(true)
         followOn = true
         followStatus = "正在听…"
@@ -1372,7 +1374,7 @@ class ReaderService : Service(), NimoListener, AppHost {
             followMoves++
             if (r.reason == "跳过") followJumps++
             followApply(r.to, r.reason)
-        } else if (!readerAsImage && displayPage == DisplayPage.PROMPTER && now - followLastPartialAt > 500) {
+        } else if (displayPage == DisplayPage.PROMPTER && now - followLastPartialAt > 500) {
             // 文字显示：状态行显示听到的字（最多半秒刷一次）
             followLastPartialAt = now
             main.removeCallbacks(followStatusPush); main.post(followStatusPush)
@@ -1567,8 +1569,9 @@ class ReaderService : Service(), NimoListener, AppHost {
         bookUri?.let { prefs.edit().putInt("pos:$it", page.start).apply() }
         val mark = followMark()
         if (followOn) followLog.d("显示", "顶部第 $topLine 行，标记 ${mark?.let { "第 ${it.row + 1} 行前 ${it.col} 字" } ?: "无"}，" +
-            (if (readerAsImage) "图片（眼镜收一张图平均 ${client.imageIntervalMs() ?: "?"} ms）" else "文字（发一次平均 ${client.textIntervalMs() ?: "?"} ms）"))
-        if (readerAsImage) {
+            "文字（眼镜收一次平均 ${client.textIntervalMs() ?: "?"} ms）")
+        // 跟读时一律用文字（图片传一张要半秒左右，跟不上念的速度）
+        if (readerAsImage && !followOn) {
             client.showImage(ReaderImage.render(page.text, glassesFontPx, if (showProgress) progressPercent() else null, mark),
                 ReaderImage.W, ReaderImage.H)
         } else if (displayPage == DisplayPage.PROMPTER) {

@@ -25,7 +25,7 @@ enum class FollowModel(val zh: String, val mb: Int, val archive: String, val fil
     ZH_EN("中英（大，约 134 MB）", 134, "sherpa-onnx-x-asr-160ms-streaming-zipformer-transducer-zh-en-int8-2026-06-05",
         listOf("encoder.int8.onnx", "decoder.onnx", "joiner.int8.onnx", "tokens.txt")),
     /** 非流式（一句说完再转）：全天记忆、实时字幕的「手机离线」用。中、英、日、韩、粤语。 */
-    SENSE_VOICE("中日英（SenseVoice，约 166 MB）", 166, "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09",
+    SENSE_VOICE("中日英 SenseVoice（约 166 MB，和「手机离线」转文字共用）", 166, "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09",
         listOf("model.int8.onnx", "tokens.txt"), streaming = false);
 
     val url get() = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$archive.tar.bz2"
@@ -133,6 +133,98 @@ class FollowLog(private val dir: File) {
     fun latest(): File? = file?.takeIf { it.isFile } ?: dir.listFiles()?.filter { it.name.startsWith("follow-") }?.maxByOrNull { it.name }
 }
 
+/** 跟读用的识别器（流式模型，或者 SenseVoice 滑动窗口）。 */
+interface FollowRecognizer {
+    val loaded: Boolean
+    val totalAudioMs: Long
+    val totalDecodeMs: Long
+    fun start()
+    fun feed(samples: FloatArray, receivedAt: Long)
+    fun stop()
+}
+
+/**
+ * 用 SenseVoice（非流式，和「手机离线」转文字是同一个模型）跟读：一直留着最近 4 秒的声音，
+ * 有人在说话时每 0.5 秒把这 4 秒重新识别一遍（滑动窗口），结果交给对齐。
+ * 每次都要重算 4 秒，比流式模型费电；识别多快全写进日志。
+ */
+class FollowSenseAsr(
+    private val log: FollowLog,
+    private val onText: (text: String, final: Boolean, audioAt: Long, decodeMs: Long) -> Unit,
+    private val onError: (String) -> Unit,
+) : FollowRecognizer {
+    companion object {
+        const val WINDOW = 16_000 * 4      // 4 秒
+        const val STEP = 16_000 / 2        // 每 0.5 秒识别一次
+        /** 最近这么久没人说话就不识别（省电）。 */
+        const val QUIET_MS = 1_200L
+    }
+    private val exec = Executors.newSingleThreadExecutor { r -> Thread(r, "follow-sense").apply { priority = Thread.MAX_PRIORITY - 1 } }
+    private val main = Handler(Looper.getMainLooper())
+    private val ring = ShortArray(WINDOW)
+    private var filled = 0
+    private var pos = 0
+    private var sinceDecode = 0
+    private val vad = SpeechDetector()
+    private var lastSpeechAt = 0L
+    @Volatile private var queued = 0
+    @Volatile override var loaded = false; private set
+    override var totalAudioMs = 0L; private set
+    override var totalDecodeMs = 0L; private set
+    private var lastText = ""
+    private var statAt = System.currentTimeMillis()
+    private var statDecodes = 0
+    private var statMs = 0L
+    private var statMax = 0L
+    private var statSkipped = 0
+
+    override fun start() = exec.execute {
+        val t0 = System.currentTimeMillis()
+        try {
+            LocalAsr.transcribe(ShortArray(8_000), "")      // 先加载模型（第一次要一两秒）
+            loaded = true
+            log.d("识别", "SenseVoice 加载完成（含一次空识别），用了 ${System.currentTimeMillis() - t0} ms，CPU 核数 ${Runtime.getRuntime().availableProcessors()}；" +
+                "窗口 ${WINDOW / 16} ms，每 ${STEP / 16} ms 识别一次")
+        } catch (e: Throwable) {
+            log.d("错误", "SenseVoice 加载失败：$e")
+            main.post { onError("识别模型加载失败：${e.message ?: e.javaClass.simpleName}") }
+        }
+    }
+
+    override fun feed(samples: FloatArray, receivedAt: Long) {
+        queued++
+        exec.execute {
+            queued--
+            val pcm = ShortArray(samples.size) { (samples[it] * 32767f).toInt().coerceIn(-32768, 32767).toShort() }
+            vad.feed(pcm)
+            if (vad.speaking) lastSpeechAt = receivedAt
+            for (x in pcm) { ring[pos] = x; pos = (pos + 1) % WINDOW }
+            filled = minOf(WINDOW, filled + pcm.size)
+            sinceDecode += pcm.size
+            totalAudioMs += pcm.size * 1000L / 16_000
+            if (!loaded || sinceDecode < STEP) return@execute
+            sinceDecode = 0
+            if (receivedAt - lastSpeechAt > QUIET_MS) return@execute
+            if (queued > 1) { statSkipped++; return@execute }      // 识别跟不上：跳过这次，先把积压的声音收进来
+            val win = ShortArray(filled)
+            val start = (pos - filled + WINDOW) % WINDOW
+            for (k in 0 until filled) win[k] = ring[(start + k) % WINDOW]
+            val t0 = System.nanoTime()
+            val text = try { LocalAsr.transcribe(win, "") } catch (e: Throwable) { log.d("错误", "识别出错：$e"); return@execute }
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            totalDecodeMs += ms; statDecodes++; statMs += ms; if (ms > statMax) statMax = ms
+            if (text != lastText) { lastText = text; main.post { onText(text, false, receivedAt, ms) } }
+            val now = System.currentTimeMillis()
+            if (now - statAt >= 5_000) {
+                log.d("识别", "最近 ${(now - statAt) / 1000} 秒：识别 $statDecodes 次（每次 ${filled / 16} ms 声音），平均 ${if (statDecodes > 0) statMs / statDecodes else 0} ms，最慢 $statMax ms，因为跟不上跳过 $statSkipped 次")
+                statAt = now; statDecodes = 0; statMs = 0; statMax = 0; statSkipped = 0
+            }
+        }
+    }
+
+    override fun stop() { exec.shutdown() }
+}
+
 /**
  * 离线流式识别：眼镜麦克风的声音（16 kHz）一段一段送进来，后台线程解码，文字有变化就回调（主线程）。
  * 记下每段声音收到的时间，回调时带上「这段文字对应的声音是什么时候收到的」，用来算识别延迟。
@@ -143,13 +235,13 @@ class FollowAsr(
     private val log: FollowLog,
     private val onText: (text: String, final: Boolean, audioAt: Long, decodeMs: Long) -> Unit,
     private val onError: (String) -> Unit,
-) {
+) : FollowRecognizer {
     private val exec = Executors.newSingleThreadExecutor { r -> Thread(r, "follow-asr").apply { priority = Thread.MAX_PRIORITY - 1 } }
     private val main = Handler(Looper.getMainLooper())
     private var rec: OnlineRecognizer? = null
     private var stream: OnlineStream? = null
     @Volatile private var queued = 0
-    @Volatile var loaded = false; private set
+    @Volatile override var loaded = false; private set
     private var lastText = ""
     private var segments = 0
 
@@ -158,10 +250,10 @@ class FollowAsr(
     private var statDecodeMs = 0L
     private var statMaxQueue = 0
     private var statAt = System.currentTimeMillis()
-    var totalAudioMs = 0L; private set
-    var totalDecodeMs = 0L; private set
+    override var totalAudioMs = 0L; private set
+    override var totalDecodeMs = 0L; private set
 
-    fun start() = exec.execute {
+    override fun start() = exec.execute {
         val t0 = System.currentTimeMillis()
         try {
             val threads = if (Runtime.getRuntime().availableProcessors() >= 6) 2 else 1
@@ -176,7 +268,7 @@ class FollowAsr(
     }
 
     /** 送一段声音（-1..1 的浮点，16 kHz）。receivedAt：这段声音最后一帧从蓝牙收到的时间。 */
-    fun feed(samples: FloatArray, receivedAt: Long) {
+    override fun feed(samples: FloatArray, receivedAt: Long) {
         queued++
         if (queued > statMaxQueue) statMaxQueue = queued
         exec.execute {
@@ -216,7 +308,7 @@ class FollowAsr(
         }
     }
 
-    fun stop() {
+    override fun stop() {
         exec.execute {
             runCatching { stream?.release(); rec?.release() }
             stream = null; rec = null; loaded = false

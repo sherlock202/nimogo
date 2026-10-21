@@ -1353,8 +1353,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val followT = Toggle { service?.toggleFollow(); refreshNow() }
         followRow.accessory(followT.root)
         fl.addRow(followRow.root)
-        val models = FollowModel.values().filter { it.streaming }
-        val modelSeg = Seg(models.map { it.zh }) { i ->
+        val models = listOf(FollowModel.SENSE_VOICE, FollowModel.ZH_SMALL, FollowModel.ZH_EN)
+        val modelSeg = Seg(listOf("SenseVoice", "中文小", "中英大")) { i ->
             val s = service ?: return@Seg
             if (s.followOn) toast("先关掉跟读再换模型") else s.followModel = models[i]
             refreshNow()
@@ -1374,14 +1374,14 @@ class MainActivity : Activity(), ReaderService.UiListener {
         }
         fl.addRow(logRow.root)
         page.addView(fl)
-        page.addView(note("识别在手机上离线做（sherpa-onnx），第一次要下载识别模型（建议连 Wi-Fi）。讲稿和识别结果按拼音对齐，" +
-            "繁体、简体、同音字都对得上；跳过几句也能跟上，说讲稿以外的话会停在原地。用「图片」显示时，正在念的行加亮、念到哪里下划线画到哪里；" +
-            "用「提词器文字」显示时，顶部状态行显示听到的字。每一步都记在跟读日志里。").apply { setPadding(dp(4), dp(8), dp(4), 0) })
+        page.addView(note("识别在手机上离线做，第一次要下载识别模型（建议连 Wi-Fi）。SenseVoice 认中日英，和全天记忆、实时字幕的「手机离线」共用一个模型；" +
+            "「中文小」「中英大」是边说边出字的模型，只认中文 / 中英。讲稿和识别结果按拼音对齐，繁体、简体、同音字都对得上；" +
+            "跳过几句也能跟上，说讲稿以外的话会停在原地。跟读时眼镜用文字显示（比图片快），提词器顶部状态行显示听到的字。每一步都记在跟读日志里。").apply { setPadding(dp(4), dp(8), dp(4), 0) })
         onUpdate(Sub.READ) { s ->
             followT.set(s.followOn || s.followDownloading)
             modelSeg.select(models.indexOf(s.followModel))
             rowSeg.select(rowChoices.indexOf(s.followFromBottom).coerceAtLeast(0))
-            val img = if (s.readerAsImage) s.imageIntervalMs()?.let { "眼镜收一张图约 $it ms" } else s.textIntervalMs()?.let { "眼镜收一次文字约 $it ms" }
+            val img = s.textIntervalMs()?.let { "眼镜收一次文字约 $it ms" }
             followRow.desc(when {
                 s.followOn -> listOfNotNull("听到：" + s.followHeard.takeLast(18).ifEmpty { "…" }, img).joinToString(" · ")
                 s.followStatus.isNotEmpty() -> s.followStatus
