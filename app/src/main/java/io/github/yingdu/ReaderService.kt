@@ -103,12 +103,18 @@ class ReaderService : Service(), NimoListener, AppHost {
             .coerceIn(GlassesFonts.MIN_PX, GlassesFonts.MAX_PX)
         private set(v) = prefs.edit().putInt("glassesFontPx", v.coerceIn(GlassesFonts.MIN_PX, GlassesFonts.MAX_PX)).apply()
 
+    /**
+     * 眼镜上现在是不是图片显示：设成图片、但语音跟读时用文字（提词器），排版也要按文字的行数、字数来
+     * （2026-10-21：跟读时还按图片的 7 行排，提词器只显示 5 行，正在念的行跑到了最下面，选「倒数第二行」时干脆看不到）。
+     */
+    val showingImage get() = readerAsImage && !followOn
+
     var charsPerLine: Int
-        get() = if (readerAsImage) ReaderImage.layout(glassesFontPx).charsPerLine
+        get() = if (showingImage) ReaderImage.layout(glassesFontPx).charsPerLine
                 else prefs.getInt("charsPerLine$layoutSuffix", if (displayPage == DisplayPage.NOTE) 16 else 27)
         private set(v) = prefs.edit().putInt("charsPerLine$layoutSuffix", v).apply()
     var linesPerPage: Int
-        get() = if (readerAsImage) ReaderImage.layout(glassesFontPx).rows
+        get() = if (showingImage) ReaderImage.layout(glassesFontPx).rows
                 else prefs.getInt("linesPerPage$layoutSuffix", if (displayPage == DisplayPage.NOTE) 3 else 5)
         private set(v) = prefs.edit().putInt("linesPerPage$layoutSuffix", v).apply()
 
@@ -1154,13 +1160,13 @@ class ReaderService : Service(), NimoListener, AppHost {
         repaginate(currentOffset())
     }
 
-    private fun repaginate(offset: Int) {
+    private fun repaginate(offset: Int, push: Boolean = true) {
         val b = book ?: return
         val p = Paginator(b, charsPerLine, linesPerPage)
         paginator = p
         topLine = p.lineIndexForOffset(offset)
         log("排版完成：共 ${p.lineCount} 行，约 ${p.pageCount} 屏")
-        pushPage()
+        if (push) pushPage()
     }
 
     val pageCount: Int get() = paginator?.pageCount ?: 0
@@ -1223,8 +1229,9 @@ class ReaderService : Service(), NimoListener, AppHost {
     val followModel get() = FollowModel.SENSE_VOICE
     /** 正在念的行放在倒数第几行（1 = 最后一行，0 = 中间）。 */
     var followFromBottom: Int
-        get() = followPrefs.getInt("fromBottom", 2)
+        get() = followPrefs.getInt("fromBottom", 2).let { if (it == 1) 2 else it }   // 「最后一行」这个选项去掉了
         set(v) { followPrefs.edit().putInt("fromBottom", v).apply(); if (followOn) followApply(followAligner.offset, "改了位置设置"); notifyUi() }
+
 
     var followOn = false; private set
     /** 给手机界面看的状态（下载进度、出错原因等）。 */
@@ -1279,10 +1286,16 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     private fun beginFollow() {
-        val p = paginator ?: return
+        if (paginator == null) return
         if (appMode != AppMode.READER) { followStatus = "先在眼镜上显示阅读"; notifyUi(); return }
         stopAutoFlip()
         if (glassesPaused) resumeGlasses()
+        // 跟读时用文字显示：设成图片的，按提词器的行数、字数重新排版（位置不变）
+        val reflow = readerAsImage
+        val startOffset = currentOffset()
+        followOn = true
+        if (reflow) repaginate(startOffset, push = false)
+        val p = paginator ?: return
         val m = followModel
         followAligner = FollowAligner().apply { offset = p.lineStartOf(topLine) }
         followLastMoveAt = System.currentTimeMillis()
@@ -1323,7 +1336,9 @@ class ReaderService : Service(), NimoListener, AppHost {
         followWantsMic = false; glassesMic(false)
         followStatus = "已停止（$reason）"
         log("跟读：停止（$reason）")
-        if (push) pushPage() else notifyUi()
+        // 设成图片的：恢复图片的排版（位置不变）
+        if (readerAsImage && book != null) { repaginate(currentOffset(), push = push); if (!push) notifyUi() }
+        else if (push) pushPage() else notifyUi()
     }
 
     /** 几秒没收到声音：记下来，再开一次麦克风（蓝牙偶尔丢了开麦的命令）。 */
@@ -1410,7 +1425,7 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     /** 图片显示时的跟读标记：正在念的行在这一屏的第几行、念到第几个字。 */
     private fun followMark(): ReaderImage.Mark? {
-        if (!followOn || !readerAsImage) return null
+        if (!followOn || !showingImage) return null
         val p = paginator ?: return null
         val off = followAligner.offset
         val line = p.lineIndexForOffset((off - 1).coerceAtLeast(0))

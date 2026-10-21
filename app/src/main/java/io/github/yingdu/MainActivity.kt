@@ -1279,10 +1279,10 @@ class MainActivity : Activity(), ReaderService.UiListener {
         var shownPreview = ""
         fun preview(s: ReaderService, n: Int?) {
             val pg = (if (n != null) s.pageAt(n) else s.currentPage()) ?: return
-            val key = "${pg.start}|${s.glassesFontPx}|${s.readerAsImage}|${s.showProgress}|${s.linesPerPage}|${s.charsPerLine}"
+            val key = "${pg.start}|${s.glassesFontPx}|${s.showingImage}|${s.showProgress}|${s.linesPerPage}|${s.charsPerLine}"
             if (key == shownPreview) return
             shownPreview = key
-            if (s.readerAsImage) {
+            if (s.showingImage) {
                 img.setImageBitmap(glassesTint(ReaderImage.renderBitmap(pg.text, s.glassesFontPx, if (s.showProgress) s.progressOf(pg) else null)))
             } else {
                 // 字号按「每行字数」算，让手机上的换行和眼镜上一模一样
@@ -1353,8 +1353,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val followT = Toggle { service?.toggleFollow(); refreshNow() }
         followRow.accessory(followT.root)
         fl.addRow(followRow.root)
-        val rowChoices = listOf(1, 2, 0)
-        val rowSeg = Seg(listOf("念的行在最后一行", "倒数第二行", "中间")) { i -> service?.followFromBottom = rowChoices[i]; refreshNow() }
+        val rowChoices = listOf(0, 2)
+        val rowSeg = Seg(listOf("正在念的行在中间", "在倒数第二行")) { i -> service?.followFromBottom = rowChoices[i]; refreshNow() }
         fl.addRow(FrameLayout(this).apply { setPadding(dp(14), dp(4), dp(14), dp(10)); addView(rowSeg.root) })
         val logRow = Row("导出跟读日志", "存到手机的「下载/NimoGo」，可以发给电脑分析", chevron = true) {
             val s = service ?: return@Row
@@ -1394,8 +1394,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val has = b != null && s.pageCount > 0
             chapter.text = if (has) s.currentChapterTitle() else "支持 TXT、EPUB、MOBI / AZW3（无 DRM）"
             chapter.visibility = if (chapter.text.isEmpty()) View.GONE else View.VISIBLE
-            img.visibility = if (has && s.readerAsImage) View.VISIBLE else View.GONE
-            txt.visibility = if (has && !s.readerAsImage) View.VISIBLE else View.GONE
+            img.visibility = if (has && s.showingImage) View.VISIBLE else View.GONE
+            txt.visibility = if (has && !s.showingImage) View.VISIBLE else View.GONE
             seek.visibility = if (has) View.VISIBLE else View.GONE
             posRow.visibility = if (has) View.VISIBLE else View.GONE
             if (has && dragging < 0) {

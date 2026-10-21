@@ -131,9 +131,9 @@ interface FollowRecognizer {
 }
 
 /**
- * 用 SenseVoice（非流式，和「手机离线」转文字是同一个模型）跟读：一直留着最近 4 秒的声音，
- * 有人在说话时每 0.5 秒把这 4 秒重新识别一遍（滑动窗口），结果交给对齐。
- * 每次都要重算 4 秒，比流式模型费电；识别多快全写进日志。
+ * 用 SenseVoice（非流式，和「手机离线」转文字是同一个模型）跟读：一直留着最近 3 秒的声音，
+ * 有人在说话时每 0.3 秒把这 3 秒重新识别一遍（滑动窗口），结果交给对齐。
+ * 每次都要重算整个窗口，比流式模型费电；识别跟不上时自动跳过几次；识别多快全写进日志。
  */
 class FollowSenseAsr(
     private val log: FollowLog,
@@ -141,8 +141,9 @@ class FollowSenseAsr(
     private val onError: (String) -> Unit,
 ) : FollowRecognizer {
     companion object {
-        const val WINDOW = 16_000 * 4      // 4 秒
-        const val STEP = 16_000 / 2        // 每 0.5 秒识别一次
+        // 2026-10-21 实测 4 秒窗口识别一次约 200 ms：改成 3 秒窗口、每 0.3 秒一次，新念的字更快出来
+        const val WINDOW = 16_000 * 3      // 3 秒
+        const val STEP = 16_000 * 3 / 10   // 每 0.3 秒识别一次
         /** 最近这么久没人说话就不识别（省电）。 */
         const val QUIET_MS = 1_200L
     }
