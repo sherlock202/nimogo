@@ -16,6 +16,7 @@ import com.google.android.libraries.mapsplatform.turnbyturn.model.NavInfo
 import com.google.android.libraries.mapsplatform.turnbyturn.model.StepInfo
 import com.google.android.libraries.navigation.ArrivalEvent
 import com.google.android.libraries.navigation.NavigationApi
+import com.google.android.libraries.navigation.RoadSnappedLocationProvider
 import com.google.android.libraries.navigation.Navigator
 import com.google.android.libraries.navigation.RoutingOptions
 import com.google.android.libraries.navigation.Waypoint
@@ -48,6 +49,46 @@ object NavGuide {
     var lastInfoAt = 0L; private set
     var lastState = -1; private set
     var lastRegisterOk: Boolean? = null; private set
+
+    // ---------- 小地图：路线形状和当前位置（都在主线程读写） ----------
+    /** 当前这段路线的形状点（从起点到目的地）。 */
+    var route: List<NavPoint> = emptyList(); private set
+    /** 吸附到道路上的当前位置。 */
+    var here: NavPoint? = null; private set
+    /** 路线或位置变了（NavApp 用来重画小地图）。 */
+    var onMapChanged: (() -> Unit)? = null
+    private var locProvider: RoadSnappedLocationProvider? = null
+
+    private val locListener = object : RoadSnappedLocationProvider.LocationListener {
+        override fun onLocationChanged(location: android.location.Location) {
+            val p = NavPoint(location.latitude, location.longitude)
+            main.post { here = p; onMapChanged?.invoke() }
+        }
+    }
+
+    private val routeChanged = object : Navigator.RouteChangedListener {
+        override fun onRouteChanged() { main.post { navigator?.let { loadRoute(it) } } }
+    }
+
+    private fun loadRoute(n: Navigator) {
+        val pts = runCatching { n.currentRouteSegment?.latLngs?.map { NavPoint(it.latitude, it.longitude) } }
+            .onFailure { note("读路线形状出错：$it") }.getOrNull().orEmpty()
+        if (pts.size != route.size) note("路线形状：${pts.size} 个点")
+        route = pts
+        onMapChanged?.invoke()
+    }
+
+    private fun startLocation(app: Application) {
+        if (locProvider != null) return
+        locProvider = runCatching { NavigationApi.getRoadSnappedLocationProvider(app) }.onFailure { note("拿不到位置：$it") }.getOrNull()
+        runCatching { locProvider?.addLocationListener(locListener) }.onFailure { note("位置监听出错：$it") }
+    }
+
+    private fun stopLocation() {
+        runCatching { locProvider?.removeLocationListener(locListener) }
+        locProvider = null
+        here = null; route = emptyList()
+    }
     val ready get() = navigator != null
 
     private var keyApplied: String? = null
@@ -97,6 +138,7 @@ object NavGuide {
                 note("Navigator 就绪（SDK ${runCatching { NavigationApi.getNavSDKVersion() }.getOrDefault("?")}）")
                 navigator = n
                 n.addArrivalListener(arrival)
+                runCatching { n.addRouteChangedListener(routeChanged) }
                 flush(n, null)
             }
             override fun onError(errorCode: Int) {
@@ -164,6 +206,8 @@ object NavGuide {
                 if (status == Navigator.RouteStatus.OK) {
                     runCatching { nav.startGuidance() }.onFailure { note("开始引导出错：$it") }
                     note("开始引导：" + (if (runCatching { nav.isGuidanceRunning }.getOrDefault(false)) "引导中" else "引导没有运行"))
+                    loadRoute(nav)
+                    (ctx.applicationContext as? Application)?.let { startLocation(it) }
                     done(null, true); return@post
                 }
                 done(when (status) {
@@ -182,6 +226,7 @@ object NavGuide {
 
     /** 停止引导、清掉目的地、不再接收逐向数据。 */
     fun stop() {
+        stopLocation()
         val n = navigator ?: return
         runCatching { n.stopGuidance() }
         runCatching { n.clearDestinations() }

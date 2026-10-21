@@ -129,3 +129,36 @@ class NavRemainTest {
         assertEquals(ok, NavLogicFix.remaining(ok, null, null))
     }
 }
+
+class NavMapTest {
+    private val route = listOf(NavPoint(35.6970, 139.7740), NavPoint(35.6979, 139.7740), NavPoint(35.6979, 139.769575))
+
+    @Test fun snapAndHeading() {
+        val (seg, on) = NavMap.snap(route, NavPoint(35.697765, 139.77401))
+        assertEquals(0, seg)
+        assertEquals(35.697765, on.lat, 1e-6)
+        assertEquals(0.0, NavMap.headingAt(route, seg, on), 1.0)            // 往北走
+        val (seg2, on2) = NavMap.snap(route, NavPoint(35.69791, 139.7720))
+        assertEquals(1, seg2)
+        assertEquals(270.0, NavMap.headingAt(route, seg2, on2), 1.0)        // 拐弯后往西
+    }
+
+    @Test fun projectionHeadingUp() {
+        val c = NavPoint(35.6970, 139.7740)
+        // 往北 100 米、朝北：在中心正上方
+        val (x, y) = NavMap.toScreen(c, NavPoint(35.6970 + 100 / 110_574.0, 139.7740), 0.0, 1.0, 100f, 100f)
+        assertEquals(100f, x, 0.5f); assertEquals(0f, y, 0.5f)
+        // 朝东时，北边的点跑到左边
+        val (x2, y2) = NavMap.toScreen(c, NavPoint(35.6970 + 100 / 110_574.0, 139.7740), 90.0, 1.0, 100f, 100f)
+        assertEquals(0f, x2, 0.5f); assertEquals(100f, y2, 0.5f)
+    }
+
+    @Test fun alongAndScale() {
+        val (seg, on) = NavMap.snap(route, NavPoint(35.697765, 139.7740))
+        val turn = NavMap.pointAlong(route, seg, on, 15.0)
+        assertEquals(0.0, NavMap.dist(turn, route[1]), 0.5)
+        assertEquals(0.5, NavMap.scaleFor(15, 100), 0.0)
+        assertEquals(3.0, NavMap.scaleFor(200, 100), 0.0)
+        assertEquals(8.0, NavMap.scaleFor(5000, 100), 0.0)
+    }
+}

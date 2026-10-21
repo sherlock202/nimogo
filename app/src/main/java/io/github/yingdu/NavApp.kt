@@ -48,6 +48,10 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     var avoidHighways: Boolean
         get() = prefs.getBoolean("avoidHighways", false)
         set(v) { prefs.edit().putBoolean("avoidHighways", v).apply(); host.changed() }
+    /** 眼镜上画小地图（路线形状 + 当前位置，前进方向朝上）。 */
+    var showMap: Boolean
+        get() = prefs.getBoolean("showMap", true)
+        set(v) { prefs.edit().putBoolean("showMap", v).apply(); lastKey = ""; show() }
     /** 每月最多导航几个目的地（0 = 不限）。默认 1000：Navigation SDK 每月前 1000 个目的地免费。 */
     var monthlyLimit: Int
         get() = prefs.getInt("limit", 1000)
@@ -72,6 +76,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         NavGuide.sink = { onSnap(it) }
         NavGuide.onArrived = { arrived() }
         NavGuide.log = { host.log(it) }
+        NavGuide.onMapChanged = { onMapChanged() }
         // 上一个服务实例留下的引导（萤读被关掉后重新打开）：这里接不上它的状态，直接停掉，免得在后台空跑
         NavGuide.useKey(apiKey)
         if (NavGuide.guiding()) NavGuide.stop()
@@ -171,6 +176,17 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         show()
     }
 
+    /** 位置移动了约 5 米或路线变了，才重画小地图。 */
+    private var lastMapKey = ""
+    private fun onMapChanged() {
+        if (phase != Phase.GUIDING || !showMap) return
+        val h = NavGuide.here ?: return
+        val key = "${Math.round(h.lat * 20000)},${Math.round(h.lng * 20000)},${NavGuide.route.size}"
+        if (key == lastMapKey) return
+        lastMapKey = key
+        show()
+    }
+
     // ---------- 眼镜画面 ----------
 
     private var lastDraw = 0L
@@ -261,6 +277,8 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         }
         val s: NavSnap = sn
         val icon = NavIcon.of(c.maneuver)
+        val here = NavGuide.here
+        if (showMap && here != null && NavGuide.route.size >= 2) { drawWithMap(f, big, s, c, icon, here, rerouting); return }
         NavDraw.icon(f.canvas, icon, 62f, 92f, 100f, if (rerouting) Frame.DIM else Frame.FULL)
         val x = 128
         val maxW = f.w - x - 6
@@ -279,6 +297,29 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         val by = f.h - f.small.height - 3
         if (eta.isNotEmpty()) f.text(eta, f.w - 6, by, Frame.DIM, f.small, Frame.RIGHT)
         if (tip.isNotEmpty()) f.text(f.small.ellipsize(tip, f.w - 12 - f.small.measure(eta) - 12), 6, by, Frame.DIM, f.small)
+    }
+
+    /** 左边小地图（前进方向朝上），右边箭头、距离、说明。 */
+    private fun drawWithMap(f: Frame, big: PixelText, s: NavSnap, c: NavStep, icon: NavIcon, here: NavPoint, rerouting: Boolean) {
+        val mapW = 200; val top = 28
+        NavDraw.miniMap(f.canvas, NavGuide.route, here, s.toStepMeters, 0f, top.toFloat(), mapW.toFloat(), (f.h - top).toFloat(), rerouting)
+        // 分隔线
+        var yy = top + 2; while (yy < f.h) { f.rect(mapW + 2, yy, 1, 2, Frame.FAINT); yy += 5 }
+        val x = mapW + 10
+        val maxW = f.w - x - 6
+        val color = if (rerouting) Frame.DIM else Frame.FULL
+        NavDraw.icon(f.canvas, icon, x + 22f, 58f, 44f, color)
+        s.toStepMeters?.let { f.text(NavText.distance(it), x + 52, 38, color, big) }
+        var y = 38 + big.height + 10
+        val line = c.instruction.ifEmpty { listOf(NavIcon.zh(icon), c.road).filter { it.isNotEmpty() }.joinToString(" ") }
+        f.font.wrap(line, maxW).take(2).forEach { l -> f.text(l, x, y, Frame.FULL); y += f.font.height + 4 }
+        // 底部：预计到达 + 下一步
+        val eta = s.remainSeconds?.let { NavText.eta(System.currentTimeMillis(), it) + " 到" } ?: ""
+        val nx = s.next.firstOrNull()
+        val tip = nx?.let { n -> "然后 " + listOfNotNull(n.meters?.let { NavText.distance(it) + "后" }, NavIcon.zh(NavIcon.of(n.maneuver)).ifEmpty { null }).joinToString(" ") } ?: ""
+        val by = f.h - f.small.height - 3
+        if (eta.isNotEmpty()) f.text(eta, f.w - 6, by, Frame.DIM, f.small, Frame.RIGHT)
+        if (tip.isNotEmpty()) f.text(f.small.ellipsize(tip, maxW - f.small.measure(eta) - 8), x, by, Frame.DIM, f.small)
     }
 
     private fun drawSteps(f: Frame) {
@@ -391,6 +432,38 @@ object NavDraw {
                 c.drawLine(cx, cy - h * 0.2f, cx, cy - h * 0.7f, line)
             }
         }
+    }
+
+    /**
+     * 小地图：路线（走过的半亮、前面的全亮加粗）、下一个转弯点（圆圈）、当前位置（中下方的三角，前进方向朝上）。
+     * 只画在 (left, top, w, h) 这个框里。
+     */
+    fun miniMap(c: Canvas, route: List<NavPoint>, here: NavPoint, toTurn: Int?, left: Float, top: Float, w: Float, h: Float, dim: Boolean) {
+        val (seg, on) = NavMap.snap(route, here)
+        val heading = NavMap.headingAt(route, seg, on)
+        val cx = left + w / 2; val cy = top + h * 0.78f
+        val mpp = NavMap.scaleFor(toTurn, (cy - top - 14).toInt())
+        fun pt(p: NavPoint) = NavMap.toScreen(on, p, heading, mpp, cx, cy)
+        c.save()
+        c.clipRect(left, top, left + w, top + h)
+        val past = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF606060.toInt(); style = Paint.Style.STROKE; strokeWidth = 5f; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
+        val ahead = Paint(past).apply { color = if (dim) 0xFFA0A0A0.toInt() else 0xFFFFFFFF.toInt(); strokeWidth = 8f }
+        fun path(points: List<NavPoint>) = Path().apply {
+            points.forEachIndexed { i, p -> val (x, y) = pt(p); if (i == 0) moveTo(x, y) else lineTo(x, y) }
+        }
+        c.drawPath(path(route.subList(0, seg + 1) + on), past)
+        c.drawPath(path(listOf(on) + route.subList(seg + 1, route.size)), ahead)
+        // 下一个转弯点
+        if (toTurn != null && toTurn > 0) {
+            val (tx, ty) = pt(NavMap.pointAlong(route, seg, on, toTurn.toDouble()))
+            c.drawCircle(tx, ty, 9f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt() })
+            c.drawCircle(tx, ty, 7f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt(); style = Paint.Style.STROKE; strokeWidth = 3f })
+        }
+        // 当前位置：黑底上的白色三角
+        c.drawCircle(cx, cy, 11f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF000000.toInt() })
+        c.drawPath(Path().apply { moveTo(cx, cy - 10); lineTo(cx + 8, cy + 8); lineTo(cx, cy + 4); lineTo(cx - 8, cy + 8); close() },
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() })
+        c.restore()
     }
 
     /** 从 (x0,y0) 指向 (x1,y1) 的实心箭头，尖在 (x1,y1)。 */
