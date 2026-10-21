@@ -164,3 +164,23 @@ object FollowView {
         return (line - row).coerceIn(0, maxTop.coerceAtLeast(0))
     }
 }
+
+/** WAV → PCM（手机离线转文字用；单独拿出来方便单元测试）。 */
+object WavPcm {
+    /** 萤读自己生成的 WAV（16 位单声道）→ PCM。 */
+    fun read(wav: ByteArray): ShortArray {
+        var i = 12
+        while (i + 8 <= wav.size) {
+            val id = String(wav, i, 4, Charsets.US_ASCII)
+            val len = (wav[i + 4].toInt() and 0xFF) or ((wav[i + 5].toInt() and 0xFF) shl 8) or
+                ((wav[i + 6].toInt() and 0xFF) shl 16) or ((wav[i + 7].toInt() and 0xFF) shl 24)
+            if (id == "data") {
+                val from = i + 8
+                val n = minOf(len, wav.size - from) / 2
+                return ShortArray(n) { k -> ((wav[from + 2 * k].toInt() and 0xFF) or (wav[from + 2 * k + 1].toInt() shl 8)).toShort() }
+            }
+            i += 8 + len + (len and 1)
+        }
+        return ShortArray(0)
+    }
+}

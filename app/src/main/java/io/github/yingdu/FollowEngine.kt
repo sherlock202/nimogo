@@ -19,11 +19,14 @@ import java.util.concurrent.Executors
  * 语音跟读用的离线识别模型（sherpa-onnx，Apache-2.0）。第一次用时从 sherpa-onnx 的 GitHub 发布页下载 .tar.bz2，
  * 边下边解压，只留需要的文件，放在 files/asr/<名字>/。识别全在手机上做，不联网。
  */
-enum class FollowModel(val zh: String, val mb: Int, val archive: String, val files: List<String>) {
+enum class FollowModel(val zh: String, val mb: Int, val archive: String, val files: List<String>, val streaming: Boolean = true) {
     ZH_SMALL("中文（小，约 21 MB）", 21, "sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01",
         listOf("model.int8.onnx", "tokens.txt")),
     ZH_EN("中英（大，约 134 MB）", 134, "sherpa-onnx-x-asr-160ms-streaming-zipformer-transducer-zh-en-int8-2026-06-05",
-        listOf("encoder.int8.onnx", "decoder.onnx", "joiner.int8.onnx", "tokens.txt"));
+        listOf("encoder.int8.onnx", "decoder.onnx", "joiner.int8.onnx", "tokens.txt")),
+    /** 非流式（一句说完再转）：全天记忆、实时字幕的「手机离线」用。中、英、日、韩、粤语。 */
+    SENSE_VOICE("中日英（SenseVoice，约 166 MB）", 166, "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09",
+        listOf("model.int8.onnx", "tokens.txt"), streaming = false);
 
     val url get() = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$archive.tar.bz2"
     fun folder(ctx: Context) = File(ctx.filesDir, "asr/$name")
@@ -36,6 +39,7 @@ enum class FollowModel(val zh: String, val mb: Int, val archive: String, val fil
                 tokens = "$d/tokens.txt", numThreads = threads)
             ZH_EN -> OnlineModelConfig(transducer = OnlineTransducerModelConfig("$d/encoder.int8.onnx", "$d/decoder.onnx", "$d/joiner.int8.onnx"),
                 tokens = "$d/tokens.txt", numThreads = threads)
+            SENSE_VOICE -> throw IllegalStateException("SenseVoice 不是流式模型")
         }
         return OnlineRecognizerConfig(featConfig = FeatureConfig(16_000, 80), modelConfig = model, enableEndpoint = true)
     }
@@ -218,5 +222,86 @@ class FollowAsr(
             stream = null; rec = null; loaded = false
         }
         exec.shutdown()
+    }
+}
+
+/**
+ * 手机离线转文字（SenseVoice，非流式，一句一句转）：全天记忆、实时字幕的转文字服务选「手机离线」时用。
+ * 不联网、不要 Key；模型第一次用时下载（约 166 MB，解压后约 240 MB）。识别器用完 3 分钟后释放，省内存。
+ */
+object LocalAsr {
+    /** 转文字服务的「接口地址」写成这个，就走手机离线。 */
+    const val BASE = "local://sensevoice"
+    private val model = FollowModel.SENSE_VOICE
+    lateinit var appCtx: Context
+    // 懒加载：只用 isLocal 判断时不碰 Android 的东西（单元测试里也能用）
+    private val main by lazy { Handler(Looper.getMainLooper()) }
+    private val lock = Any()
+    private var rec: com.k2fsa.sherpa.onnx.OfflineRecognizer? = null
+    private var recLang = ""
+    @Volatile var downloading = false; private set
+    @Volatile var progress = ""; private set
+    @Volatile var lastError = ""; private set
+    var onChanged: (() -> Unit)? = null
+    var log: ((String) -> Unit)? = null
+
+    fun isLocal(base: String) = base.startsWith("local://")
+    fun ready() = ::appCtx.isInitialized && model.ready(appCtx)
+    fun sizeMb(): Long = if (!::appCtx.isInitialized) 0 else (model.folder(appCtx).listFiles()?.sumOf { it.length() } ?: 0) / 1_000_000
+
+    fun startDownload() {
+        if (downloading || ready() || !::appCtx.isInitialized) return
+        downloading = true; lastError = ""; progress = "开始下载…"
+        main.post { onChanged?.invoke() }
+        Thread {
+            val r = runCatching {
+                model.download(appCtx, { m -> main.post { log?.invoke("离线转文字：$m") } },
+                    { d, t -> progress = "${d / 1_000_000} / ${if (t > 0) t / 1_000_000 else model.mb} MB"; main.post { onChanged?.invoke() } }, { false })
+            }
+            r.onFailure { lastError = "下载失败：${it.message ?: it.javaClass.simpleName}"; main.post { log?.invoke("离线转文字：$lastError") } }
+            downloading = false
+            main.post { onChanged?.invoke() }
+        }.apply { name = "local-asr-download" }.start()
+    }
+
+    private val releaseLater = Runnable { synchronized(lock) { runCatching { rec?.release() }; rec = null } }
+
+    private fun config(language: String): com.k2fsa.sherpa.onnx.OfflineRecognizerConfig {
+        val d = model.folder(appCtx).absolutePath
+        val threads = if (Runtime.getRuntime().availableProcessors() >= 6) 2 else 1
+        return com.k2fsa.sherpa.onnx.OfflineRecognizerConfig(
+            featConfig = FeatureConfig(16_000, 80),
+            modelConfig = com.k2fsa.sherpa.onnx.OfflineModelConfig(
+                senseVoice = com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig("$d/model.int8.onnx", language, true),
+                tokens = "$d/tokens.txt", numThreads = threads))
+    }
+
+    /** 16 kHz 单声道 PCM → 文字。language：zh、ja、en、""（自动）。阻塞，后台线程调用；同一时间只转一段。 */
+    fun transcribe(pcm: ShortArray, language: String): String {
+        if (!ready()) {
+            startDownload()
+            throw java.io.IOException(if (downloading) "手机离线转文字的模型正在下载（$progress），下好后自动接着转" else "手机离线转文字的模型还没下载")
+        }
+        val lang = when (language) { "zh", "ja", "en", "ko", "yue" -> language; else -> "auto" }
+        synchronized(lock) {
+            main.removeCallbacks(releaseLater)
+            val t0 = System.currentTimeMillis()
+            var r = rec
+            if (r == null) {
+                r = com.k2fsa.sherpa.onnx.OfflineRecognizer(null, config(lang)); rec = r; recLang = lang
+                val ms = System.currentTimeMillis() - t0
+                main.post { log?.invoke("离线转文字：模型加载用了 $ms ms") }
+            } else if (recLang != lang) { r.setConfig(config(lang)); recLang = lang }
+            val f = FloatArray(pcm.size) { pcm[it] / 32768f }
+            val s = r.createStream()
+            try {
+                s.acceptWaveform(f, 16_000)
+                r.decode(s)
+                return r.getResult(s).text.replace(Regex("<\\|[^|>]*\\|>"), "").trim()
+            } finally {
+                s.release()
+                main.postDelayed(releaseLater, 180_000)
+            }
+        }
     }
 }

@@ -185,7 +185,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
     /** 实时字幕（用全天记忆里设置的转文字服务）。 */
     val captions by lazy { CaptionsApp(this, object : CaptionsApp.Env {
-        override fun asr() = memGet("asrKey").takeIf { it.isNotEmpty() }?.let { Triple(asrBase(), it, asrModel()) }
+        override fun asr() = if (asrLocal) Triple(asrBase(), "", asrModel()) else memGet("asrKey").takeIf { it.isNotEmpty() }?.let { Triple(asrBase(), it, asrModel()) }
         override fun language() = memGet("asrLang", "zh").let { if (it == "auto") "" else it }
         override fun setMic(on: Boolean) { captionsWantMic = on; glassesMic(on) }
         override fun isMe(v: Speakers.Voice?) = memIsMe(v)
@@ -943,6 +943,9 @@ class ReaderService : Service(), NimoListener, AppHost {
         super.onCreate()
         CrashLog.install(this)
         instance = this
+        LocalAsr.appCtx = applicationContext
+        LocalAsr.log = { log(it) }
+        LocalAsr.onChanged = { notifyUi(); if (LocalAsr.ready() && asrLocal) memKickTranscribe() }
         GlassesFonts.init(this)
         steps = StepsProvider(this) { if (appMode == AppMode.DASHBOARD) pushDashboard(force = false); notifyUi() }
         client = NimoClient(this, this)
@@ -2309,6 +2312,10 @@ class ReaderService : Service(), NimoListener, AppHost {
         notifyUi()
     }
     fun asrBase() = memGet("asrBase").ifEmpty { asrPreset.base }
+    /** 转文字用的是手机离线（不要 Key）。 */
+    val asrLocal get() = LocalAsr.isLocal(asrBase())
+    /** 转文字服务设置好了（离线的不要 Key）。 */
+    fun asrReady() = asrLocal || memGet("asrKey").isNotEmpty()
     fun asrModel() = memGet("asrModel").ifEmpty { asrPreset.model }
     fun sumBase() = memGet("sumBase").ifEmpty { sumPreset.base }
     fun sumModel() = memGet("sumModel").ifEmpty { sumPreset.model }
@@ -2361,7 +2368,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     fun memKickTranscribe() {
         if (memTranscribing) return
         val key = memGet("asrKey")
-        if (key.isEmpty()) { countPending(); return }
+        if (key.isEmpty() && !asrLocal) { countPending(); return }
         memTranscribing = true
         val base = asrBase(); val model = asrModel(); val lang = memGet("asrLang", "zh")
         val denoise = memDenoise

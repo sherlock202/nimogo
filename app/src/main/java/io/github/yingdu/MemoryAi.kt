@@ -20,9 +20,12 @@ object SpeechToText {
     class Preset(val id: String, val name: String, val base: String, val model: String, val note: String)
 
     val PRESETS = listOf(
+        // NimoGo：手机上离线转（和硅基流动用的是同一个 SenseVoice 模型），海外没有网络延迟，不要 Key
+        Preset("local", "手机离线", LocalAsr.BASE, "SenseVoice", "不联网、免费，中日英韩粤，第一次下载约 166 MB"),
         Preset("siliconflow", "硅基流动", "https://api.siliconflow.cn/v1", "FunAudioLLM/SenseVoiceSmall", "SenseVoice，中文好，免费"),
         Preset("openai", "OpenAI", "https://api.openai.com/v1", "gpt-4o-mini-transcribe", ""),
         Preset("groq", "Groq", "https://api.groq.com/openai/v1", "whisper-large-v3", "Whisper large-v3，有免费额度"),
+        Preset("groq-turbo", "Groq（Turbo）", "https://api.groq.com/openai/v1", "whisper-large-v3-turbo", "更快，海外服务器，有免费额度"),
         Preset("qwen", "阿里百炼（国内）", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3-asr-flash", "Qwen3-ASR-Flash，中文准、抗噪"),
         Preset("qwen-intl", "阿里百炼（国际）", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen3-asr-flash", "国际站账号用这个"),
         Preset("custom", "自定义", "", "", "OpenAI 兼容的 /audio/transcriptions"),
@@ -86,6 +89,7 @@ object SpeechToText {
     }
 
     fun transcribe(base: String, key: String, model: String, language: String, fileName: String, mime: String, audio: ByteArray): String {
+        if (LocalAsr.isLocal(base)) return LocalAsr.transcribe(WavPcm.read(audio), language)
         if (isChatAsr(model)) return transcribeChat(base, key, model, language, mime, audio)
         val boundary = "yingdu" + System.nanoTime()
         val body = multipart(boundary, model, language, fileName, mime, audio)

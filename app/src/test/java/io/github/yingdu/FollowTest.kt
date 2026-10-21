@@ -69,4 +69,12 @@ class FollowTest {
         assertEquals(100, FollowView.topFor(300, 5, 2, 100))
         assertEquals(16, FollowView.topFor(20, 5, 1, 100))
     }
+
+    @Test fun wavRoundTrip() {
+        val pcm = ShortArray(1000) { ((it * 37) % 65536 - 32768).toShort() }
+        val back = WavPcm.read(OggOpus.wav(pcm))
+        assertEquals(pcm.size, back.size)
+        assertTrue(pcm.contentEquals(back))
+        assertEquals(0, WavPcm.read(ByteArray(10)).size)
+    }
 }

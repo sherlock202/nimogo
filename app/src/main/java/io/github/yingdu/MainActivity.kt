@@ -995,7 +995,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             Sub.PARTY -> toggleOnGlasses { it.party }
             Sub.NAV -> toggleOnGlasses { it.nav }
             Sub.CAPTIONS -> {
-                if (s.activeApp !== s.captions && s.memGet("asrKey").isEmpty()) { toast("先在「全天记忆 › 设置」里填转文字的 API Key"); return }
+                if (s.activeApp !== s.captions && !s.asrReady()) { toast("先在「全天记忆 › 设置」里填转文字的 API Key"); return }
                 if (s.activeApp !== s.captions && s.linkState != LinkState.READY) { toast("先连上眼镜"); return }
                 toggleOnGlasses { it.captions }
             }
@@ -1353,7 +1353,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val followT = Toggle { service?.toggleFollow(); refreshNow() }
         followRow.accessory(followT.root)
         fl.addRow(followRow.root)
-        val models = FollowModel.values()
+        val models = FollowModel.values().filter { it.streaming }
         val modelSeg = Seg(models.map { it.zh }) { i ->
             val s = service ?: return@Seg
             if (s.followOn) toast("先关掉跟读再换模型") else s.followModel = models[i]
@@ -2368,7 +2368,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         onUpdate(Sub.CAPTIONS) { s ->
             val k = s.captions
             state.text = when {
-                !k.running -> if (s.memGet("asrKey").isEmpty()) "还没设置转文字服务（「全天记忆 › 设置」）" else "没开。点下面的按钮在眼镜上打开"
+                !k.running -> if (!s.asrReady()) "还没设置转文字服务（「全天记忆 › 设置」）" else "没开。点下面的按钮在眼镜上打开"
                 k.error.isNotEmpty() -> k.error
                 k.hearing -> "● 有人在说话"
                 else -> "在听…"
@@ -2650,7 +2650,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val pending = s.memPending
             detail.text = listOfNotNull(
                 "今天转好 ${(if (day == today) entries else s.memStore.entries(today)).count { it.text.isNotBlank() }} 句" + (if (pending > 0) "，$pending 句等转文字" else ""),
-                if (s.memGet("asrKey").isEmpty()) "还没设置转文字服务（右上角「设置」）" else null,
+                if (!s.asrReady()) "还没设置转文字服务（右上角「设置」）" else null,
                 if (s.memTranscribing) "正在转文字…" else null,
                 if (s.memSummarizing) "正在生成总结…" else null,
                 s.memLastError.takeIf { it.isNotEmpty() },
@@ -2811,10 +2811,21 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val asrBase = Row("接口地址", chevron = true) { editKey("接口地址（到 /v1 为止）", "asrBase", false, service?.asrPreset?.base ?: "https://…/v1") }
         // NimoGo：加了日语
         val langSeg = Seg(listOf("中文", "日语", "自动识别")) { i -> service?.memSet("asrLang", listOf("zh", "ja", "auto")[i]); refreshNow() }
-        listOf(asrPreset, asrKey, asrModel, asrBase).forEach { asr.addRow(it.root) }
+        val asrLocalRow = Row("离线模型", chevron = true) {
+            when {
+                LocalAsr.ready() -> toast("已经下载好了（约 ${LocalAsr.sizeMb()} MB）")
+                LocalAsr.downloading -> toast("正在下载：${LocalAsr.progress}")
+                else -> AlertDialog.Builder(this).setTitle("下载离线转文字模型")
+                    .setMessage("SenseVoice（中、英、日、韩、粤语），压缩包约 166 MB，解压后约 240 MB。建议连 Wi-Fi 下载。下载好后，转文字全在手机上做，不联网。")
+                    .setPositiveButton("下载") { _, _ -> LocalAsr.startDownload(); refreshNow() }
+                    .setNegativeButton("取消", null).show()
+            }
+        }
+        listOf(asrPreset, asrLocalRow, asrKey, asrModel, asrBase).forEach { asr.addRow(it.root) }
         asr.addRow(FrameLayout(this).apply { setPadding(dp(14), dp(10), dp(14), dp(12)); addView(langSeg.root) })
         page.addView(asr)
-        page.addView(note("硅基流动 SenseVoice 免费；各家 Key 怎么申请见右上角「说明」。"))
+        page.addView(note("「手机离线」在手机上转文字，不联网、不要 Key，海外也没有网络延迟（和硅基流动用的是同一个 SenseVoice 模型）；" +
+            "在线服务里，Groq 的服务器在海外、有免费额度，硅基流动、阿里百炼国内站的服务器在国内，从海外用延迟大。各家 Key 怎么申请见右上角「说明」。"))
 
         page.addView(section("每天的总结"))
         val sum = listBox()
@@ -2835,6 +2846,17 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
         onUpdate(Sub.MEMORY_API) { s ->
             asrPreset.value(s.asrPreset.name); asrKey.value(masked(s.memGet("asrKey")))
+            val local = s.asrLocal
+            asrLocalRow.root.visibility = if (local) View.VISIBLE else View.GONE
+            asrKey.root.visibility = if (local) View.GONE else View.VISIBLE
+            asrModel.root.visibility = if (local) View.GONE else View.VISIBLE
+            asrBase.root.visibility = if (local) View.GONE else View.VISIBLE
+            asrLocalRow.value(when {
+                LocalAsr.ready() -> "已下载（${LocalAsr.sizeMb()} MB）"
+                LocalAsr.downloading -> LocalAsr.progress
+                LocalAsr.lastError.isNotEmpty() -> LocalAsr.lastError
+                else -> "未下载，点这里下载"
+            })
             asrModel.value(s.asrModel()); asrBase.value(if (s.memGet("asrBase").isEmpty()) "默认" else s.asrBase())
             langSeg.select(when (s.memGet("asrLang", "zh")) { "zh" -> 0; "ja" -> 1; else -> 2 })
             sumPreset.value(s.sumPreset.name); sumKey.value(masked(s.memGet("sumKey")))
@@ -2882,7 +2904,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         page.addView(note("标错了：在转写的文字上长按那一句纠正，之后会按你纠正的来认。"))
 
         onUpdate(Sub.MEMORY_SET) { s ->
-            asrRow.value(s.asrPreset.name + if (s.memGet("asrKey").isEmpty()) " · 未填 Key" else "")
+            asrRow.value(s.asrPreset.name + if (!s.asrReady()) " · 未填 Key" else "")
             sumRow.value(s.sumPreset.name + if (s.memGet("sumKey").isEmpty()) " · 未填 Key" else " · %02d:%02d".format(s.memSummaryMinute / 60, s.memSummaryMinute % 60))
             mergeSeg.select(merges.indexOf(s.memMergeSec).let { if (it < 0) 1 else it })
             denoiseToggle.set(s.memDenoise)
