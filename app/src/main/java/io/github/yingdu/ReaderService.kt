@@ -1423,6 +1423,52 @@ class ReaderService : Service(), NimoListener, AppHost {
         } catch (e: Exception) { null to "导出失败：${e.message}" }
     }
 
+    // ---------- 自己写的讲稿（粘贴文字存成 TXT） ----------
+
+    /** 这些书是 NimoGo 自己存的 TXT（「编辑当前讲稿」保存时直接覆盖，不另存一份）。 */
+    private fun ownScripts(): Set<String> = prefs.getStringSet("ownScripts", emptySet()) ?: emptySet()
+    fun isOwnScript(uri: String?) = uri != null && uri in ownScripts()
+
+    /**
+     * 把文字存成 TXT（UTF-8）并打开：Android 10 起存到「下载/NimoGo/讲稿」（文件管理里能看到，也能拷到电脑），
+     * 更早的系统存在 app 自己的文件夹里。overwrite 是要覆盖的那份（NimoGo 自己存过的讲稿），没有就新建。
+     * 返回给人看的结果。
+     */
+    fun saveScript(title: String, text: String, overwrite: String?): String {
+        val name = title.trim().replace(Regex("""[\\/:*?"<>|\n\r]"""), "_").ifEmpty { "讲稿" }.take(60)
+        val bytes = text.replace("\r\n", "\n").toByteArray(Charsets.UTF_8)
+        return try {
+            val uri: Uri = if (overwrite != null && isOwnScript(overwrite)) {
+                val u = Uri.parse(overwrite)
+                contentResolver.openOutputStream(u, "wt")!!.use { it.write(bytes) }
+                u
+            } else if (Build.VERSION.SDK_INT >= 29) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, "$name.txt")
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/NimoGo/讲稿")
+                }
+                val u = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: return "存不进「下载」"
+                contentResolver.openOutputStream(u)!!.use { it.write(bytes) }
+                u
+            } else {
+                val dir = java.io.File(filesDir, "scripts").apply { mkdirs() }
+                var f = java.io.File(dir, "$name.txt"); var k = 1
+                while (f.exists()) f = java.io.File(dir, "$name (${k++}).txt")
+                f.writeBytes(bytes)
+                Uri.fromFile(f)
+            }
+            prefs.edit().putStringSet("ownScripts", ownScripts() + uri.toString()).apply()
+            log("讲稿「$name」已保存（${text.length} 字）")
+            openBook(uri)
+            if (Build.VERSION.SDK_INT >= 29 && overwrite == null) "已保存到「下载/NimoGo/讲稿」并打开" else "已保存并打开"
+        } catch (e: Exception) {
+            log("讲稿保存失败：$e")
+            "保存失败：${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
     /** 眼镜收一张图平均多少毫秒（手机界面显示，方便比较图片和文字两种显示的速度）。 */
     fun imageIntervalMs(): Long? = if (::client.isInitialized) client.imageIntervalMs() else null
 

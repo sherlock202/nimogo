@@ -1332,6 +1332,15 @@ class MainActivity : Activity(), ReaderService.UiListener {
         })
         page.addView(auto)
         page.addView(pill("打开书籍（TXT · EPUB · MOBI）", dark = false) { openFile() })
+        page.addView(hbox().apply {
+            addView(pill("粘贴文字新建讲稿", dark = false, small = true) { editScript(null) }, weighted())
+            addView(View(this@MainActivity), LinearLayout.LayoutParams(dp(10), 1))
+            addView(pill("编辑当前讲稿", dark = false, small = true) {
+                val s = service
+                val b = s?.book
+                if (s == null || b == null) toast("还没有打开讲稿") else editScript(b.title to b.text)
+            }, weighted())
+        }, lp(top = 10))
         page.addView(pill("演讲模式（屏幕全黑，戒指 / 音量键翻页）", dark = false) { enterSpeech() }, lp(top = 10))
         page.addView(note("手机真正息屏后，系统不会把戒指和音量键交给任何 app。演讲模式让屏幕全黑、亮度最低但不锁屏，" +
             "手机放进口袋也能用戒指翻：上下翻行，左右翻页。手机屏幕被误碰不会翻，长按屏幕或按返回键退出。").apply { setPadding(dp(4), dp(8), dp(4), 0) })
@@ -3627,6 +3636,54 @@ class MainActivity : Activity(), ReaderService.UiListener {
     }
 
     // ---------- 打开文件 / 目录 ----------
+
+    /**
+     * 讲稿编辑：粘贴（或修改）文字，存成 TXT 并打开。current 是正在看的书（标题, 全文）；
+     * 是 NimoGo 自己存的讲稿就覆盖原文件，否则另存一份新的 TXT。
+     */
+    private fun editScript(current: Pair<String, String>?) {
+        val s = service ?: return
+        val clip = (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+        fun clipText() = runCatching { clip.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString() }.getOrNull().orEmpty()
+        val overwrite = if (current != null && s.isOwnScript(s.bookUri)) s.bookUri else null
+        val titleF = field("标题（文件名）").apply {
+            setText(current?.first?.removeSuffix(".txt") ?: java.text.SimpleDateFormat("讲稿 M月d日 HH:mm", java.util.Locale.CHINA).format(java.util.Date()))
+        }
+        val body = field("把讲稿文字粘贴在这里", multi = true).apply {
+            minLines = 8; maxLines = 14; isVerticalScrollBarEnabled = true
+            setText(current?.second ?: clipText())
+        }
+        val count = text("", 11.5f, SUB)
+        fun recount() { count.text = "${body.text.length} 字" + if (overwrite != null) " · 保存时覆盖原文件" else if (current != null) " · 另存为新的 TXT" else "" }
+        body.addTextChangedListener(onEdit { recount() })
+        recount()
+        val tools = hbox().apply {
+            addView(pill("粘贴", dark = false, small = true) {
+                val t = clipText()
+                if (t.isEmpty()) toast("剪贴板里没有文字") else body.text.insert(body.selectionStart.coerceAtLeast(0), t)
+            })
+            addView(View(this@MainActivity), LinearLayout.LayoutParams(dp(8), 1))
+            addView(pill("复制全部", dark = false, small = true) {
+                clip.setPrimaryClip(android.content.ClipData.newPlainText("讲稿", body.text.toString())); toast("已复制 ${body.text.length} 字")
+            })
+            addView(View(this@MainActivity), LinearLayout.LayoutParams(dp(8), 1))
+            addView(pill("清空", dark = false, small = true) { body.setText("") })
+        }
+        AlertDialog.Builder(this).setTitle(if (current == null) "新建讲稿" else "编辑讲稿")
+            .setView(ScrollView(this).apply {
+                addView(vbox().apply {
+                    setPadding(dp(20), dp(8), dp(20), 0)
+                    addView(titleF); addView(body, lp(top = 10)); addView(count, lp(top = 4)); addView(tools, lp(top = 8))
+                })
+            })
+            .setPositiveButton("保存并打开") { _, _ ->
+                val t = body.text.toString()
+                if (t.isBlank()) { toast("没有文字"); return@setPositiveButton }
+                toast(s.saveScript(titleF.text.toString(), t, overwrite))
+                refreshNow()
+            }
+            .setNegativeButton("取消", null).show()
+    }
 
     private fun openFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
