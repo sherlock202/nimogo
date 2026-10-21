@@ -66,3 +66,7 @@ Apache Commons Compress（org.apache.commons:commons-compress 1.27.1，Apache Li
 ------------------------------------------------------------------------
 汉字拼音表（app/src/main/assets/follow/pinyin.txt）
 由 pypinyin（MIT License，Copyright (c) 2016 mozillazg, 闲耘）生成，数据来自 pinyin-data（MIT License）。
+
+------------------------------------------------------------------------
+字形替换表（app/src/main/assets/follow/simplify.txt）
+由 OpenCC 的 TSCharacters、JPVariants 词典生成（Apache License 2.0，Copyright (c) Carbo Kuo and contributors）。

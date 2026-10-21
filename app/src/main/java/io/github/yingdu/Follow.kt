@@ -49,8 +49,34 @@ object FollowText {
     private fun isLatin(c: Char) = c in 'a'..'z' || c in 'A'..'Z'
 
     /**
+     * 假名 → 罗马字（片假名先换成平假名）。讲稿里的「ナスカ」和识别出的「なすか」「ナスカ」能对上；
+     * 识别成中文音译（「纳斯卡」na si ka）时也能对上一部分。长音「ー」、促音「っ」不算音节。
+     */
+    private val KANA: Map<Char, String> = run {
+        val rows = listOf(
+            "あいうえお" to listOf("a", "i", "u", "e", "o"), "かきくけこ" to listOf("ka", "ki", "ku", "ke", "ko"),
+            "がぎぐげご" to listOf("ga", "gi", "gu", "ge", "go"), "さしすせそ" to listOf("sa", "shi", "su", "se", "so"),
+            "ざじずぜぞ" to listOf("za", "ji", "zu", "ze", "zo"), "たちつてと" to listOf("ta", "chi", "tsu", "te", "to"),
+            "だぢづでど" to listOf("da", "ji", "zu", "de", "do"), "なにぬねの" to listOf("na", "ni", "nu", "ne", "no"),
+            "はひふへほ" to listOf("ha", "hi", "fu", "he", "ho"), "ばびぶべぼ" to listOf("ba", "bi", "bu", "be", "bo"),
+            "ぱぴぷぺぽ" to listOf("pa", "pi", "pu", "pe", "po"), "まみむめも" to listOf("ma", "mi", "mu", "me", "mo"),
+            "やゆよ" to listOf("ya", "yu", "yo"), "らりるれろ" to listOf("ra", "ri", "ru", "re", "ro"),
+            "わをん" to listOf("wa", "o", "n"), "ぁぃぅぇぉ" to listOf("a", "i", "u", "e", "o"), "ゃゅょ" to listOf("ya", "yu", "yo"),
+            "ゔ" to listOf("vu"))
+        val m = HashMap<Char, String>()
+        for ((chars, ro) in rows) chars.forEachIndexed { i, ch -> m[ch] = ro[i] }
+        m
+    }
+
+    /** 假名的音节（不是假名、或者是长音 / 促音时为 null）。 */
+    fun kana(c: Char): String? {
+        val h = if (c in '\u30A1'..'\u30F6') (c.code - 0x60).toChar() else c
+        return KANA[h]
+    }
+
+    /**
      * 把 text[from, to) 切成音节：汉字一个字一个音节，阿拉伯数字一位一个音节（按中文读法），英文一个单词一个音节；
-     * 标点、空格、假名等跳过（识别不出来，留着只会打乱对齐）。
+     * 假名按罗马字一个假名一个音节；标点、空格、长音这些跳过。
      */
     fun tokenize(text: CharSequence, from: Int, to: Int, table: PinyinTable, dict: MutableMap<String, Int>): FollowTokens {
         val ids = ArrayList<Int>(); val st = ArrayList<Int>(); val en = ArrayList<Int>()
@@ -67,7 +93,7 @@ object FollowText {
                     while (j < end && (isLatin(text[j]) || text[j] == '\'')) j++
                     add("#" + text.substring(i, j).lowercase(), i, j); i = j
                 }
-                else -> { table.of(c)?.let { add(fuzzy(it), i, i + 1) }; i++ }
+                else -> { (table.of(c) ?: kana(c))?.let { add(fuzzy(it), i, i + 1) }; i++ }
             }
         }
         return FollowTokens(ids.toIntArray(), st.toIntArray(), en.toIntArray())
@@ -201,3 +227,28 @@ object WavPcm {
         return ShortArray(0)
     }
 }
+
+/**
+ * 文字显示时换掉眼镜自带字库里没有的字（2026-10-21：「欅」在提词器里显示不出来）。
+ * 数据是 assets/follow/simplify.txt：每行两个字，前一个换成后一个（繁体、日文新字体 → 简体，只收 GB2312 以外的字）。
+ */
+class GlyphFallback(data: String) {
+    private val map = HashMap<Char, Char>(4_000)
+
+    init {
+        for (line in data.lineSequence()) if (line.length >= 2 && line[0] != '#') map[line[0]] = line[1]
+    }
+
+    fun apply(s: String): String {
+        var out: StringBuilder? = null
+        for (i in s.indices) {
+            val r = map[s[i]] ?: continue
+            if (out == null) out = StringBuilder(s)
+            out.setCharAt(i, r)
+        }
+        return out?.toString() ?: s
+    }
+
+    val size get() = map.size
+}
+

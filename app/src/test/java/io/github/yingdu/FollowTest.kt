@@ -132,4 +132,28 @@ class FollowTest {
         val b = FollowAligner()
         assertFalse(b.update(FollowText.tokenize("黄灯", 0, 2, table, dict).ids, s, 0).moved)
     }
+
+    @Test fun kanaAndJapaneseNames() {
+        // 讲稿「编曲：ナスカ」「黒い羊」：识别成平假名、片假名、或者中文音译都能对上
+        val script5 = "黒い羊 中文版\n编曲：ナスカ\n原唱：欅坂46\n红绿灯两种颜色吗"
+        val dict = HashMap<String, Int>()
+        val s = FollowText.tokenize(script5, 0, script5.length, table, dict)
+        fun at(said: String): FollowAligner.Result {
+            val a = FollowAligner()
+            return a.update(FollowText.tokenize(said, 0, said.length, table, dict).ids, s, 0).also { if (it.moved) assertTrue(a.offset > 0) }
+        }
+        assertEquals("na", FollowText.kana('ナ')); assertEquals("na", FollowText.kana('な')); assertEquals(null, FollowText.kana('ー'))
+        assertTrue(at("黒い羊").moved)
+        assertTrue(at("编曲なすか").moved)
+        assertTrue(at("编曲ナスカ").moved)
+        assertTrue(at("原唱榉坂").moved)
+    }
+
+    @Test fun glyphFallback() {
+        val f = java.io.File(listOf("src/main/assets/follow/simplify.txt", "app/src/main/assets/follow/simplify.txt").first { java.io.File(it).isFile })
+        val g = GlyphFallback(f.readText())
+        assertTrue(g.size > 2000)
+        assertEquals("原唱：榉坂46 东京驿", g.apply("原唱：欅坂46 東京駅"))
+        assertEquals("红绿灯", g.apply("红绿灯"))
+    }
 }

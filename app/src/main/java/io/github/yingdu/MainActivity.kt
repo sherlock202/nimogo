@@ -1899,6 +1899,10 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val l = listBox()
         val progToggle = Toggle { service?.let { it.showProgress = !it.showProgress }; refreshNow() }
         l.addRow(Row("显示阅读进度") { service?.let { it.showProgress = !it.showProgress }; refreshNow() }.apply { accessory(progToggle.root) }.root)
+        val fbToggle = Toggle { service?.let { it.textFallback = !it.textFallback }; refreshNow() }
+        l.addRow(Row("文字显示：缺的字换成简体", "眼镜自带的字库缺一些繁体、日文汉字（例如欅、駅），换成榉、驿；跟读时也是文字显示") {
+            service?.let { it.textFallback = !it.textFallback }; refreshNow()
+        }.apply { accessory(fbToggle.root) }.root)
         page.addView(l)
 
         val textPart = vbox()
@@ -1926,7 +1930,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         onUpdate(Sub.READ_SET) { s ->
             seg.select(if (s.readerAsImage) 0 else 1)
             volSeg.select(s.volumeKeys)
-            progToggle.set(s.showProgress)
+            progToggle.set(s.showProgress); fbToggle.set(s.textFallback)
             textPart.visibility = if (s.readerAsImage) View.GONE else View.VISIBLE
             pageRow.value(if (s.displayPage == DisplayPage.PROMPTER) "提词器页" else "笔记页")
         }

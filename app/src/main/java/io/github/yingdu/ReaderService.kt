@@ -144,6 +144,13 @@ class ReaderService : Service(), NimoListener, AppHost {
     var scrollLines: Int
         get() = prefs.getInt("scrollLines", 0)
         set(v) { prefs.edit().putInt("scrollLines", v.coerceIn(0, 20)).apply() }
+    /** 文字显示时，把眼镜字库里没有的字（繁体、日文汉字）换成简体（默认开）。 */
+    var textFallback: Boolean
+        get() = prefs.getBoolean("textFallback", true)
+        set(v) { prefs.edit().putBoolean("textFallback", v).apply(); pushPage() }
+    private val glyphFallback by lazy { GlyphFallback(runCatching { assets.open("follow/simplify.txt").bufferedReader().readText() }.getOrDefault("")) }
+    private fun glassesText(s: String) = if (textFallback) glyphFallback.apply(s) else s
+
     var showProgress: Boolean
         get() = prefs.getBoolean("showProgress", false)
         set(v) { prefs.edit().putBoolean("showProgress", v).apply(); pushPage() }
@@ -1589,10 +1596,10 @@ class ReaderService : Service(), NimoListener, AppHost {
             val ch = currentChapterTitle()
             val status = if (followOn) "跟读 · " + followHeard.takeLast(14).ifEmpty { "…" }
                 else if (showProgress) listOf(ch, "%.1f%%".format(progressPercent())).filter { it.isNotEmpty() }.joinToString("  ") else ch
-            client.showText(page.text, status)
+            client.showText(glassesText(page.text), glassesText(status))
         } else {
             val text = if (showProgress) page.text + "\n— %.1f%% —".format(progressPercent()) else page.text
-            client.showText(text)
+            client.showText(glassesText(text))
         }
         restartAutoFlipTimer()
         notifyUi()
