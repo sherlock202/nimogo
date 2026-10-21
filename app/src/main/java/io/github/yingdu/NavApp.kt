@@ -88,7 +88,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         host.main.removeCallbacks(autoClose)
         val id = ++reqId
         this.dest = dest; this.mode = mode
-        phase = Phase.ROUTING; snap = null; error = ""; page = 0; noDataHint = ""
+        phase = Phase.ROUTING; snap = null; error = ""; page = 0; noDataHint = ""; junctions = emptyList()
         host.log("导航：规划到「${dest.title}」的路线（${mode.zh}）")
         showOnGlasses(this)
         show()
@@ -117,7 +117,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         NavGuide.stop()
         host.main.removeCallbacks(autoClose)
         if (phase != Phase.IDLE) host.log("导航结束")
-        phase = Phase.IDLE; snap = null; page = 0
+        phase = Phase.IDLE; snap = null; page = 0; junctions = emptyList()
         hideFromGlasses(this)
         host.changed()
     }
@@ -168,12 +168,30 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     private fun onSnap(s: NavSnap) {
         // 规划中收到的可能是上一条路线的数据：等算路结果出来（phase 变成 GUIDING）再显示
         if (phase != Phase.GUIDING) return
+        val end = NavGuide.here?.let { h -> NavGuide.route.lastOrNull()?.let { NavMap.dist(h, it) } }
+        if (NavArrive.reached(s, end, mode)) {
+            host.log("导航：离终点很近了（剩 ${s.remainMeters ?: "?"} 米，离路线终点 ${end?.toInt() ?: "?"} 米，状态 ${s.state}），结束导航")
+            arrived(); return
+        }
         if (s.state == NavSnap.STOPPED) return
         snap = s
+        updateJunctions(s)
         val key = phase.name + page + s.displayKey()
         if (key == lastKey) return
         lastKey = key
         show()
+    }
+
+    /** 小地图上的路口（淡线）：前方几步的按转向估出来，走过的留着。 */
+    private var junctions: List<NavJunction> = emptyList()
+
+    private fun updateJunctions(s: NavSnap) {
+        if (!showMap) return
+        val here = NavGuide.here ?: return
+        val route = NavGuide.route
+        val steps = listOfNotNull(s.current) + s.next
+        junctions = runCatching { NavJunctions.merge(junctions, NavJunctions.upcoming(route, here, NavGuide.course, s.toStepMeters, steps), route) }
+            .getOrDefault(junctions)
     }
 
     /** 位置移动了约 5 米或路线变了，才重画小地图。 */
@@ -304,7 +322,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     /** 左边小地图（前进方向朝上），右边箭头、距离、说明。 */
     private fun drawWithMap(f: Frame, big: PixelText, s: NavSnap, c: NavStep, icon: NavIcon, here: NavPoint, rerouting: Boolean) {
         val mapW = 200; val top = 28
-        NavDraw.miniMap(f.canvas, NavGuide.route, here, NavGuide.course, NavGuide.facing, s.toStepMeters, 0f, top.toFloat(), mapW.toFloat(), (f.h - top).toFloat(), rerouting)
+        NavDraw.miniMap(f.canvas, NavGuide.route, junctions, here, NavGuide.course, NavGuide.facing, s.toStepMeters, 0f, top.toFloat(), mapW.toFloat(), (f.h - top).toFloat(), rerouting)
         // 分隔线
         var yy = top + 2; while (yy < f.h) { f.rect(mapW + 2, yy, 1, 2, Frame.FAINT); yy += 5 }
         val x = mapW + 10
@@ -437,10 +455,10 @@ object NavDraw {
     }
 
     /**
-     * 小地图：路线（走过的半亮、前面的全亮加粗）、下一个转弯点（圆圈）、当前位置（中下方的三角，前进方向朝上）。
+     * 小地图：路线（走过的半亮、前面的全亮加粗）、路口（淡的细线）、下一个转弯点（圆圈）、当前位置（中下方的三角，前进方向朝上）。
      * 只画在 (left, top, w, h) 这个框里。
      */
-    fun miniMap(c: Canvas, route: List<NavPoint>, here: NavPoint, course: Double?, facing: Double?, toTurn: Int?, left: Float, top: Float, w: Float, h: Float, dim: Boolean) {
+    fun miniMap(c: Canvas, route: List<NavPoint>, junctions: List<NavJunction>, here: NavPoint, course: Double?, facing: Double?, toTurn: Int?, left: Float, top: Float, w: Float, h: Float, dim: Boolean) {
         val (seg, on) = NavMap.snap(route, here, course)
         val heading = NavMap.headingAt(route, seg, on)
         val cx = left + w / 2; val cy = top + h * 0.78f
@@ -452,6 +470,12 @@ object NavDraw {
         val ahead = Paint(past).apply { color = if (dim) 0xFFA0A0A0.toInt() else 0xFFFFFFFF.toInt(); strokeWidth = 8f }
         fun path(points: List<NavPoint>) = Path().apply {
             points.forEachIndexed { i, p -> val (x, y) = pt(p); if (i == 0) moveTo(x, y) else lineTo(x, y) }
+        }
+        // 路口：路线以外的路，用淡的细线
+        val side = Paint(past).apply { strokeWidth = 3f }
+        for (j in junctions) {
+            val (jx, jy) = pt(j.at)
+            for (b in j.stubs) { val (ex, ey) = pt(NavMap.offset(j.at, b, maxOf(NavJunctions.STUB, 14 * mpp))); c.drawLine(jx, jy, ex, ey, side) }
         }
         c.drawPath(path(route.subList(0, seg + 1) + on), past)
         c.drawPath(path(listOf(on) + route.subList(seg + 1, route.size)), ahead)

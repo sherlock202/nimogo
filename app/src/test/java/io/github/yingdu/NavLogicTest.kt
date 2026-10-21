@@ -218,3 +218,54 @@ class NavFacingTest {
     }
 }
 
+class NavArriveTest {
+    private fun snap(state: Int, maneuver: Int, toStep: Int?, remain: Int?) =
+        NavSnap(state, NavStep(maneuver, "", "", toStep), toStep, 10, remain, 60, emptyList())
+
+    @Test fun nearTheEnd() {
+        assertFalse(NavArrive.reached(snap(1, 7, 120, 300), 280.0, NavMode.WALKING))
+        assertTrue(NavArrive.reached(snap(1, 7, 12, 12), null, NavMode.WALKING))          // 剩 12 米
+        assertTrue(NavArrive.reached(snap(1, 7, 120, null), 9.0, NavMode.WALKING))        // 离路线终点 9 米
+        assertTrue(NavArrive.reached(snap(1, 3, 10, null), null, NavMode.WALKING))        // 最后一步「目的地在左边」，剩 10 米
+        assertFalse(NavArrive.reached(snap(1, 3, 60, 60), 55.0, NavMode.WALKING))
+        assertTrue(NavArrive.reached(snap(1, 3, 35, 35), null, NavMode.DRIVING))
+    }
+
+    @Test fun sdkStoppedGuidance() {
+        assertTrue(NavArrive.reached(snap(3, 2, 30, null), null, NavMode.WALKING))       // 停了，已经在最后一步
+        assertTrue(NavArrive.reached(snap(3, 7, 80, 80), null, NavMode.WALKING))         // 停了，离终点 80 米
+        assertFalse(NavArrive.reached(snap(3, 7, 300, 900), null, NavMode.WALKING))      // 停了但还很远：不算到达
+        assertFalse(NavArrive.reached(snap(1, 7, 0, null), null, NavMode.WALKING))       // 0 是无效值
+    }
+}
+
+class NavJunctionsTest {
+    private val route = listOf(NavPoint(35.6970, 139.7740), NavPoint(35.6979, 139.7740), NavPoint(35.6979, 139.769575))
+
+    @Test fun shapes() {
+        assertEquals(listOf(0.0, 90.0), NavJunctions.stubs(NavIcon.LEFT, 0.0, 270.0))       // 往北走、左转：十字
+        assertEquals(listOf(90.0, 270.0), NavJunctions.stubs(NavIcon.STRAIGHT, 0.0, 0.0))   // 直行过路口：横线
+        assertEquals(listOf(340.0), NavJunctions.stubs(NavIcon.KEEP_RIGHT, 0.0, 20.0))      // 靠右：另一条岔往左
+        assertTrue(NavJunctions.stubs(NavIcon.DESTINATION, 0.0, 0.0).isEmpty())
+        assertEquals(-90.0, NavJunctions.turnAngle(0.0, 270.0), 1e-9)
+    }
+
+    @Test fun positionsAlongRoute() {
+        // 离左转还有 20 米（逐向数据说 25 米，对齐到路线的拐点），左转后 150 米直行过一个路口
+        val here = NavPoint(35.6979 - 20 / 110_574.0, 139.7740)
+        val steps = listOf(NavStep(6, "", "", 100), NavStep(5, "", "", 150), NavStep(2, "", "", 400))
+        val js = NavJunctions.upcoming(route, here, null, 25, steps)
+        assertEquals(2, js.size)
+        assertEquals(0.0, NavMap.dist(js[0].at, route[1]), 1.0)
+        assertEquals(listOf(0.0, 90.0), js[0].stubs.map { Math.round(it).toDouble() })
+        assertEquals(150.0, NavMap.dist(js[1].at, route[1]), 2.0)
+        assertEquals(listOf(0.0, 180.0), js[1].stubs.map { Math.round(it).toDouble() }.sorted())
+        // 走过的路口留着；新算的替换掉附近的旧的
+        val moved = js.map { it.copy(at = NavMap.offset(it.at, 90.0, 3.0)) }
+        assertEquals(2, NavJunctions.merge(js, moved, route).size)
+        assertEquals(3, NavJunctions.merge(js, listOf(NavJunction(NavMap.offset(route[1], 270.0, 80.0), listOf(0.0))), route).size)
+        // 不在新路线上的旧路口丢掉
+        assertTrue(NavJunctions.merge(js, emptyList(), listOf(NavPoint(35.0, 139.0), NavPoint(35.001, 139.0))).isEmpty())
+    }
+}
+

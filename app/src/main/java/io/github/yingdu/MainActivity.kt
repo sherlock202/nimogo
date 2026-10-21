@@ -1944,7 +1944,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val modeSeg = Seg(NavMode.values().map { it.zh }) { i -> service?.nav?.defaultMode = NavMode.values()[i]; refreshNow() }
         r.addRow(FrameLayout(this).apply { setPadding(dp(14), dp(10), dp(14), dp(12)); addView(modeSeg.root) })
         val mapT = Toggle { service?.nav?.let { it.showMap = !it.showMap }; refreshNow() }
-        r.addRow(Row("眼镜上显示小地图", "路线形状和当前位置，前进方向朝上").apply { accessory(mapT.root) }.root)
+        r.addRow(Row("眼镜上显示小地图", "路线形状、当前位置和要转弯、过马路的路口，前进方向朝上").apply { accessory(mapT.root) }.root)
         val voiceT = Toggle { service?.nav?.let { it.voice = !it.voice }; refreshNow() }
         r.addRow(Row("手机语音播报", "下次开始导航时生效").apply { accessory(voiceT.root) }.root)
         val tollT = Toggle { service?.nav?.let { it.avoidTolls = !it.avoidTolls }; refreshNow() }

@@ -237,3 +237,26 @@ object NavBudget {
     /** 再导航 n 个目的地会不会超过上限（上限 0 = 不限制）。 */
     fun allowed(used: Int, limit: Int, n: Int = 1) = limit <= 0 || used + n <= limit
 }
+
+/**
+ * 到了没有。SDK 的到达事件（ArrivalListener）实测有时不来，或者 SDK 自己停了引导、逐向数据变成「已停止」，
+ * 眼镜就一直停在最后一步。这里用剩余距离补上。
+ */
+object NavArrive {
+    /** 离终点多近算到了（米）。 */
+    fun near(mode: NavMode) = when (mode) { NavMode.WALKING -> 15; NavMode.CYCLING -> 25; NavMode.DRIVING -> 40 }
+
+    /** @param toRouteEnd 当前位置离路线终点的直线距离（米），不知道时为 null */
+    fun reached(s: NavSnap, toRouteEnd: Double?, mode: NavMode): Boolean {
+        val n = near(mode)
+        val remain = s.remainMeters
+        if (remain != null && remain in 1..n) return true
+        if (toRouteEnd != null && toRouteEnd <= n) return true
+        val lastStep = s.current?.let { NavIcon.of(it.maneuver) == NavIcon.DESTINATION } == true
+        if (lastStep && (s.toStepMeters ?: Int.MAX_VALUE) <= n) return true
+        // SDK 停了引导：已经在最后一步、或离终点不到 100 米，就当作到了
+        if (s.state == NavSnap.STOPPED && (lastStep || (remain != null && remain <= 100))) return true
+        return false
+    }
+}
+

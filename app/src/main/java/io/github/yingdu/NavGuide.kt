@@ -256,7 +256,10 @@ object NavGuide {
     }
 
     private val arrival = object : Navigator.ArrivalListener {
-        override fun onArrival(e: ArrivalEvent) { if (e.isFinalDestination) main.post { onArrived?.invoke() } }
+        override fun onArrival(e: ArrivalEvent) {
+            note("SDK：到达事件（${if (e.isFinalDestination) "终点" else "途经点"}）")
+            if (e.isFinalDestination) main.post { onArrived?.invoke() }
+        }
     }
 
     fun travelMode(m: NavMode) = when (m) {

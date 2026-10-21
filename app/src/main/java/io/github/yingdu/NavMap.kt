@@ -75,6 +75,32 @@ object NavMap {
         return 0.0
     }
 
+    /** 从 p 往 bearingDeg 方向走 m 米到的点。 */
+    fun offset(p: NavPoint, bearingDeg: Double, m: Double): NavPoint {
+        val r = bearingDeg * PI / 180
+        return NavPoint(p.lat + m * cos(r) / M_PER_DEG_LAT, p.lng + m * sin(r) / (M_PER_DEG_LNG_EQ * cos(p.lat * PI / 180)))
+    }
+
+    /** 路线上每个点离起点的累计距离（米）。 */
+    fun cumulative(route: List<NavPoint>): DoubleArray {
+        val c = DoubleArray(route.size)
+        for (i in 1 until route.size) c[i] = c[i - 1] + dist(route[i - 1], route[i])
+        return c
+    }
+
+    /** 离起点 s 米处的点（超出范围就取两头）。 */
+    fun at(route: List<NavPoint>, cum: DoubleArray, s: Double): NavPoint {
+        if (route.isEmpty()) return NavPoint(0.0, 0.0)
+        if (s <= 0) return route.first()
+        for (i in 1 until route.size) if (cum[i] >= s) {
+            val len = cum[i] - cum[i - 1]
+            val t = if (len <= 0) 0.0 else (s - cum[i - 1]) / len
+            val a = route[i - 1]; val b = route[i]
+            return NavPoint(a.lat + (b.lat - a.lat) * t, a.lng + (b.lng - a.lng) * t)
+        }
+        return route.last()
+    }
+
     /** 投影到屏幕：中心点 c 在 (cx, cy)，heading 方向朝上，每像素 mpp 米。 */
     fun toScreen(c: NavPoint, p: NavPoint, headingDeg: Double, mpp: Double, cx: Float, cy: Float): Pair<Float, Float> {
         val (dx, dy) = local(c, p)
@@ -141,3 +167,79 @@ class NavFacing(offset: Double? = null) {
         }
     }
 }
+
+/** 小地图上的一个路口：在 at 这个点，朝 stubs 这几个方向（度）各画一小段淡线，表示路线以外的路。 */
+data class NavJunction(val at: NavPoint, val stubs: List<Double>)
+
+/**
+ * 路口的位置和形状。Google 导航只给这条路线的形状和每一步的转向，不给周围的路，
+ * 所以这里按转向估一个大概的样子：转弯处画成十字（T 字路口也会画成十字），直行穿过的路口画一条横线，岔路画出另一条岔。
+ */
+object NavJunctions {
+    /** 淡线画多长（米）。 */
+    const val STUB = 22.0
+
+    /** 带符号的转角（度）：正数往右，负数往左。 */
+    fun turnAngle(inB: Double, outB: Double): Double = ((outB - inB) % 360 + 540) % 360 - 180
+
+    /** 这个转向在路口画哪几条淡线（方向，度）。inB 进路口的方向，outB 出路口的方向。 */
+    fun stubs(icon: NavIcon, inB: Double, outB: Double): List<Double> {
+        val t = turnAngle(inB, outB)
+        val list = when (icon) {
+            NavIcon.LEFT, NavIcon.RIGHT, NavIcon.SHARP_LEFT, NavIcon.SHARP_RIGHT, NavIcon.SLIGHT_LEFT, NavIcon.SLIGHT_RIGHT ->
+                listOf(inB, outB + 180)                       // 不转弯的话继续往前的路，和横路的另一半
+            NavIcon.STRAIGHT -> listOf(inB + 90, inB - 90)     // 直行穿过的路口（过马路）：横着的路
+            NavIcon.KEEP_LEFT, NavIcon.KEEP_RIGHT ->           // 岔路：另一条岔
+                listOf(if (kotlin.math.abs(t) >= 10) inB - t else if (icon == NavIcon.KEEP_LEFT) inB + 30 else inB - 30)
+            else -> emptyList()
+        }.map { (it % 360 + 360) % 360 }
+        // 和来路、去路重叠的就不画
+        return list.filter { NavMap.angleDiff(it, (inB + 180) % 360) >= 30 && NavMap.angleDiff(it, outB) >= 30 }
+    }
+
+    /**
+     * 接下来几步的路口：第一步在前方 toStep 米，后面每步再加上它的距离。只算前方 maxAhead 米以内的。
+     * 转弯的位置对齐到附近拐得最厉害的路线点（路线的拐点就是路口，比逐向数据的距离准）。
+     */
+    fun upcoming(route: List<NavPoint>, here: NavPoint, course: Double?, toStep: Int?, steps: List<NavStep>, maxAhead: Double = 1500.0): List<NavJunction> {
+        if (route.size < 2 || toStep == null || steps.isEmpty()) return emptyList()
+        val cum = NavMap.cumulative(route)
+        val (seg, on) = NavMap.snap(route, here, course)
+        val start = cum[seg] + NavMap.dist(route[seg], on)
+        val total = cum.last()
+        val out = ArrayList<NavJunction>()
+        var s = start + toStep
+        steps.forEachIndexed { i, step ->
+            if (i > 0) s += step.meters ?: return out
+            if (s - start > maxAhead || s >= total - 1) return out
+            val icon = NavIcon.of(step.maneuver)
+            var at = s
+            if (icon != NavIcon.STRAIGHT) {
+                var best = 25.0
+                for (k in 1 until route.size - 1) {
+                    if (kotlin.math.abs(cum[k] - s) > 20 || cum[k] - cum[k - 1] < 1 || cum[k + 1] - cum[k] < 1) continue
+                    val bend = NavMap.angleDiff(NavMap.bearing(route[k - 1], route[k]), NavMap.bearing(route[k], route[k + 1]))
+                    if (bend > best) { best = bend; at = cum[k] }
+                }
+                s = at                                    // 后面几步的距离从对齐后的位置算
+            }
+            val p = NavMap.at(route, cum, at)
+            val before = NavMap.at(route, cum, at - 12); val after = NavMap.at(route, cum, at + 12)
+            val outB = NavMap.bearing(p, after)
+            val inB = if (NavMap.dist(before, p) > 1) NavMap.bearing(before, p) else outB
+            val st = stubs(icon, inB, outB)
+            if (st.isNotEmpty()) out.add(NavJunction(p, st))
+        }
+        return out
+    }
+
+    /** 新算出来的路口替换掉 12 米以内的旧的；走过的路口留着（还在路线上的），最多留 40 个。 */
+    fun merge(old: List<NavJunction>, new: List<NavJunction>, route: List<NavPoint>): List<NavJunction> {
+        val keep = old.filter { o ->
+            new.none { NavMap.dist(it.at, o.at) < 12 } &&
+                route.size >= 2 && NavMap.dist(NavMap.snap(route, o.at).second, o.at) < 10
+        }
+        return (keep + new).takeLast(40)
+    }
+}
+
