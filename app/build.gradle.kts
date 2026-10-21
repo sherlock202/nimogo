@@ -14,8 +14,8 @@ android {
         minSdk = 26
         // targetSdk 保持 34：萤读的界面没有适配 Android 15 起强制的全面屏（edge-to-edge），升上去状态栏会盖住内容
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.0.5"
+        versionCode = 10
+        versionName = "1.1.0"
         // 只打包 64 位 ARM（现在的手机）和 x86_64（模拟器）：语音跟读的识别库每种 CPU 都有几十 MB
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }

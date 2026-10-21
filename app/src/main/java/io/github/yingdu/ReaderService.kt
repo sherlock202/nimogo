@@ -1206,7 +1206,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         return true
     }
 
-    // ---------- 语音跟读（测试版） ----------
+    // ---------- 语音跟读 ----------
     // 眼镜麦克风 → 手机上离线识别（sherpa-onnx）→ 和讲稿按拼音对齐 → 正在念的行放在倒数第几行，图片显示时加亮并画下划线。
     // 每一步都写进跟读日志（files/follow/），「导出跟读日志」存到下载里。
 

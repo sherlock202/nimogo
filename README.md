@@ -14,6 +14,10 @@ Nimo 智能眼镜的非官方海外版伴侣 app：用 Google 导航，在日本
 | 小地图 | 眼镜左边画出路线形状、当前位置和下一个转弯点，前进方向朝上，比例尺随转弯距离自动调整。手机放胸前口袋时用指南针，站着转身箭头也跟着转。要转弯、过马路、走岔路的路口用淡的细线画出来（按转向估的形状，不是真实路网：Google 导航不提供周围道路，T 字路口也会画成十字）。「导航设置」里可关 |
 | 目的地 | 在 Google Maps 里选好地点 →「共享」→ NimoGo（支持短链接、地点链接、坐标、Place ID、geo: 链接）；也可以在「导航」页直接输入地名（用 Google 地点搜索，中文、日文都行；要启用 Places API (New)，没启用时改用手机系统的地址查询） |
 | 计费保护 | Navigation SDK 按目的地计费（每月前 1000 个免费，偏航重算不计）。每次开始前确认；本机按月计数，可设每月上限（默认 1000） |
+| 语音跟读 | 提词时眼镜麦克风听你念，手机上离线识别（SenseVoice，中日英），按拼音和讲稿对齐，自动翻到念到的地方；繁体、简体、同音字都对得上，跳句能跟上，讲稿以外的话会停住。正在念的行放在倒数第二行或中间 |
+| 戒指 / 演讲模式 | 阅读页里蓝牙戒指、方向键、翻页笔、音量键都能翻：上下翻行，左右翻页。「演讲模式」屏幕全黑但不锁屏，手机放口袋里戒指照常能用 |
+| 讲稿 | 「粘贴文字新建讲稿」把剪贴板的文字存成 TXT 并打开（在手机的「下载/NimoGo/讲稿」），也能编辑当前讲稿 |
+| 手机离线转文字 | 全天记忆、实时字幕的转文字可以选「手机离线」（SenseVoice，和语音跟读共用模型）：不联网、不要 Key，海外没有网络延迟；也可以用海外的 Groq（有免费额度） |
 
 阅读、看板、通知转发等功能来自萤读，照常可用（说明见文末）。
 
@@ -48,8 +52,8 @@ Nimo 智能眼镜的非官方海外版伴侣 app：用 Google 导航，在日本
 
 **发布新版本（自动发到 Releases）**
 1. 改 `app/build.gradle.kts` 里的 `versionName`（和 `versionCode` 加一），在 `docs/release-notes.md` 里写这一版的说明，提交。
-2. 打标签并推送：`git tag v1.0.5 && git push origin main v1.0.5`。
-3. Actions 编好后会自动建一个 Release，附上 `NimoGo-v1.0.5.apk`。发布版必须用固定签名（上面第 4 步的 Secrets），没设置会报错停止。
+2. 打标签并推送：`git tag v1.1.0 && git push origin main v1.1.0`。
+3. Actions 编好后会自动建一个 Release，附上 `NimoGo-v1.1.0.apk`。发布版必须用固定签名（上面第 4 步的 Secrets），没设置会报错停止。
 
 **方法二：Android Studio**（必须用 Android Studio / Gradle）
 
@@ -58,7 +62,8 @@ NimoGo 依赖 Navigation SDK（从 Google Maven 下载），原版的「不用 A
 - Android Studio 打开仓库根目录，Gradle 同步后 Run。需要：Gradle 8.13（wrapper 会自动下载）、AGP 8.13.2、Kotlin 2.3.0、compileSdk 36、JDK 17 以上（Android Studio 自带的即可）。
 - Navigation SDK 版本 7.9.0（2026-08）。8.0 起要求 AGP 9 / Gradle 9.1 / targetSdk 37，升级时注意。
 - `targetSdk` 保持 34：原版界面没适配 Android 15 起强制的全面屏，升上去状态栏会盖住内容。Navigation SDK 文档要求 targetSdk 36，若运行时有问题，先把 targetSdk 改成 36 再试（界面要另外适配）。
-- 手机需要 Google Play 服务、2 GB 以上内存。
+- 手机需要 Google Play 服务、2 GB 以上内存；安装包只带 64 位（arm64-v8a）和 x86_64 的原生库。
+- 离线识别用 sherpa-onnx：官方只在 GitHub 发布 AAR，第一次编译时 Gradle 会自动下载到 `app/libs/`（不提交到仓库）。识别模型不在安装包里，手机第一次用时从 sherpa-onnx 的 GitHub 发布页下载。
 
 ## 开发说明
 

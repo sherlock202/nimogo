@@ -1346,8 +1346,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         page.addView(note("手机真正息屏后，系统不会把戒指和音量键交给任何 app。演讲模式让屏幕全黑、亮度最低但不锁屏，" +
             "手机放进口袋也能用戒指翻：上下翻行，左右翻页。手机屏幕被误碰不会翻，长按屏幕或按返回键退出。").apply { setPadding(dp(4), dp(8), dp(4), 0) })
 
-        // 语音跟读（测试版）
-        page.addView(section("语音跟读（测试版）"))
+        // 语音跟读
+        page.addView(section("语音跟读"))
         val fl = listBox()
         val followRow = Row("语音跟读", "眼镜麦克风听你念，自动翻到念到的地方")
         val followT = Toggle { service?.toggleFollow(); refreshNow() }
