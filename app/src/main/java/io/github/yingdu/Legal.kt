@@ -5,7 +5,7 @@ package io.github.yingdu
  * 内容有实质改动时把 VERSION 加一，用户下次打开会再看到一次。
  */
 object Legal {
-    const val VERSION = 7
+    const val VERSION = 8
 
     const val DISCLAIMER =
         "1. NimoGo 是个人开发的非官方第三方 app，与 Nimo 眼镜的厂商没有任何关系，也没有得到厂商的授权或认可。" +
@@ -28,7 +28,7 @@ object Legal {
         "录音只用来转文字：全天记忆的录音转好文字就删掉（没转成的最多留一天），实时字幕的声音不在手机上保存。\n" +
         "· 全天记忆 · 每天总结、问 AI：转写的文字发给你选的大模型（Claude、硅基流动、DeepSeek、OpenAI，或你填的 OpenAI 兼容接口），用你自己的 API Key。\n" +
         "· 导航：导航期间的精确位置、目的地和路线由 Google Navigation SDK 发给 Google，用你自己的 API Key；" +
-        "从 Google Maps 共享过来的短链接会访问 Google 的服务器展开；只输入地名时用手机系统的地理编码查坐标。\n" +
+        "从 Google Maps 共享过来的短链接会访问 Google 的服务器展开；在 NimoGo 里输入地名时，地名和当前位置发给 Google 地点搜索（Places API，用你自己的 API Key；用不了时改用手机系统的地理编码）。\n" +
         "· 景点介绍：精确位置发给你选的地图服务（高德或 Google），景点名称发给百度百科、维基百科。\n" +
         "· 天气：大致位置或城市名发给 Open-Meteo，城市名的反查用 BigDataCloud。\n" +
         "· 股票：股票代码发给雅虎财经、腾讯证券、Robinhood、微牛（Webull）。\n" +

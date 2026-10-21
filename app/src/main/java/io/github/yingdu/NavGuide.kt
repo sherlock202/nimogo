@@ -401,8 +401,7 @@ object NavResolve {
     fun geocode(ctx: Context, d: NavDest, near: NavPoint? = null): NavDest? {
         if (d.ready) return d
         val q = d.query?.trim().orEmpty().ifEmpty { d.title }
-        val p = search(ctx, q).places.firstOrNull() ?: return null
-        return d.copy(lat = p.point.lat, lng = p.point.lng, address = p.address)
+        return search(ctx, q).choices.firstOrNull()?.dest?.copy(title = d.title)
     }
 
     /** 当前位置所在的城市、都道府县 / 州、国家。 */
@@ -461,23 +460,76 @@ object NavResolve {
         return NavPoint(l.latitude, l.longitude)
     }
 
-    /** 查地名的结果：在哪个范围找到的、找到的地点（按远近排）、当前位置和所在地区（不知道时为 null）。 */
-    class Found(val scope: NavPick.Scope, val places: List<NavPlace>, val here: NavPoint?, val area: NavArea?)
+    /** 查地名的结果：在哪个范围找到的、找到的地点（按远近排）、当前位置和所在地区（不知道时为 null）；note 是 Google 搜索用不了的原因。 */
+    class Found(val scope: NavPick.Scope, val choices: List<NavChoice>, val here: NavPoint?, val area: NavArea?, val note: String? = null)
 
     /**
-     * 查地名：先确定自己在哪（定位，反查城市和国家；定位不到就看手机网络是哪个国家的），
-     * 然后先在所在城市找，再在本国找，最后才是全世界（规则见 [NavPick.choose]）。
-     * 用当地语言查（在日本就用日语），不然手机是中文时「上野」会查到中国的同名地方。会阻塞，只在后台线程调用。
+     * 查地名：先确定自己在哪（定位，反查城市和国家；定位不到就看手机网络是哪个国家的）。
+     * 有 API Key 时用 Google 的地点搜索（Places API (New) Autocomplete，和 Google Maps 一样中文也能搜），先搜本国、没有再搜全世界；
+     * Google 搜索用不了（没开通等）时，改用手机系统的地理编码：先在所在城市找，再在本国找，最后全世界（规则见 [NavPick.choose]）。
+     * 会阻塞，只在后台线程调用。
      */
-    @Suppress("DEPRECATION")
-    fun search(ctx: Context, q: String): Found {
+    fun search(ctx: Context, q: String, apiKey: String = ""): Found {
         val here = currentLocation(ctx)
         var area = here?.let { areaOf(ctx, it) }
         if (area == null || area.country.isEmpty()) {
             val cc = networkCountry(ctx)
             if (cc.isNotEmpty()) area = NavArea(area?.locality.orEmpty(), area?.admin.orEmpty(), cc)
         }
-        if (q.isEmpty() || !Geocoder.isPresent()) return Found(NavPick.Scope.WORLD, emptyList(), here, area)
+        if (q.isEmpty()) return Found(NavPick.Scope.WORLD, emptyList(), here, area)
+        var note: String? = null
+        if (apiKey.isNotBlank()) {
+            val cc = area?.country?.takeIf { it.isNotEmpty() }
+            val lang = java.util.Locale.getDefault().toLanguageTag()
+            try {
+                val inCountry = if (cc != null) autocomplete(ctx, apiKey, NavPlacesApi.body(q, here, cc, lang), q) else emptyList()
+                if (inCountry.isNotEmpty()) return Found(NavPick.Scope.COUNTRY, inCountry, here, area)
+                val world = autocomplete(ctx, apiKey, NavPlacesApi.body(q, here, null, lang), q)
+                if (world.isNotEmpty()) return Found(NavPick.Scope.WORLD, world, here, area)
+            } catch (e: Exception) {
+                note = e.message ?: e.javaClass.simpleName
+            }
+        }
+        val geo = geocoderSearch(ctx, q, here, area)
+        return Found(geo.first, geo.second.map { p ->
+            NavChoice(p.name, p.address, here?.let { NavMap.greatCircle(it, p.point).toInt() },
+                NavDest(p.name.ifBlank { q }, p.point.lat, p.point.lng, query = q, address = p.address))
+        }, here, area, note)
+    }
+
+    /** Places API (New) Autocomplete 请求。Key 限制成 Android 应用时，要带上包名和签名证书的 SHA-1。 */
+    private fun autocomplete(ctx: Context, key: String, body: String, q: String): List<NavChoice> {
+        val c = (URL(NavPlacesApi.URL).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"; doOutput = true
+            connectTimeout = 10_000; readTimeout = 10_000
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            setRequestProperty("X-Goog-Api-Key", key)
+            setRequestProperty("X-Android-Package", ctx.packageName)
+            certSha1(ctx)?.let { setRequestProperty("X-Android-Cert", it) }
+        }
+        try {
+            c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val code = c.responseCode
+            val text = (if (code in 200..299) c.inputStream else c.errorStream)?.use { String(it.readBytes(), Charsets.UTF_8) }.orEmpty()
+            if (code !in 200..299) throw java.io.IOException(NavPlacesApi.errorText(code, text))
+            return NavPlacesApi.parse(text, q)
+        } finally { c.disconnect() }
+    }
+
+    /** 本 app 签名证书的 SHA-1（大写十六进制，不带冒号）。 */
+    @Suppress("DEPRECATION")
+    private fun certSha1(ctx: Context): String? = runCatching {
+        val pm = ctx.packageManager
+        val sig = if (android.os.Build.VERSION.SDK_INT >= 28)
+            pm.getPackageInfo(ctx.packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES).signingInfo?.apkContentsSigners?.firstOrNull()
+        else pm.getPackageInfo(ctx.packageName, android.content.pm.PackageManager.GET_SIGNATURES).signatures?.firstOrNull()
+        sig?.toByteArray()?.let { b -> java.security.MessageDigest.getInstance("SHA-1").digest(b).joinToString("") { "%02X".format(it) } }
+    }.getOrNull()
+
+    /** 手机系统的地理编码（Google 搜索用不了时）：用当地语言查，先城市、再本国、最后全世界。 */
+    @Suppress("DEPRECATION")
+    private fun geocoderSearch(ctx: Context, q: String, here: NavPoint?, area: NavArea?): Pair<NavPick.Scope, List<NavPlace>> {
+        if (!Geocoder.isPresent()) return NavPick.Scope.WORLD to emptyList()
         val local = localeOf(area?.country.orEmpty())
         val lg = if (local != null) Geocoder(ctx, local) else Geocoder(ctx)
         val found = ArrayList<android.location.Address>()
@@ -493,8 +545,7 @@ object NavResolve {
             NavPlace(NavPoint(a.latitude, a.longitude), a.featureName?.takeIf { it.isNotBlank() && it != a.subThoroughfare } ?: q, addr,
                 a.locality.orEmpty(), a.adminArea.orEmpty(), a.countryCode.orEmpty())
         }
-        val (scope, list) = NavPick.choose(places, here, area)
-        return Found(scope, list, here, area)
+        return NavPick.choose(places, here, area)
     }
 
     /** 跟着 maps.app.goo.gl 这类短链接跳转（最多 6 次），返回最后的地址。 */

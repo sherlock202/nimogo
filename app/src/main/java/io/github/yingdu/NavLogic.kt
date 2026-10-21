@@ -20,7 +20,9 @@ enum class NavMode(val zh: String) { WALKING("步行"), DRIVING("驾车"), CYCLI
  * [title] 只用来显示。
  */
 data class NavDest(val title: String, val lat: Double? = null, val lng: Double? = null,
-                   val placeId: String? = null, val query: String? = null, val address: String? = null) {
+                   val placeId: String? = null, val query: String? = null, val address: String? = null,
+                   /** 只有 Place ID、没有坐标时，搜索结果给的距离（米），确认画面上显示用。 */
+                   val distanceHint: Int? = null) {
     val hasPoint get() = lat != null && lng != null
     /** 能直接交给 Navigation SDK（不用再查）。 */
     val ready get() = hasPoint || placeId != null
@@ -298,5 +300,62 @@ object NavPick {
 
     /** 离这么远（米）就提醒「可能找错了地方」。 */
     fun suspicious(meters: Double, mode: NavMode) = meters > when (mode) { NavMode.WALKING -> 50_000.0; NavMode.CYCLING -> 150_000.0; NavMode.DRIVING -> 800_000.0 }
+}
+
+/** 「输入地点」列表里的一项。 */
+data class NavChoice(val name: String, val address: String, val meters: Int?, val dest: NavDest)
+
+/**
+ * Google Places API (New) 的 Autocomplete：和 Google Maps 的搜索框一样，中文、日文都能搜（「东京站」也能找到東京駅）。
+ * 只用到 Place ID、名称、地址和距离；Place ID 直接交给 Navigation SDK 算路线。
+ */
+object NavPlacesApi {
+    const val URL = "https://places.googleapis.com/v1/places:autocomplete"
+
+    /** 请求内容：知道国家就只搜这个国家；知道位置就优先附近（50 公里）并算出距离。 */
+    fun body(q: String, here: NavPoint?, country: String?, lang: String): String {
+        val o = org.json.JSONObject().put("input", q).put("languageCode", lang)
+        if (!country.isNullOrEmpty()) {
+            o.put("includedRegionCodes", org.json.JSONArray().put(country.lowercase()))
+            o.put("regionCode", country.lowercase())
+        }
+        if (here != null) {
+            val c = org.json.JSONObject().put("latitude", here.lat).put("longitude", here.lng)
+            o.put("origin", c)
+            o.put("locationBias", org.json.JSONObject().put("circle", org.json.JSONObject().put("center", c).put("radius", 50_000.0)))
+        }
+        return o.toString()
+    }
+
+    /** 解析返回的地点（按距离排；没有距离的放后面）。 */
+    fun parse(json: String, q: String): List<NavChoice> {
+        val arr = org.json.JSONObject(json).optJSONArray("suggestions") ?: return emptyList()
+        val out = ArrayList<NavChoice>()
+        for (i in 0 until arr.length()) {
+            val p = arr.optJSONObject(i)?.optJSONObject("placePrediction") ?: continue
+            val id = p.optString("placeId")
+            if (id.isEmpty()) continue
+            val sf = p.optJSONObject("structuredFormat")
+            val name = sf?.optJSONObject("mainText")?.optString("text").orEmpty()
+                .ifEmpty { p.optJSONObject("text")?.optString("text").orEmpty() }.ifEmpty { q }
+            val addr = sf?.optJSONObject("secondaryText")?.optString("text").orEmpty()
+            val m = if (p.has("distanceMeters")) p.optInt("distanceMeters") else null
+            out.add(NavChoice(name, addr, m, NavDest(name, placeId = id, query = q, address = addr, distanceHint = m)))
+        }
+        return out.withIndex().sortedWith(compareBy({ it.value.meters == null }, { it.value.meters ?: 0 }, { it.index })).map { it.value }
+    }
+
+    /** 出错时给人看的原因。 */
+    fun errorText(code: Int, body: String): String {
+        val err = runCatching { org.json.JSONObject(body).optJSONObject("error") }.getOrNull()
+        val msg = err?.optString("message").orEmpty()
+        return when {
+            code == 403 && (msg.contains("has not been used") || msg.contains("is disabled") || msg.contains("SERVICE_DISABLED")) ->
+                "API Key 所在的项目还没启用 Places API (New)"
+            code == 403 -> "API Key 不允许用 Places API (New)（Key 的「API 限制」里要勾上它）"
+            code == 429 -> "Places API 超出了配额"
+            else -> "Places API 出错（$code${if (msg.isNotEmpty()) "：$msg" else ""}）"
+        }
+    }
 }
 

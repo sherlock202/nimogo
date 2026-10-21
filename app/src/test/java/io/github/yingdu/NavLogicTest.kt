@@ -307,3 +307,37 @@ class NavPickTest {
         assertFalse(NavPick.suspicious(NavMap.greatCircle(tokyo, uenoTokyo.point), NavMode.WALKING))
     }
 }
+
+class NavPlacesApiTest {
+    @Test fun requestBody() {
+        val b = org.json.JSONObject(NavPlacesApi.body("东京站", NavPoint(35.68, 139.76), "JP", "zh-CN"))
+        assertEquals("东京站", b.getString("input"))
+        assertEquals("jp", b.getJSONArray("includedRegionCodes").getString(0))
+        assertEquals(35.68, b.getJSONObject("origin").getDouble("latitude"), 1e-9)
+        assertEquals(50_000.0, b.getJSONObject("locationBias").getJSONObject("circle").getDouble("radius"), 0.0)
+        val w = org.json.JSONObject(NavPlacesApi.body("上野", null, null, "zh-CN"))
+        assertFalse(w.has("includedRegionCodes")); assertFalse(w.has("origin"))
+    }
+
+    @Test fun parseSuggestions() {
+        val json = """{"suggestions":[
+          {"placePrediction":{"placeId":"ChIJfar","text":{"text":"上野村, 群馬县"},"structuredFormat":{"mainText":{"text":"上野村"},"secondaryText":{"text":"日本群马县"}},"distanceMeters":98000}},
+          {"queryPrediction":{"text":{"text":"上野 美食"}}},
+          {"placePrediction":{"placeId":"ChIJueno","text":{"text":"上野站"},"structuredFormat":{"mainText":{"text":"上野站"},"secondaryText":{"text":"日本东京都台东区"}},"distanceMeters":3800}},
+          {"placePrediction":{"placeId":"ChIJnod","structuredFormat":{"mainText":{"text":"上野公园"}}}}
+        ]}"""
+        val l = NavPlacesApi.parse(json, "上野")
+        assertEquals(listOf("上野站", "上野村", "上野公园"), l.map { it.name })
+        assertEquals("ChIJueno", l[0].dest.placeId); assertTrue(l[0].dest.ready)
+        assertEquals(3800, l[0].dest.distanceHint)
+        assertEquals("日本东京都台东区", l[0].address)
+        assertTrue(NavPlacesApi.parse("{}", "x").isEmpty())
+    }
+
+    @Test fun errors() {
+        assertTrue(NavPlacesApi.errorText(403, """{"error":{"code":403,"message":"Places API (New) has not been used in project 123 before or it is disabled.","status":"PERMISSION_DENIED"}}""").contains("还没启用"))
+        assertTrue(NavPlacesApi.errorText(403, """{"error":{"message":"Requests to this API places.googleapis.com method google.maps.places.v1.Places.AutocompletePlaces are blocked."}}""").contains("API 限制"))
+        assertTrue(NavPlacesApi.errorText(500, "oops").contains("500"))
+    }
+}
+

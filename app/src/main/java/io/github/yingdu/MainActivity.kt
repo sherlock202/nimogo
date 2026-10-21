@@ -1822,7 +1822,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val modes = NavMode.values()
         var pick = modes.indexOf(s.nav.defaultMode).coerceAtLeast(0)
         val here = navHere()
-        val meters = if (here != null && d.hasPoint) NavMap.greatCircle(here, NavPoint(d.lat!!, d.lng!!)) else null
+        val meters = if (here != null && d.hasPoint) NavMap.greatCircle(here, NavPoint(d.lat!!, d.lng!!)) else d.distanceHint?.toDouble()
         val far = meters != null && NavPick.suspicious(meters, s.nav.defaultMode)
         val info = listOfNotNull(
             d.address?.takeIf { it.isNotBlank() && it != d.title },
@@ -1872,14 +1872,16 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 val q = f.text.toString().trim()
                 if (q.isEmpty()) return@setPositiveButton
                 toast("正在查找…")
+                val key = service?.nav?.apiKey.orEmpty()
                 Thread {
-                    val r = runCatching { NavResolve.search(applicationContext, q) }.getOrNull()
+                    val r = runCatching { NavResolve.search(applicationContext, q, key) }.getOrNull()
                     uiHandler.post {
                         if (isFinishing || isDestroyed) return@post
-                        val list = r?.places.orEmpty()
+                        val list = r?.choices.orEmpty()
+                        r?.note?.let { toast("Google 地点搜索用不了：$it。改用手机系统的地址查询（中文地名可能查不到）") }
                         when {
                             r == null || list.isEmpty() -> toast("没找到「$q」，换个写法或从 Google Maps 共享")
-                            list.size == 1 && r.scope != NavPick.Scope.WORLD -> confirmNav(placeDest(q, list[0]))
+                            list.size == 1 && r.scope != NavPick.Scope.WORLD -> confirmNav(list[0].dest)
                             else -> pickNavPlace(q, r)
                         }
                     }
@@ -1888,11 +1890,9 @@ class MainActivity : Activity(), ReaderService.UiListener {
             .setNegativeButton("取消", null).show()
     }
 
-    private fun placeDest(q: String, p: NavPlace) = NavDest(p.name.ifBlank { q }, p.point.lat, p.point.lng, query = q, address = p.address)
-
     /** 同名的地点有好几个（或只在国外找到）：按远近列出来让用户选；标题写明是在哪个范围找到的。 */
     private fun pickNavPlace(q: String, r: NavResolve.Found) {
-        val list = r.places; val here = r.here; val area = r.area
+        val list = r.choices; val area = r.area
         val country = area?.country?.takeIf { it.isNotEmpty() }?.let { java.util.Locale("", it).displayCountry }
         val title = when (r.scope) {
             NavPick.Scope.CITY -> "在${area?.locality?.ifEmpty { null } ?: area?.admin ?: "附近"}找到 ${list.size} 个「$q」"
@@ -1900,13 +1900,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
             NavPick.Scope.WORLD -> if (country != null) "${country}没找到「$q」，下面是其他地方的" else "定位不到，不知道你在哪个国家；全世界找到 ${list.size} 个「$q」"
         }
         val items = list.take(10).map { p ->
-            val km = here?.let { "  ·  " + NavText.distance(NavMap.greatCircle(it, p.point).toInt()) }.orEmpty()
+            val km = p.meters?.let { "  ·  " + NavText.distance(it) }.orEmpty()
             val addr = p.address.ifBlank { p.name }
-            (if (p.name != q && !addr.contains(p.name)) "${p.name}\n$addr" else addr) + km
+            (if (!addr.contains(p.name)) "${p.name}\n$addr" else addr) + km
         }
         AlertDialog.Builder(this)
             .setTitle(title)
-            .setItems(items.toTypedArray()) { _, i -> confirmNav(placeDest(q, list[i])) }
+            .setItems(items.toTypedArray()) { _, i -> confirmNav(list[i].dest) }
             .setNegativeButton("取消", null)
             .show()
     }
@@ -1986,7 +1986,9 @@ class MainActivity : Activity(), ReaderService.UiListener {
         listOf(keyRow, usedRow, limitRow).forEach { l.addRow(it.root) }
         page.addView(l)
         page.addView(note("在 Google Cloud 控制台：新建项目 → 绑定结算账号 → 启用 Navigation SDK → 创建 API Key（建议限制为 Android 应用 io.github.nimogo）。" +
-            "按目的地计费，每月前 1000 个免费；这里的次数是本机自己数的，以 Google Cloud 后台为准。"))
+            "按目的地计费，每月前 1000 个免费；这里的次数是本机自己数的，以 Google Cloud 后台为准。" +
+            "要在 NimoGo 里直接输入地名（和 Google Maps 一样中文也能搜），同一个项目里再启用 Places API (New)，Key 的「API 限制」里也勾上它；" +
+            "每搜一次算一次 Autocomplete 请求，有每月免费额度，以 Google 的价格表为准。"))
 
         page.addView(section("路线"))
         val r = listBox()
