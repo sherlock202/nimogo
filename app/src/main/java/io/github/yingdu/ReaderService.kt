@@ -1604,6 +1604,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         }
         val page = currentPage() ?: run { notifyUi(); return }
         glassesPaused = false
+        if (notifyOverReader) { notifyOverReader = false; main.removeCallbacks(endNotifyOverReader) }   // 翻页了：通知被这一页盖掉
         bookUri?.let { prefs.edit().putInt("pos:$it", page.start).apply() }
         val mark = followMark()
         if (followOn) followLog.d("显示", "顶部第 $topLine 行，标记 ${mark?.let { "第 ${it.row + 1} 行前 ${it.col} 字" } ?: "无"}，" +
@@ -1638,7 +1639,13 @@ class ReaderService : Service(), NimoListener, AppHost {
      *  - 其他（阅读、官方主界面）：直接弹。
      * fit = true（景点介绍）要写满一屏，画成图（showDrawnNotification）。
      */
-    fun onPhoneNotification(app: String, title: String, text: String, litMs: Long = NOTIFY_LIT_MS, fit: Boolean = false, pkg: String? = null) {
+    /** 手机通知在眼镜上停留几秒（NimoGo 自己画的通知；眼镜自带的弹窗停多久由眼镜决定）。按右镜腿立即关掉。 */
+    var notifySeconds: Int
+        get() = prefs.getInt("notifySec", 10)
+        set(v) { prefs.edit().putInt("notifySec", v).apply(); notifyUi() }
+
+    fun onPhoneNotification(app: String, title: String, text: String, litMs0: Long = -1, fit: Boolean = false, pkg: String? = null) {
+        val litMs = if (litMs0 > 0) litMs0 else notifySeconds * 1000L
         if (linkState != LinkState.READY) {
             // 眼镜重连期间来的通知先存着，连上后再弹（只留最近 5 条、2 分钟内的）
             if (!fit) {
@@ -1653,6 +1660,12 @@ class ReaderService : Service(), NimoListener, AppHost {
         // 这时发眼镜自带弹窗会被丢掉（v5.7.7 日志：开屏确认后立刻弹，屏幕亮了却只有看板）。
         // 所以画成图先放到页面上，再开屏，一亮就是通知
         if (screenOffByUs || notifyLit) { showDrawnNotification(app, title, text, litMs, false); return }
+        // 眼镜上正显示 NimoGo 画的图（看板、图片显示的阅读）：通知也画成图盖在上面，停留 litMs、按右镜腿关掉。
+        // 眼镜自带的弹窗只显示几秒、也关不掉（2026-10-22：测试通知一闪而过，看不清）
+        val onNavPage = client.enteredAppId() == NimoProtocol.APP_ID_NAV && !glassesPaused && activeApp == null
+        if (onNavPage && ((appMode == AppMode.DASHBOARD && dashAsImage) || (appMode == AppMode.READER && showingImage))) {
+            showDrawnNotification(app, title, text, litMs, false); return
+        }
         val appId = NotifyIcons.appIdOf(pkg)
         val icon = appId ?: NotifyIcons.OTHER
         val t = NotifyIcons.title(app, title, appId != null)
@@ -1692,6 +1705,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         val popupText = if (fit) Sights.cut(text, Sights.POPUP_CHARS) else text
         val t = if (title.isEmpty() || title == app) app else "$app · $title"
         val overDash = !(screenOffByUs || notifyLit) && appMode == AppMode.DASHBOARD && !glassesPaused && dashAsImage && activeApp == null
+        val overReader = !(screenOffByUs || notifyLit) && appMode == AppMode.READER && !glassesPaused && showingImage && activeApp == null &&
+            client.enteredAppId() == NimoProtocol.APP_ID_NAV
         val img = custom ?: DashboardImage.renderNotification(app, title, if (fit) DashboardImage.fitNotificationText(text, glassesFontPx) else text,
             java.text.SimpleDateFormat("HH:mm", Locale.US).format(java.util.Date()), glassesFontPx)
         val how: String
@@ -1707,6 +1722,17 @@ class ReaderService : Service(), NimoListener, AppHost {
             client.showImage(DashboardImage.toGlasses(img), DashboardImage.W, DashboardImage.H)
             lastPushedDash = ""
             how = "看板上 · 画成图"
+        } else if (overReader) {
+            // 图片显示的阅读：画成图盖在这一页上，litMs 后（或按右镜腿、翻页）回到这一页
+            val id = ++notifySerial
+            notifyOverReader = true
+            main.removeCallbacks(endNotifyOverReader)
+            client.whenNextContentShown {
+                if (notifyOverReader && id == notifySerial) { main.removeCallbacks(endNotifyOverReader); main.postDelayed(endNotifyOverReader, litMs) }
+            }
+            main.postDelayed(endNotifyOverReader, litMs + 6_000)
+            client.showImage(DashboardImage.toGlasses(img), DashboardImage.W, DashboardImage.H)
+            how = "阅读上 · 画成图"
         } else if (screenOffByUs && client.enteredAppId() == NimoProtocol.APP_ID_NAV && !client.reopenPending) {
             // 看板关屏收起、页面还开着：和抬头叫回看板走同一条路——不重开页面、不改抬头显示，
             // 直接把图发进开着的页面，发完用带确认的开屏（插到发送队列最前面）。litMs 后关回去，再把看板第一屏放回去
@@ -1759,6 +1785,26 @@ class ReaderService : Service(), NimoListener, AppHost {
         notifyOver = false
         log("通知显示完，回到看板")
         if (appMode == AppMode.DASHBOARD && !glassesPaused && linkState == LinkState.READY) pushDashboard(force = false, restartTimers = false)
+    }
+
+    /** 通知正画在阅读的这一页上。 */
+    private var notifyOverReader = false
+    private val endNotifyOverReader = Runnable {
+        if (!notifyOverReader) return@Runnable
+        notifyOverReader = false
+        log("通知显示完，回到阅读")
+        if (appMode == AppMode.READER && !glassesPaused && linkState == LinkState.READY) pushPage()
+    }
+
+    /** 按右镜腿：关掉正显示着的通知（NimoGo 画的；眼镜自带的弹窗关不掉）。关掉了返回 true。 */
+    private fun dismissNotification(): Boolean {
+        when {
+            notifyOver -> { log("右镜腿：关掉通知"); main.removeCallbacks(endNotifyOver); endNotifyOver.run() }
+            notifyOverReader -> { log("右镜腿：关掉通知"); main.removeCallbacks(endNotifyOverReader); endNotifyOverReader.run() }
+            notifyLit -> { log("右镜腿：关掉通知"); main.removeCallbacks(reOffAfterNotify); reOffAfterNotify.run() }
+            else -> return false
+        }
+        return true
     }
 
     /** 为了弹通知临时开着屏（看板仍是收起状态）。 */
@@ -2019,7 +2065,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         addSightHistory(n)
         // 来源写在第一行（维基百科的内容要注明出处）
         if (linkState == LinkState.READY) onPhoneNotification("景点" + if (n.src.isNotEmpty()) " · ${n.src}" else "", "${n.name} · ${n.dist}", n.text,
-            litMs = Sights.GAP_MS, fit = true)
+            litMs0 = Sights.GAP_MS, fit = true)
         else log("景点：${n.name}（眼镜没连上，只记在手机上）")
         notifyUi()
         main.postDelayed(sightNext, Sights.GAP_MS)
@@ -2177,6 +2223,8 @@ class ReaderService : Service(), NimoListener, AppHost {
             notifyUi()
             return
         }
+        // 通知正显示着：右单击立即关掉（不翻页、不收起看板）
+        if (input == GlassesInput.CLICK_RIGHT && dismissNotification()) return
         activeApp?.let { it.onInput(input); return }
         if (appMode == AppMode.DASHBOARD) when (input) {
             GlassesInput.HOME_WAKE -> {

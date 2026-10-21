@@ -3563,6 +3563,14 @@ class MainActivity : Activity(), ReaderService.UiListener {
         top.addRow(perm.root)
         val callToggle = Toggle { NotifyPrefs.setCallAlert(this, !NotifyPrefs.callAlert(this)); refreshNow() }
         top.addRow(Row("来电提醒", "电话、微信等来电时弹出来电人").apply { accessory(callToggle.root) }.root)
+        val secChoices = listOf(5, 10, 20, 30)
+        val notifySeg = Seg(secChoices.map { "$it 秒" }) { i -> service?.notifySeconds = secChoices[i]; refreshNow() }
+        top.addRow(vbox().apply {
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            addView(text("通知停留多久（按右镜腿立即关掉）", 13.5f))
+            addView(notifySeg.root, lp(top = 6))
+            addView(hint("看板、图片显示的阅读上，通知由 NimoGo 画出来，按这里的时间停留；提词器文字和官方主界面上用眼镜自带的弹窗，停多久由眼镜决定、也关不掉。"), lp(top = 6))
+        })
         top.addRow(Row("发送一条测试通知", chevron = true) {
             service?.onPhoneNotification("NimoGo", "测试", "这是一条测试通知，看到就说明通知弹窗可以用了。")
         }.root)
@@ -3607,6 +3615,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         filter.addTextChangedListener(onEdit { rebuild() })
         onUpdate(Sub.NOTIFY) {
             onToggle.set(NotifyPrefs.enabled(this))
+            service?.let { s -> notifySeg.select(secChoices.indexOf(s.notifySeconds).coerceAtLeast(0)) }
             callToggle.set(NotifyPrefs.callAlert(this))
             perm.value(when {
                 !PhoneNotificationService.isEnabled(this) -> "去授权"
