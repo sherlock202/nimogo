@@ -223,6 +223,11 @@ class MainActivity : Activity(), ReaderService.UiListener {
     /** 音量键翻页：只在萤读的阅读页面开着时（和官方提词器一样）；别的页面、锁屏、后台照常调音量。 */
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         val code = event.keyCode
+        if (speech != null && speechKey(event)) return true
+        // 阅读页面里：戒指、方向键、翻页笔也能翻（上下翻行，左右翻页）
+        if (sub == Sub.READ && service?.let { it.appMode == ReaderService.AppMode.READER && it.pageCount > 0 } == true) {
+            PromptRemote.key(code)?.let { m -> if (event.action == android.view.KeyEvent.ACTION_DOWN) remoteMove(m, event.repeatCount > 0); return true }
+        }
         if (code == android.view.KeyEvent.KEYCODE_VOLUME_UP || code == android.view.KeyEvent.KEYCODE_VOLUME_DOWN) {
             val s = service
             if (s != null && sub == Sub.READ && s.volumeKeysActive) {
@@ -240,7 +245,118 @@ class MainActivity : Activity(), ReaderService.UiListener {
     }
 
     @Deprecated("Activity 基类的旧 API")
+    // =====================================================================
+    // 演讲模式：屏幕全黑（亮度调到最低、不锁屏），戒指 / 方向键 / 音量键翻行翻页。
+    // 手机真正息屏后系统不再把按键交给 app，所以这里让屏幕「看起来关了」但其实亮着；
+    // 手机自己的触摸屏只认长按退出（放在口袋里误碰不会翻），戒指假装的滑动（外接设备）才翻。
+    // =====================================================================
+
+    private var speech: View? = null
+    private var speechLabel: TextView? = null
+    private var speechHint: TextView? = null
+    private var speechSysUi = 0
+    private var lastRemoteAt = 0L
+
+    private fun remoteMove(m: PromptRemote.Move, repeat: Boolean) {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (repeat && now - lastRemoteAt < PromptRemote.repeatGap(m)) return
+        lastRemoteAt = now
+        val ok = service?.remoteMove(m.lines, m.pages) == true
+        speechShow(if (ok) m.label else "${m.label}（没有在阅读）")
+    }
+
+    /** 演讲模式里的按键：认识的翻行翻页，返回键退出，别的键显示出来（方便看戒指发的是什么键）。 */
+    private fun speechKey(e: android.view.KeyEvent): Boolean {
+        val code = e.keyCode
+        if (code == android.view.KeyEvent.KEYCODE_BACK) { if (e.action == android.view.KeyEvent.ACTION_UP) exitSpeech(); return true }
+        if (code == android.view.KeyEvent.KEYCODE_POWER) return false
+        val m = when (code) {
+            android.view.KeyEvent.KEYCODE_VOLUME_UP, android.view.KeyEvent.KEYCODE_VOLUME_DOWN ->
+                PromptRemote.volume(code == android.view.KeyEvent.KEYCODE_VOLUME_UP, service?.volumeKeys ?: 2)
+            else -> PromptRemote.key(code)
+        }
+        if (e.action != android.view.KeyEvent.ACTION_DOWN) return true
+        if (m != null) remoteMove(m, e.repeatCount > 0)
+        else speechShow("收到 ${android.view.KeyEvent.keyCodeToString(code).removePrefix("KEYCODE_")}（没有用到）")
+        return true
+    }
+
+    /** 屏幕下方淡淡地显示刚才的操作，2 秒后消失。 */
+    private val speechFade = Runnable { speechLabel?.text = "" }
+    private fun speechShow(t: String) {
+        speechLabel?.text = t
+        uiHandler.removeCallbacks(speechFade); uiHandler.postDelayed(speechFade, 2000)
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun enterSpeech() {
+        val s = service ?: return
+        if (s.book == null || s.pageCount == 0) { toast("先打开讲稿（TXT、EPUB…）"); return }
+        if (s.appMode != ReaderService.AppMode.READER) s.switchAppMode(ReaderService.AppMode.READER)
+        if (s.glassesPaused) s.resumeGlasses()
+        val dim = 0xFF4A4A4A.toInt()
+        val hint = text("演讲模式\n\n戒指 / 方向键：上下翻行，左右翻页\n音量键：" +
+            (if (s.volumeKeys == 1) "翻页" else "翻行") + "\n\n长按屏幕或按返回键退出", 15f, dim).apply {
+            gravity = Gravity.CENTER; setLineSpacing(0f, 1.3f)
+        }
+        val label = text("", 13f, dim).apply { gravity = Gravity.CENTER }
+        val min = dpf(40f)
+        var downX = 0f; var downY = 0f; var fromRing = false
+        val exitLater = Runnable { exitSpeech() }
+        val v = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            keepScreenOn = true
+            isClickable = true
+            addView(hint, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
+            addView(label, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { bottomMargin = dp(48) })
+            setOnTouchListener { _, ev ->
+                when (ev.actionMasked) {
+                    android.view.MotionEvent.ACTION_DOWN -> {
+                        downX = ev.rawX; downY = ev.rawY
+                        val dev = ev.device
+                        // 外接设备（戒指）假装的触摸才翻；手机自己的屏幕只认长按退出（Android 9 及以前分不出来，只认按键）
+                        fromRing = dev != null && Build.VERSION.SDK_INT >= 29 && dev.isExternal
+                        if (!fromRing) uiHandler.postDelayed(exitLater, 1500)
+                    }
+                    android.view.MotionEvent.ACTION_MOVE ->
+                        if (kotlin.math.hypot(ev.rawX - downX, ev.rawY - downY) > min) uiHandler.removeCallbacks(exitLater)
+                    android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                        uiHandler.removeCallbacks(exitLater)
+                        if (fromRing && ev.actionMasked == android.view.MotionEvent.ACTION_UP) {
+                            val m = PromptRemote.swipe(ev.rawX - downX, ev.rawY - downY, min)
+                            if (m != null) remoteMove(m, false) else speechShow("收到点击（没有用到）")
+                        } else if (!fromRing) {
+                            hint.alpha = 1f; hint.animate().alpha(0f).setStartDelay(3000).setDuration(800).start()
+                        }
+                    }
+                }
+                true
+            }
+        }
+        (window.decorView as ViewGroup).addView(v, ViewGroup.LayoutParams(-1, -1))
+        speech = v; speechLabel = label; speechHint = hint
+        window.attributes = window.attributes.apply { screenBrightness = 0.01f }
+        @Suppress("DEPRECATION")
+        run {
+            speechSysUi = window.decorView.systemUiVisibility
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        }
+        hint.animate().alpha(0f).setStartDelay(4000).setDuration(800).start()
+    }
+
+    private fun exitSpeech() {
+        val v = speech ?: return
+        (window.decorView as ViewGroup).removeView(v)
+        speech = null; speechLabel = null; speechHint = null
+        uiHandler.removeCallbacks(speechFade)
+        window.attributes = window.attributes.apply { screenBrightness = android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE }
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = speechSysUi
+    }
+
     override fun onBackPressed() {
+        if (speech != null) { exitSpeech(); return }
         if (sub != null) closeSub() else @Suppress("DEPRECATION") super.onBackPressed()
     }
 
@@ -1216,6 +1332,9 @@ class MainActivity : Activity(), ReaderService.UiListener {
         })
         page.addView(auto)
         page.addView(pill("打开书籍（TXT · EPUB · MOBI）", dark = false) { openFile() })
+        page.addView(pill("演讲模式（屏幕全黑，戒指 / 音量键翻页）", dark = false) { enterSpeech() }, lp(top = 10))
+        page.addView(note("手机真正息屏后，系统不会把戒指和音量键交给任何 app。演讲模式让屏幕全黑、亮度最低但不锁屏，" +
+            "手机放进口袋也能用戒指翻：上下翻行，左右翻页。手机屏幕被误碰不会翻，长按屏幕或按返回键退出。").apply { setPadding(dp(4), dp(8), dp(4), 0) })
         val autoHint = note("")
         page.addView(autoHint.apply { setPadding(dp(4), dp(10), dp(4), 0) })
 

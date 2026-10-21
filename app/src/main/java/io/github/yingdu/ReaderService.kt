@@ -1199,6 +1199,15 @@ class ReaderService : Service(), NimoListener, AppHost {
         return true
     }
 
+    /** 提词遥控（演讲模式、戒指、方向键）：往后 lines 行、pages 页（负数往前）。不在阅读时返回 false。 */
+    fun remoteMove(lines: Int, pages: Int): Boolean {
+        if (appMode != AppMode.READER) return false
+        val rows = paginator?.rows ?: return false
+        if (glassesPaused) resumeGlasses()
+        moveBy(lines + pages * rows)
+        return true
+    }
+
     fun nextPage() { moveBy(paginator?.rows ?: return) }
     fun prevPage() { moveBy(-(paginator?.rows ?: return)) }
 
