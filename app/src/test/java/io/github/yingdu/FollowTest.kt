@@ -118,4 +118,18 @@ class FollowTest {
         val rb = go(back, "已经非常自然")
         assertTrue(rb.reason, rb.moved)
     }
+
+    @Test fun shortTitleLineAtStart() {
+        // 讲稿第一行是两个字的标题：还没跟上时，就在起点附近的也是对上 2 个字就跟
+        val script4 = "黑羊\n作词：某某\n红绿灯两种颜色吗\n中间黄灯难道它就没有存在感吗"
+        val dict = HashMap<String, Int>()
+        val s = FollowText.tokenize(script4, 0, script4.length, table, dict)
+        val a = FollowAligner()
+        val r = a.update(FollowText.tokenize("黑羊", 0, 2, table, dict).ids, s, 0)
+        assertTrue(r.reason, r.moved)
+        assertEquals(2, a.offset)
+        // 远处两个字（「中间」）还不够：要 3 个字
+        val b = FollowAligner()
+        assertFalse(b.update(FollowText.tokenize("黄灯", 0, 2, table, dict).ids, s, 0).moved)
+    }
 }

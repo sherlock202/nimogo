@@ -155,7 +155,8 @@ class FollowAligner {
         }
         if (best < 0) return Result(false, from, from, 0, 0, m, "没对上")
         val d = best - (cur - 1)
-        val need = when { !locked -> maxOf(MIN_UNLOCKED, if (d in 0..NEAR) MIN_NEAR else 0); d in 0..NEAR -> MIN_NEAR; d > NEAR -> MIN_FAR; else -> MIN_BACK }
+        // 还没跟上时：就在起点后面不远的，和平时一样对上 2 个字就行（标题「黑羊」这种短行，2026-10-21 第四份日志）；远的要 3 个字
+        val need = when { d in 0..NEAR -> MIN_NEAR; !locked -> MIN_UNLOCKED; d > NEAR -> MIN_FAR; else -> MIN_BACK }
         val to = script.ends[best]
         // 识别结果很长、却只有一小段对得上：多半是在说讲稿以外的话，结尾碰巧有「就是」这种常见词（2026-10-21 日志）
         val minForLength = if (n >= 6) (n * 3 + 3) / 4 else 0

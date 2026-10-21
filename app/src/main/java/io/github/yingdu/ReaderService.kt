@@ -1395,7 +1395,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         val from = followFromBottom
         val top = if (from == 0) (line - (p.rows - 1) / 2).coerceIn(0, p.maxTop) else FollowView.topFor(line, p.rows, from, p.maxTop)
         if (top != topLine) followLog.d("显示", "$why：第 $line 行，滚到顶部第 $top 行（原来 $topLine）")
-        setTop(top)
+        setTop(top, byFollow = true)
     }
 
     /** 图片显示时的跟读标记：正在念的行在这一屏的第几行、念到第几个字。 */
@@ -1488,12 +1488,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         val rows = paginator?.rows ?: return false
         if (glassesPaused) resumeGlasses()
         moveBy(lines + pages * rows)
-        if (followOn) {
-            // 跟读时手动翻了：从眼镜上这一屏的开头重新找（可能跟丢了，或者跳到了别处）
-            val p = paginator!!
-            followAligner.offset = p.lineStartOf(topLine); followAligner.locked = false
-            followLog.d("对齐", "手动翻到第 $topLine 行，从这里重新找")
-        }
         return true
     }
 
@@ -1552,9 +1546,15 @@ class ReaderService : Service(), NimoListener, AppHost {
         setTop((topLine + delta).coerceIn(0, p.maxTop))
     }
 
-    private fun setTop(line: Int) {
+    private fun setTop(line: Int, byFollow: Boolean = false) {
         val p = paginator ?: return
         topLine = line.coerceIn(0, p.lineCount - 1)
+        if (followOn && !byFollow) {
+            // 跟读时手动翻了（戒指、镜腿、音量键、手机上的按钮）：从眼镜上这一屏的开头重新找
+            followAligner.offset = p.lineStartOf(topLine); followAligner.locked = false
+            followLastMoveAt = System.currentTimeMillis()
+            followLog.d("对齐", "手动翻到第 $topLine 行，从这里重新找")
+        }
         pushPage()
     }
 
