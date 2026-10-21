@@ -1381,7 +1381,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             followT.set(s.followOn || s.followDownloading)
             modelSeg.select(models.indexOf(s.followModel))
             rowSeg.select(rowChoices.indexOf(s.followFromBottom).coerceAtLeast(0))
-            val img = if (s.readerAsImage) s.imageIntervalMs()?.let { "眼镜收一张图约 $it ms" } else null
+            val img = if (s.readerAsImage) s.imageIntervalMs()?.let { "眼镜收一张图约 $it ms" } else s.textIntervalMs()?.let { "眼镜收一次文字约 $it ms" }
             followRow.desc(when {
                 s.followOn -> listOfNotNull("听到：" + s.followHeard.takeLast(18).ifEmpty { "…" }, img).joinToString(" · ")
                 s.followStatus.isNotEmpty() -> s.followStatus

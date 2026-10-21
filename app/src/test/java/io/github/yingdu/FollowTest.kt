@@ -77,4 +77,21 @@ class FollowTest {
         assertTrue(pcm.contentEquals(back))
         assertEquals(0, WavPcm.read(ByteArray(10)).size)
     }
+
+    @Test fun offScriptSentenceEndingWithCommonWords() {
+        val script2 = "这个观点的代表人物，就是亚流。所以今天整堂课，重点就围绕一个问题。"
+        val dict = HashMap<String, Int>()
+        val a = FollowAligner()
+        val s = FollowText.tokenize(script2, 0, script2.length, table, dict)
+        a.offset = script2.indexOf("人物") + 2
+        var cur = 0
+        while (cur < s.size && s.starts[cur] < a.offset) cur++
+        val said = "还搞那个蓝牙戒指是可以翻页是其他的不是他就是"
+        val h = FollowText.tokenize(said, 0, said.length, table, dict)
+        val r = a.update(h.ids, s, cur)
+        assertFalse(r.reason, r.moved)
+        // 真的往下念：「就是亚流所以今天」
+        val h2 = FollowText.tokenize("就是亚流所以今天", 0, 8, table, dict)
+        assertTrue(a.update(h2.ids, s, cur).moved)
+    }
 }

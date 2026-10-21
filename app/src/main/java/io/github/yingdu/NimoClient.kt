@@ -692,7 +692,13 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         reportDisplayOff(false)
     }
 
+    /** 最近几次文字从开始发送到全部写完用了多少毫秒（和图片比较用）。 */
+    private val textCosts = ArrayDeque<Long>()
+    private var textSendStart = 0L
+    fun textIntervalMs(): Long? = if (textCosts.isEmpty()) null else textCosts.sum() / textCosts.size
+
     private fun sendTextContent(c: Content.Text) {
+        textSendStart = System.currentTimeMillis()
         if (page == DisplayPage.PROMPTER) {
             NimoFrameCodec.updateContentFrames(
                 NimoProtocol.APP_ID_PROMPTER, 0, NimoProtocol.PROMPTER_RES_TEXT,
@@ -1108,6 +1114,11 @@ class NimoClient(private val context: Context, private val listener: NimoListene
                 imageCosts.addLast(System.currentTimeMillis() - imageSendStart)
                 while (imageCosts.size > 6) imageCosts.removeFirst()
                 imageSendStart = 0
+            }
+            if (textSendStart > 0) {
+                textCosts.addLast(System.currentTimeMillis() - textSendStart)
+                while (textCosts.size > 6) textCosts.removeFirst()
+                textSendStart = 0
             }
             if (drainedSerial != contentSerial) {
                 drainedSerial = contentSerial

@@ -1474,6 +1474,7 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     /** 眼镜收一张图平均多少毫秒（手机界面显示，方便比较图片和文字两种显示的速度）。 */
     fun imageIntervalMs(): Long? = if (::client.isInitialized) client.imageIntervalMs() else null
+    fun textIntervalMs(): Long? = if (::client.isInitialized) client.textIntervalMs() else null
 
     /** 提词遥控（演讲模式、戒指、方向键）：往后 lines 行、pages 页（负数往前）。不在阅读时返回 false。 */
     fun remoteMove(lines: Int, pages: Int): Boolean {
@@ -1566,7 +1567,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         bookUri?.let { prefs.edit().putInt("pos:$it", page.start).apply() }
         val mark = followMark()
         if (followOn) followLog.d("显示", "顶部第 $topLine 行，标记 ${mark?.let { "第 ${it.row + 1} 行前 ${it.col} 字" } ?: "无"}，" +
-            (if (readerAsImage) "图片（眼镜收一张图平均 ${client.imageIntervalMs() ?: "?"} ms）" else "文字"))
+            (if (readerAsImage) "图片（眼镜收一张图平均 ${client.imageIntervalMs() ?: "?"} ms）" else "文字（发一次平均 ${client.textIntervalMs() ?: "?"} ms）"))
         if (readerAsImage) {
             client.showImage(ReaderImage.render(page.text, glassesFontPx, if (showProgress) progressPercent() else null, mark),
                 ReaderImage.W, ReaderImage.H)

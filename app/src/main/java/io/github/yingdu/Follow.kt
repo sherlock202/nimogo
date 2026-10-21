@@ -148,9 +148,12 @@ class FollowAligner {
         val d = best - (cur - 1)
         val need = when { d in 0..NEAR -> MIN_NEAR; d > NEAR -> MIN_FAR; else -> MIN_BACK }
         val to = script.ends[best]
+        // 识别结果很长、却只有一小段对得上：多半是在说讲稿以外的话，结尾碰巧有「就是」这种常见词（2026-10-21 日志）
+        val minForLength = if (n >= 6) (n * 3 + 3) / 4 else 0
         return when {
             d == 0 || (d < 0 && d >= -3) -> Result(false, from, from, bestScore, d, m, "原地")
             bestScore < need -> Result(false, from, to, bestScore, d, m, "分数不够（要 $need）")
+            bestScore < minForLength -> Result(false, from, to, bestScore, d, m, "像是讲稿以外的话（$n 个音节只对上一小段，要 $minForLength 分）")
             else -> { offset = to; Result(true, from, to, bestScore, d, m, if (d > NEAR) "跳过" else if (d < 0) "往回" else "前进") }
         }
     }
