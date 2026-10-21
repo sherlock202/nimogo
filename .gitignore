@@ -16,3 +16,5 @@ __pycache__/
 signing/
 # 编译时从 Navigation SDK 的 AAR 里取出来的许可文件（不提交）
 app/src/main/assets/licenses/navsdk/
+# 编译时自动下载的 sherpa-onnx AAR
+app/libs/

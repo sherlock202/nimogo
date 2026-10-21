@@ -30,11 +30,14 @@ object ReaderImage {
         return Layout(px, gap, chars, rows)
     }
 
-    fun render(text: String, fontPx: Int, progress: Double?): ByteArray =
-        DashboardImage.toGlasses(renderBitmap(text, fontPx, progress))
+    /** 语音跟读的标记：第 row 行是正在念的行（其他行暗一些），这一行的前 col 个字下面画下划线（念到哪里画到哪里）。 */
+    data class Mark(val row: Int, val col: Int)
+
+    fun render(text: String, fontPx: Int, progress: Double?, mark: Mark? = null): ByteArray =
+        DashboardImage.toGlasses(renderBitmap(text, fontPx, progress, mark))
 
     /** 同样的画面画成位图（手机上预览用）。 */
-    fun renderBitmap(text: String, fontPx: Int, progress: Double?): Bitmap {
+    fun renderBitmap(text: String, fontPx: Int, progress: Double?, mark: Mark? = null): Bitmap {
         val lay = layout(fontPx)
         val font = GlassesFonts.text(lay.px)
         val bmp = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888)
@@ -44,7 +47,16 @@ object ReaderImage {
         val lines = text.split('\n').take(lay.rows)
         val block = lay.rows * lay.px + (lay.rows - 1) * lay.gap
         val top = ((H - PROGRESS_H - block) / 2).coerceAtLeast(0)
-        lines.forEachIndexed { i, line -> font.draw(c, line, LEFT, top + lay.lineH * i, Color.WHITE) }
+        lines.forEachIndexed { i, line ->
+            val y = top + lay.lineH * i
+            val color = if (mark == null || mark.row == i) Color.WHITE else 0xFFA0A0A0.toInt()
+            font.draw(c, line, LEFT, y, color)
+            if (mark != null && mark.row == i && mark.col > 0) {
+                val w = font.measure(line.substring(0, mark.col.coerceAtMost(line.length)))
+                val uy = (y + lay.px + 1).coerceAtMost(H - PROGRESS_H - 2)
+                c.drawRect(LEFT.toFloat(), uy.toFloat(), (LEFT + w).toFloat(), uy + 2f, Paint().apply { this.color = Color.WHITE })
+            }
+        }
         // 底部一条细细的进度条，代替提词器顶部的文字状态
         if (progress != null) {
             val y = H - 2f

@@ -18,6 +18,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.OpenableColumns
+import io.github.jaredmdobson.concentus.OpusDecoder
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -696,6 +697,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     fun toggleAppMode() = switchAppMode(if (appMode == AppMode.READER) AppMode.DASHBOARD else AppMode.READER)
 
     private fun setMode(mode: AppMode) {
+        if (followOn && mode != AppMode.READER) stopFollow("切换到了别的页面")
         activeApp?.let { activeApp = null; it.onClose() }
         baseMode = mode
         cancelDashTimers()
@@ -1120,6 +1122,7 @@ class ReaderService : Service(), NimoListener, AppHost {
             main.post {
                 loading = false
                 result.onSuccess { b ->
+                    if (followOn) stopFollow("换了一本书")
                     book = b
                     bookUri = uri.toString()
                     prefs.edit().putString("lastBook", bookUri).apply()
@@ -1198,6 +1201,230 @@ class ReaderService : Service(), NimoListener, AppHost {
         moveBy(if (up) -step else step)
         return true
     }
+
+    // ---------- 语音跟读（测试版） ----------
+    // 眼镜麦克风 → 手机上离线识别（sherpa-onnx）→ 和讲稿按拼音对齐 → 正在念的行放在倒数第几行，图片显示时加亮并画下划线。
+    // 每一步都写进跟读日志（files/follow/），「导出跟读日志」存到下载里。
+
+    private val followPrefs by lazy { getSharedPreferences("follow", MODE_PRIVATE) }
+    val followLog by lazy { FollowLog(java.io.File(filesDir, "follow")) }
+    var followModel: FollowModel
+        get() = runCatching { FollowModel.valueOf(followPrefs.getString("model", FollowModel.ZH_SMALL.name)!!) }.getOrDefault(FollowModel.ZH_SMALL)
+        set(v) { followPrefs.edit().putString("model", v.name).apply(); notifyUi() }
+    /** 正在念的行放在倒数第几行（1 = 最后一行，0 = 中间）。 */
+    var followFromBottom: Int
+        get() = followPrefs.getInt("fromBottom", 2)
+        set(v) { followPrefs.edit().putInt("fromBottom", v).apply(); if (followOn) followApply(followAligner.offset, "改了位置设置"); notifyUi() }
+
+    var followOn = false; private set
+    /** 给手机界面看的状态（下载进度、出错原因等）。 */
+    var followStatus = ""; private set
+    /** 最近听到的文字（这一句）。 */
+    var followHeard = ""; private set
+    var followDownloading = false; private set
+    private var followCancel = false
+    private var followWantsMic = false
+    private var followAsr: FollowAsr? = null
+    private var followAligner = FollowAligner()
+    private val followDict = HashMap<String, Int>()
+    private val pinyin by lazy { PinyinTable(assets.open("follow/pinyin.txt").bufferedReader().readText()) }
+    private var followDecoder: OpusDecoder? = null
+    private val followPcm = ShortArray(960)
+    private var followBuf = FloatArray(1600)
+    private var followN = 0
+    private var followLastFrameAt = 0L
+    private var followFrames = 0
+    private var followStatFramesAt = 0L
+    private var followMoves = 0
+    private var followJumps = 0
+    private var followStartAt = 0L
+    private var followLastPartialAt = 0L
+    private var followUiAt = 0L
+
+    fun toggleFollow() { if (followOn || followDownloading) stopFollow("手动关掉") else startFollow() }
+
+    fun startFollow() {
+        val p = paginator
+        if (appMode != AppMode.READER || p == null || book == null) { followStatus = "先打开讲稿，在眼镜上显示阅读"; notifyUi(); return }
+        if (!micAvailable) { followStatus = "眼镜没连上（或这副眼镜不支持麦克风）"; notifyUi(); return }
+        val m = followModel
+        if (m.ready(this)) { beginFollow(); return }
+        followDownloading = true; followCancel = false
+        followStatus = "正在下载识别模型 ${m.zh}…"
+        notifyUi()
+        Thread {
+            val r = runCatching {
+                m.download(this, { msg -> main.post { log("跟读：$msg") } },
+                    { done, total -> main.post { followStatus = "正在下载识别模型：${done / 1_000_000} / ${if (total > 0) total / 1_000_000 else m.mb} MB"; notifyUi() } },
+                    { followCancel })
+            }
+            main.post {
+                followDownloading = false
+                r.onSuccess { followStatus = "模型下载好了"; beginFollow() }
+                    .onFailure { e -> followStatus = if (followCancel) "已取消下载" else "下载失败：${e.message ?: e.javaClass.simpleName}"; log("跟读：$followStatus"); notifyUi() }
+            }
+        }.apply { name = "follow-download" }.start()
+    }
+
+    private fun beginFollow() {
+        val p = paginator ?: return
+        if (appMode != AppMode.READER) { followStatus = "先在眼镜上显示阅读"; notifyUi(); return }
+        stopAutoFlip()
+        if (glassesPaused) resumeGlasses()
+        val m = followModel
+        followAligner = FollowAligner().apply { offset = p.lineStartOf(topLine) }
+        followDict.clear()
+        followHeard = ""; followN = 0; followFrames = 0; followMoves = 0; followJumps = 0
+        followStartAt = System.currentTimeMillis(); followStatFramesAt = followStartAt; followLastFrameAt = followStartAt
+        followLog.start("模型 ${m.name}；${Build.MANUFACTURER} ${Build.MODEL}，Android ${Build.VERSION.RELEASE}；NimoGo ${runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()}；" +
+            "《${book?.title}》${book?.text?.length} 字；显示 ${if (readerAsImage) "图片 ${glassesFontPx}px" else "文字（${displayPage.name}）"}，" +
+            "每屏 ${p.rows} 行、每行约 $charsPerLine 字；正在念的行放在倒数第 ${followFromBottom} 行（0 = 中间）；从第 $topLine 行（第 ${followAligner.offset} 字）开始")
+        followLog.d("对齐", "拼音表 ${pinyin.size} 字")
+        followDecoder = OpusDecoder(NimoMic.SAMPLE_RATE, 1)
+        followAsr = FollowAsr(this, m, followLog, { text, final, audioAt, decodeMs -> onFollowText(text, final, audioAt, decodeMs) },
+            { err -> followStatus = err; log("跟读：$err"); stopFollow(err) }).also { it.start() }
+        followWantsMic = true; glassesMic(true)
+        followOn = true
+        followStatus = "正在听…"
+        log("跟读：开始（模型 ${m.zh}）")
+        main.removeCallbacks(followWatch); main.postDelayed(followWatch, 5_000)
+        pushPage()
+    }
+
+    fun stopFollow(reason: String) {
+        if (followDownloading) { followCancel = true; return }
+        if (!followOn) return
+        followOn = false
+        main.removeCallbacks(followWatch); main.removeCallbacks(followStatusPush)
+        val secs = (System.currentTimeMillis() - followStartAt) / 1000
+        followAsr?.let { a ->
+            followLog.d("结束", "$reason；跟读 $secs 秒，收到声音 ${followFrames / 100} 秒，识别解码共 ${a.totalDecodeMs} ms / 声音 ${a.totalAudioMs} ms" +
+                "（实时率 %.2f），移动 $followMoves 次（其中跳过 $followJumps 次），最后在第 ${followAligner.offset} 字".format(
+                    if (a.totalAudioMs > 0) a.totalDecodeMs.toDouble() / a.totalAudioMs else 0.0))
+            a.stop()
+        }
+        followAsr = null; followDecoder = null
+        followLog.stop()
+        followWantsMic = false; glassesMic(false)
+        followStatus = "已停止（$reason）"
+        log("跟读：停止（$reason）")
+        pushPage()
+    }
+
+    /** 几秒没收到声音：记下来，再开一次麦克风（蓝牙偶尔丢了开麦的命令）。 */
+    private val followWatch: Runnable = object : Runnable {
+        override fun run() {
+            if (!followOn) return
+            val gap = System.currentTimeMillis() - followLastFrameAt
+            if (gap > 5_000) { followLog.d("麦克风", "${gap / 1000} 秒没收到声音，重新打开眼镜麦克风"); glassesMic(true) }
+            main.postDelayed(this, 5_000)
+        }
+    }
+
+    private fun followFrames(frames: List<NimoMic.Frame>) {
+        val d = followDecoder ?: return
+        val asr = followAsr ?: return
+        val now = System.currentTimeMillis()
+        val gap = now - followLastFrameAt
+        if (gap > 300 && followFrames > 0) followLog.d("麦克风", "声音断了 $gap ms")
+        followLastFrameAt = now
+        for (f in frames) {
+            val n = try { d.decode(f.packet, 0, f.packet.size, followPcm, 0, followPcm.size, false) } catch (e: Exception) { followLog.d("麦克风", "Opus 解码失败：$e"); 0 }
+            followFrames++
+            for (k in 0 until n) {
+                followBuf[followN++] = followPcm[k] / 32768f
+                if (followN == followBuf.size) {
+                    // 每 0.1 秒送一次
+                    if (asr.loaded) asr.feed(followBuf, now)
+                    followBuf = FloatArray(1600); followN = 0
+                }
+            }
+        }
+        if (now - followStatFramesAt >= 10_000) {
+            followLog.d("麦克风", "累计收到 ${followFrames} 帧（${followFrames / 100} 秒声音），跟读开始 ${(now - followStartAt) / 1000} 秒")
+            followStatFramesAt = now
+        }
+    }
+
+    private fun onFollowText(text: String, final: Boolean, audioAt: Long, decodeMs: Long) {
+        if (!followOn) return
+        val p = paginator ?: return
+        val b = book ?: return
+        val now = System.currentTimeMillis()
+        followHeard = text
+        followLog.d(if (final) "整句" else "识别", "「$text」 声音收到后 ${now - audioAt} ms 出字（这次解码 $decodeMs ms）")
+        val off = followAligner.offset
+        val from = (off - 400).coerceAtLeast(0)
+        val to = (off + 4_000).coerceAtMost(b.text.length)
+        val t0 = System.nanoTime()
+        val script = FollowText.tokenize(b.text, from, to, pinyin, followDict)
+        var cur = 0
+        while (cur < script.size && script.starts[cur] < off) cur++
+        val hyp = FollowText.tokenize(text, 0, text.length, pinyin, followDict)
+        val r = followAligner.update(hyp.ids, script, cur)
+        val us = (System.nanoTime() - t0) / 1000
+        val ctx = b.text.substring(r.to.coerceIn(0, b.text.length).let { maxOf(0, it - 10) }, r.to.coerceIn(0, b.text.length)).replace('\n', '⏎')
+        followLog.d("对齐", "${r.reason}：第 ${r.from} → ${r.to} 字（${r.distance} 个音节，得分 ${r.score}，窗口 ${r.window}，用了 $us µs）…「$ctx」")
+        if (r.moved) {
+            followMoves++
+            if (r.reason == "跳过") followJumps++
+            followApply(r.to, r.reason)
+        } else if (!readerAsImage && displayPage == DisplayPage.PROMPTER && now - followLastPartialAt > 500) {
+            // 文字显示：状态行显示听到的字（最多半秒刷一次）
+            followLastPartialAt = now
+            main.removeCallbacks(followStatusPush); main.post(followStatusPush)
+        }
+        if (now - followUiAt > 400) { followUiAt = now; notifyUi() }
+    }
+
+    private val followStatusPush = Runnable { if (followOn) pushPage() }
+
+    /** 念到了 offset：需要换行就滚过去（正在念的行放在倒数第几行），不用换行就只重画下划线。 */
+    private fun followApply(offset: Int, why: String) {
+        val p = paginator ?: return
+        val line = p.lineIndexForOffset((offset - 1).coerceAtLeast(0))
+        val from = followFromBottom
+        val top = if (from == 0) (line - (p.rows - 1) / 2).coerceIn(0, p.maxTop) else FollowView.topFor(line, p.rows, from, p.maxTop)
+        if (top != topLine) followLog.d("显示", "$why：第 $line 行，滚到顶部第 $top 行（原来 $topLine）")
+        setTop(top)
+    }
+
+    /** 图片显示时的跟读标记：正在念的行在这一屏的第几行、念到第几个字。 */
+    private fun followMark(): ReaderImage.Mark? {
+        if (!followOn || !readerAsImage) return null
+        val p = paginator ?: return null
+        val off = followAligner.offset
+        val line = p.lineIndexForOffset((off - 1).coerceAtLeast(0))
+        val row = line - topLine
+        if (row !in 0 until p.rows) return null
+        return ReaderImage.Mark(row, off - p.lineStartOf(line))
+    }
+
+    /** 导出最新的跟读日志到「下载/NimoGo」，返回给人看的位置（失败时返回原因）。 */
+    fun exportFollowLog(): Pair<android.net.Uri?, String> {
+        followLog.flush()
+        val f = followLog.latest() ?: return null to "还没有跟读日志"
+        return try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, "NimoGo-" + f.name)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/NimoGo")
+                }
+                val uri = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null to "存不进「下载」"
+                contentResolver.openOutputStream(uri)!!.use { out -> f.inputStream().use { it.copyTo(out) } }
+                uri to "已存到「下载/NimoGo/NimoGo-${f.name}」"
+            } else {
+                val dir = getExternalFilesDir(null) ?: return null to "存不了"
+                val out = java.io.File(dir, "NimoGo-" + f.name)
+                f.copyTo(out, overwrite = true)
+                null to "已存到 ${out.absolutePath}"
+            }
+        } catch (e: Exception) { null to "导出失败：${e.message}" }
+    }
+
+    /** 眼镜收一张图平均多少毫秒（手机界面显示，方便比较图片和文字两种显示的速度）。 */
+    fun imageIntervalMs(): Long? = if (::client.isInitialized) client.imageIntervalMs() else null
 
     /** 提词遥控（演讲模式、戒指、方向键）：往后 lines 行、pages 页（负数往前）。不在阅读时返回 false。 */
     fun remoteMove(lines: Int, pages: Int): Boolean {
@@ -1288,13 +1515,17 @@ class ReaderService : Service(), NimoListener, AppHost {
         val page = currentPage() ?: run { notifyUi(); return }
         glassesPaused = false
         bookUri?.let { prefs.edit().putInt("pos:$it", page.start).apply() }
+        val mark = followMark()
+        if (followOn) followLog.d("显示", "顶部第 $topLine 行，标记 ${mark?.let { "第 ${it.row + 1} 行前 ${it.col} 字" } ?: "无"}，" +
+            (if (readerAsImage) "图片（眼镜收一张图平均 ${client.imageIntervalMs() ?: "?"} ms）" else "文字"))
         if (readerAsImage) {
-            client.showImage(ReaderImage.render(page.text, glassesFontPx, if (showProgress) progressPercent() else null),
+            client.showImage(ReaderImage.render(page.text, glassesFontPx, if (showProgress) progressPercent() else null, mark),
                 ReaderImage.W, ReaderImage.H)
         } else if (displayPage == DisplayPage.PROMPTER) {
-            // 提词器有独立的顶部状态行，章节和进度放在那里，不占正文行数
+            // 提词器有独立的顶部状态行，章节和进度放在那里，不占正文行数；跟读时显示听到的最后几个字
             val ch = currentChapterTitle()
-            val status = if (showProgress) listOf(ch, "%.1f%%".format(progressPercent())).filter { it.isNotEmpty() }.joinToString("  ") else ch
+            val status = if (followOn) "跟读 · " + followHeard.takeLast(14).ifEmpty { "…" }
+                else if (showProgress) listOf(ch, "%.1f%%".format(progressPercent())).filter { it.isNotEmpty() }.joinToString("  ") else ch
             client.showText(page.text, status)
         } else {
             val text = if (showProgress) page.text + "\n— %.1f%% —".format(progressPercent()) else page.text
@@ -1957,10 +2188,11 @@ class ReaderService : Service(), NimoListener, AppHost {
     private var captionsWantMic = false
     private fun glassesMic(on: Boolean) {
         if (on) client.micStart()
-        else if (!memWantsMic && !captionsWantMic) client.micStop()
+        else if (!memWantsMic && !captionsWantMic && !followWantsMic) client.micStop()
     }
 
     override fun onMicFrames(frames: List<NimoMic.Frame>) {
+        if (followOn) followFrames(frames)
         if (memEngine.running) { memEngine.onGlassesFrames(frames); memUi() }
         if (captions.running) captions.onFrames(frames)
     }

@@ -1335,6 +1335,49 @@ class MainActivity : Activity(), ReaderService.UiListener {
         page.addView(pill("演讲模式（屏幕全黑，戒指 / 音量键翻页）", dark = false) { enterSpeech() }, lp(top = 10))
         page.addView(note("手机真正息屏后，系统不会把戒指和音量键交给任何 app。演讲模式让屏幕全黑、亮度最低但不锁屏，" +
             "手机放进口袋也能用戒指翻：上下翻行，左右翻页。手机屏幕被误碰不会翻，长按屏幕或按返回键退出。").apply { setPadding(dp(4), dp(8), dp(4), 0) })
+
+        // 语音跟读（测试版）
+        page.addView(section("语音跟读（测试版）"))
+        val fl = listBox()
+        val followRow = Row("语音跟读", "眼镜麦克风听你念，自动翻到念到的地方")
+        val followT = Toggle { service?.toggleFollow(); refreshNow() }
+        followRow.accessory(followT.root)
+        fl.addRow(followRow.root)
+        val models = FollowModel.values()
+        val modelSeg = Seg(models.map { it.zh }) { i ->
+            val s = service ?: return@Seg
+            if (s.followOn) toast("先关掉跟读再换模型") else s.followModel = models[i]
+            refreshNow()
+        }
+        fl.addRow(FrameLayout(this).apply { setPadding(dp(14), dp(10), dp(14), dp(10)); addView(modelSeg.root) })
+        val rowChoices = listOf(1, 2, 0)
+        val rowSeg = Seg(listOf("念的行在最后一行", "倒数第二行", "中间")) { i -> service?.followFromBottom = rowChoices[i]; refreshNow() }
+        fl.addRow(FrameLayout(this).apply { setPadding(dp(14), dp(4), dp(14), dp(10)); addView(rowSeg.root) })
+        val logRow = Row("导出跟读日志", "存到手机的「下载/NimoGo」，可以发给电脑分析", chevron = true) {
+            val s = service ?: return@Row
+            val (uri, msg) = s.exportFollowLog()
+            toast(msg)
+            if (uri != null) runCatching {
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain")
+                    .putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "发送跟读日志"))
+            }
+        }
+        fl.addRow(logRow.root)
+        page.addView(fl)
+        page.addView(note("识别在手机上离线做（sherpa-onnx），第一次要下载识别模型（建议连 Wi-Fi）。讲稿和识别结果按拼音对齐，" +
+            "繁体、简体、同音字都对得上；跳过几句也能跟上，说讲稿以外的话会停在原地。用「图片」显示时，正在念的行加亮、念到哪里下划线画到哪里；" +
+            "用「提词器文字」显示时，顶部状态行显示听到的字。每一步都记在跟读日志里。").apply { setPadding(dp(4), dp(8), dp(4), 0) })
+        onUpdate(Sub.READ) { s ->
+            followT.set(s.followOn || s.followDownloading)
+            modelSeg.select(models.indexOf(s.followModel))
+            rowSeg.select(rowChoices.indexOf(s.followFromBottom).coerceAtLeast(0))
+            val img = if (s.readerAsImage) s.imageIntervalMs()?.let { "眼镜收一张图约 $it ms" } else null
+            followRow.desc(when {
+                s.followOn -> listOfNotNull("听到：" + s.followHeard.takeLast(18).ifEmpty { "…" }, img).joinToString(" · ")
+                s.followStatus.isNotEmpty() -> s.followStatus
+                else -> listOfNotNull("眼镜麦克风听你念，自动翻到念到的地方", img).joinToString(" · ")
+            })
+        }
         val autoHint = note("")
         page.addView(autoHint.apply { setPadding(dp(4), dp(10), dp(4), 0) })
 

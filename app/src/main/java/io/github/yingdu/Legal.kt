@@ -5,7 +5,7 @@ package io.github.yingdu
  * 内容有实质改动时把 VERSION 加一，用户下次打开会再看到一次。
  */
 object Legal {
-    const val VERSION = 8
+    const val VERSION = 9
 
     const val DISCLAIMER =
         "1. NimoGo 是个人开发的非官方第三方 app，与 Nimo 眼镜的厂商没有任何关系，也没有得到厂商的授权或认可。" +
@@ -33,7 +33,9 @@ object Legal {
         "· 天气：大致位置或城市名发给 Open-Meteo，城市名的反查用 BigDataCloud。\n" +
         "· 股票：股票代码发给雅虎财经、腾讯证券、Robinhood、微牛（Webull）。\n" +
         "· 网络卡片：按你填的网址、请求头和请求体去请求。\n" +
-        "· 检查更新：NimoGo 不检查更新，不访问 GitHub。\n\n" +
+        "· 语音跟读：识别在手机上离线做，声音和识别结果不发给任何服务；第一次用时从 GitHub（sherpa-onnx 项目的发布页）下载识别模型。" +
+        "跟读日志（识别出的文字、对齐过程）只存在手机上，你点「导出」才会存到「下载」里。\n" +
+        "· 检查更新：NimoGo 不检查更新（下载识别模型除外，不访问 GitHub）。\n\n" +
         "只存在手机上的：\n" +
         "· 全天记忆转写的文字和总结（录音不留，转好文字就删）。\n" +
         "· 分辨说话人用的声音特征：每一轮话的音量、音高、低频比例几个数字，以及你纠正过的例子，用来判断是不是你本人在说话；" +
