@@ -51,8 +51,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         const val HIDE_HOME = 2
         /** 萤读自己退回主界面后，这么久内眼镜报的「主界面被点亮」不算用户点亮。 */
         const val QUIT_HOME_IGNORE_MS = 3_000L
-        /** 长按右镜腿退出页面后，等这么久再重新打开看板（眼镜还在退出时发的「打开页面」会被吞掉）。 */
-        const val LONG_WAKE_DELAY_MS = 800L
         /** 通知监听服务通过它把手机通知、导航信息交给我们。 */
         var instance: ReaderService? = null
         private const val CHANNEL_ID = "reader"
@@ -345,11 +343,16 @@ class ReaderService : Service(), NimoListener, AppHost {
      * 换个键存，大家都从「关屏」开始。
      */
     var dashHideMode: Int
-        get() = if (prefs.getInt("dashHide36", HIDE_SCREEN_OFF) == HIDE_HOME) HIDE_HOME else HIDE_SCREEN_OFF
+        // 眼镜「抬头显示」关着时一律回主界面（2026-10-22 实测：关屏后眼镜只报长按右镜腿，而长按是眼镜自己的退出，
+        // 退出后眼镜不接受马上重开页面，长按开关看板做不出来）。这时收起 = 回官方主界面，点一下镜腿叫回
+        get() = if (!dashHeadWake) HIDE_HOME else dashHideModeSetting
         set(v) { prefs.edit().putInt("dashHide36", v).apply(); notifyUi() }
+    /** 设置里选的收起方式（只在「抬头显示」开着时起作用）。 */
+    val dashHideModeSetting: Int
+        get() = if (prefs.getInt("dashHide36", HIDE_SCREEN_OFF) == HIDE_HOME) HIDE_HOME else HIDE_SCREEN_OFF
     /**
      * 抬头显示看板：跟着眼镜自己的「抬头显示」设置（官方 app 和 NimoGo 里改的是同一个），不再单独设置（2026-10-22）。
-     * 开着：抬头开屏显示看板（从第一屏开始），低头再关。关着：按右镜腿显示看板，再按一下收起。
+     * 开着：抬头开屏显示看板（从第一屏开始），低头再关。关着：收起时回官方主界面，点一下镜腿叫回；显示时右单击收起、左单击翻屏。
      */
     val dashHeadWake: Boolean get() = headUpDisplay == true
     private val headWakeOn get() = dashHeadWake && dashHideMode == HIDE_SCREEN_OFF
@@ -402,7 +405,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         } else {
             screenOffByUs = true; client.screenOff(true)
             main.postDelayed(standbyRefresh, 300)
-            log("$why（关屏；" + (if (dashHeadWake) "抬头再看" else "长按右镜腿再看") + "）")
+            log("$why（关屏；抬头再看）")
         }
         updateNotification(); notifyUi()
     }
@@ -432,57 +435,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         wakeDashboard()
     }
 
-    /** 上一次按长按右镜腿切换看板的时间（同一下长按可能同时报「长按」和「页面退出」，只算一次）。 */
-    private var dashLongAt = 0L
-
-    /**
-     * 眼镜「抬头显示」关着时，长按右镜腿切换看板（2026-10-22 两份日志）：
-     *  - 关屏时眼镜不报单击，只报长按右镜腿；而长按右镜腿又是眼镜自己的「退出页面」。
-     *  - 以前收起后马上在黑屏下把导航页开回来：眼镜回 status 5、过几秒又报「页面 1 已退出」，结果停在官方主界面，
-     *    下一次长按还被当成「手动刷新」。
-     * 现在：收起 = 关屏（页面被退出就让它退出，不再黑屏重开）；显示 = 等眼镜退完页面，先开屏（露一下主界面），再在亮着的主界面上打开页面（多发几次）。
-     * 返回 false 表示不归这里管（交给原来的处理）。
-     */
-    private fun dashLongPress(exited: Boolean): Boolean {
-        val now = android.os.SystemClock.uptimeMillis()
-        if (now - dashLongAt < 1_000) return true
-        if (glassesPaused) {
-            if (notifyLit) return false
-            dashLongAt = now
-            log("长按右镜腿：显示看板")
-            main.removeCallbacks(standbyRefresh)
-            // 眼镜刚退出页面时马上发「打开页面」会被吞掉：等它退完再开
-            val go = Runnable {
-                if (appMode != AppMode.DASHBOARD || !glassesPaused || linkState != LinkState.READY) return@Runnable
-                if (client.enteredAppId() == NimoProtocol.APP_ID_NAV) { wakeDashboard(); return@Runnable }
-                // 页面已不在：先开屏（会露一下官方主界面），在亮着的主界面上打开页面才可靠（黑屏下打开会被眼镜拒掉）
-                if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
-                client.retryNextEnter()
-                wakeDashboard(litHome = true)
-            }
-            if (exited) main.postDelayed(go, LONG_WAKE_DELAY_MS) else go.run()
-            return true
-        }
-        if (!exited && client.enteredAppId() == NimoProtocol.APP_ID_NAV) return false   // 页面还开着的长按：照旧手动刷新
-        dashLongAt = now
-        cancelDashTimers()
-        notifyOver = false; main.removeCallbacks(endNotifyOver)
-        glassesPaused = true; headHidden = true
-        standbyKey = null; lastPushedDash = ""
-        main.removeCallbacks(standbyRefresh)
-        if (dashHideMode == HIDE_SCREEN_OFF) {
-            screenOffByUs = true; client.screenOff(true)
-            log("长按右镜腿：收起看板（关屏；再长按右镜腿显示）")
-        } else {
-            screenOffByUs = false
-            log("长按右镜腿：收起看板（回主界面；再长按右镜腿显示）")
-        }
-        updateNotification(); notifyUi()
-        return true
-    }
-
     /** 从收起回到看板：从第一屏开始，重新计时；屏幕等看板画好再亮，不先露出上一次的画面。 */
-    private fun wakeDashboard(litHome: Boolean = false) {
+    private fun wakeDashboard() {
         headHidden = false
         val lit = notifyLit
         if (lit) log("叫回看板：正在显示的通知被看板替换")
@@ -508,7 +462,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         lastPushedDash = ""
         if (screenOffByUs) { screenOffByUs = false; client.unblankAfterNextContent() }
         // 从官方主界面叫回时不先关屏：关屏再开要 1～2 秒，比露一下主界面更慢
-        else if (dashHideMode != HIDE_HOME && !litHome) client.blankUntilShown()
+        else if (dashHideMode != HIDE_HOME) client.blankUntilShown()
         pushDashboard(force = true)
     }
 
@@ -2295,10 +2249,6 @@ class ReaderService : Service(), NimoListener, AppHost {
                 (if (headHidden) "看板是自动收起的" else "看板是手动收起的") + "，" + (if (screenOffByUs) "NimoGo 关了屏" else "屏幕不是 NimoGo 关的") +
                 "，收起方式 ${if (dashHideMode == HIDE_HOME) "回主界面" else "关屏"}，抬头显示看板 ${if (dashHeadWake) "开" else "关"}，" +
                 "使用看板 ${if (dashEnabled) "开" else "关"}，眼镜页面 ${client.enteredAppId() ?: "主界面"}")
-        if ((input == GlassesInput.EXITED || input == GlassesInput.LONG_PRESS) && appMode == AppMode.DASHBOARD && !dashHeadWake &&
-            !dashAtHome && activeApp == null && linkState == LinkState.READY) {
-            if (dashLongPress(exited = input == GlassesInput.EXITED)) return
-        }
         if (input == GlassesInput.EXITED) {
             // 眼镜退出了页面（长按右镜腿）：停止自动滚动、语音跟读，暂停显示
             stopAutoFlip()
