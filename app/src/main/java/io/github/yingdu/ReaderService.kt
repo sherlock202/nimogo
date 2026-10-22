@@ -2260,6 +2260,34 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (appMode == AppMode.DASHBOARD) pushDashboard(force = true, restartTimers = false) else pushPage()
     }
 
+    /** 上一次因为「页面被眼镜退掉」而重开看板的时间（只重开一次，免得来回打架）。 */
+    private var pageLostRetryAt = 0L
+
+    /**
+     * 手机上是「显示看板」，眼镜却报页面退出了（2026-10-22 日志：长按叫出看板后没收到打开确认，4 秒后眼镜报「页面 1 已退出」，
+     * 眼镜停在主界面，手机上还显示着看板）。先在亮着的主界面上再开一次；15 秒内又被退掉，就把手机上也改成「已收起」，两边一致。
+     */
+    override fun onPageLost(appId: Int) {
+        if (appMode != AppMode.DASHBOARD || glassesPaused || activeApp != null || dashAtHome || linkState != LinkState.READY) return
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - pageLostRetryAt > 15_000) {
+            pageLostRetryAt = now
+            log("看板页面被眼镜退掉了，眼镜上没在显示：再打开一次")
+            if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
+            main.postDelayed({
+                if (appMode != AppMode.DASHBOARD || glassesPaused || client.enteredAppId() != null || linkState != LinkState.READY) return@postDelayed
+                client.retryNextEnter()
+                lastPushedDash = ""
+                pushDashboard(force = true)
+            }, 500)
+            return
+        }
+        cancelDashTimers()
+        glassesPaused = true; headHidden = true
+        log("看板页面又被眼镜退掉了：手机上也改成已收起（长按右镜腿或在手机上点「显示看板」再试）")
+        updateNotification(); notifyUi()
+    }
+
     override fun onInput(input: GlassesInput) {
         // 排查"抬头不显示看板"：收起状态下抬头时，把当时的状态记下来
         if (input == GlassesInput.HEAD_UP && glassesPaused)

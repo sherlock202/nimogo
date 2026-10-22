@@ -39,6 +39,8 @@ interface NimoListener {
      * 重新连上的那一边不知道现在开着什么页面，要重新打开页面、补发画面，否则只有半边显示。
      */
     fun onTwsReconnected() {}
+    /** 眼镜报我们打开的页面退出了（不是长按镜腿、也不是我们自己退的）：多半是刚打开就被眼镜退掉，眼镜上其实没在显示。 */
+    fun onPageLost(appId: Int) {}
     fun onLog(msg: String)
     /** 眼镜麦克风的音频帧（开麦后才有）。 */
     fun onMicFrames(frames: List<NimoMic.Frame>) {}
@@ -869,6 +871,7 @@ class NimoClient(private val context: Context, private val listener: NimoListene
                 } else if (phase == NimoProtocol.STATE_EXIT && appId == enteredApp) {
                     log("眼镜上报：页面 $appId 已退出")
                     enteredApp = null
+                    listener.onPageLost(appId)
                 }
             }
             NimoProtocol.REPORT_TWS -> if (data.isNotEmpty()) onTws((data[0].toInt() and 0xFF) >= 1)
