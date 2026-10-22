@@ -126,6 +126,13 @@ class ReaderService : Service(), NimoListener, AppHost {
         notifyUi()
     }
 
+    /** 提词器文字显示阅读时，长按右镜腿不退出（只用镜腿翻页；退出在手机上点「收起显示」）。 */
+    override fun keepPrompterOnLongPress(): Boolean = appMode == AppMode.READER && activeApp == null && !glassesPaused
+
+    override fun onPrompterRestore() {
+        if (appMode == AppMode.READER && !glassesPaused) pushPage()
+    }
+
     fun toggleReaderImage() {
         readerAsImage = !readerAsImage
         log(if (readerAsImage) "阅读改用图片显示" else "阅读改用文字页面显示")

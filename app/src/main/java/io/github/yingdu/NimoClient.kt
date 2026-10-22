@@ -26,6 +26,10 @@ interface NimoListener {
     fun onGlassesSetting(key: Int, on: Boolean) {}
     /** 眼镜两次拒绝打开提词器页面（状态 7：设备忙，多半是官方 app 的提词器会话还没结束）。 */
     fun onPrompterRefused() {}
+    /** 提词器里长按右镜腿时要不要留在提词器（不退出）。true：撤掉眼镜的「正在退出」，之后调 onPrompterRestore 重新显示。 */
+    fun keepPrompterOnLongPress(): Boolean = false
+    /** 提词器已经重新打开（长按右镜腿没让它退出）：把当前这一页再发一次。 */
+    fun onPrompterRestore() {}
     /** 眼镜现在的亮度档位（0..16，连接时读到的）。 */
     fun onBrightnessLevel(level: Int) {}
     /** 眼镜上报的自动亮度档位（0..16）。 */
@@ -1024,7 +1028,25 @@ class NimoClient(private val context: Context, private val listener: NimoListene
      * （试过「按住满 2 秒才退出」：提词器里眼镜不报按下 / 松开，量不出按了多久，只能改成按两次，结果眼镜退出后又被重新打开；
      *   当初「碰一下就退出」其实是单击时顺带的 05 被误当成长按，见 onPrompterAction05。2026-10-22）
      */
-    private fun onPrompterLongPress() = exitPrompter("长按")
+    private fun onPrompterLongPress() {
+        if (enteredApp != NimoProtocol.APP_ID_PROMPTER) return
+        if (listener.keepPrompterOnLongPress()) restorePrompter() else exitPrompter("长按")
+    }
+
+    /**
+     * 提词时长按右镜腿不退出（2026-10-22：演讲时只想用镜腿翻页，退出只在手机上操作）。
+     * 眼镜收到长按已经显示「正在退出」、等手机结束会话，不能不理（会一直挂着）：照样发退出指令，
+     * 屏幕先关着，1 秒后重新打开提词器、发回这一页，内容画好再亮。眼镜忙时会回状态 7，enterApp 那里会先退出再试一次。
+     */
+    private fun restorePrompter() {
+        log("提词时长按右镜腿：不退出（退出请在手机上操作），重新打开提词器")
+        blankScreen()
+        sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_CONTROL_INSTRUCTION, NimoProtocol.CTRL_QUIT_APP,
+            byteArrayOf(NimoProtocol.APP_ID_PROMPTER.toByte())))
+        enteredApp = null
+        pending = null
+        main.postDelayed({ if (state == LinkState.READY) listener.onPrompterRestore() }, 1_000)
+    }
 
     private fun exitPrompter(how: String) {
         if (enteredApp != NimoProtocol.APP_ID_PROMPTER) return
