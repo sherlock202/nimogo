@@ -400,7 +400,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         } else {
             screenOffByUs = true; client.screenOff(true)
             main.postDelayed(standbyRefresh, 300)
-            log("$why（关屏；" + (if (dashHeadWake) "抬头再看" else "按右镜腿再看") + "）")
+            log("$why（关屏；" + (if (dashHeadWake) "抬头再看" else "长按右镜腿再看") + "）")
         }
         updateNotification(); notifyUi()
     }
@@ -2214,6 +2214,28 @@ class ReaderService : Service(), NimoListener, AppHost {
                 (if (headHidden) "看板是自动收起的" else "看板是手动收起的") + "，" + (if (screenOffByUs) "NimoGo 关了屏" else "屏幕不是 NimoGo 关的") +
                 "，收起方式 ${if (dashHideMode == HIDE_HOME) "回主界面" else "关屏"}，抬头显示看板 ${if (dashHeadWake) "开" else "关"}，" +
                 "使用看板 ${if (dashEnabled) "开" else "关"}，眼镜页面 ${client.enteredAppId() ?: "主界面"}")
+        if (input == GlassesInput.EXITED && appMode == AppMode.DASHBOARD && !dashHeadWake && dashHideMode == HIDE_SCREEN_OFF &&
+            !dashAtHome && activeApp == null) {
+            // 眼镜「抬头显示」关着时，看板靠长按右镜腿开关（2026-10-22 日志：关屏时眼镜不报单击，只报长按右镜腿，
+            // 而长按右镜腿是眼镜自己的「退出页面」）
+            if (glassesPaused && screenOffByUs) {
+                // 收起着：长按 = 显示。页面已被眼镜退出，屏幕还关着：重新打开页面、画好再开屏
+                log("长按右镜腿：显示看板")
+                client.retryNextEnter()
+                wakeDashboard()
+            } else {
+                // 显示着：长按 = 收起。眼镜已退回主界面：关屏，再在黑屏下把页面开回来，下次长按还能叫出来
+                cancelDashTimers()
+                notifyOver = false; main.removeCallbacks(endNotifyOver)
+                glassesPaused = true; headHidden = true
+                screenOffByUs = true; client.screenOff(true)
+                standbyKey = null; lastPushedDash = ""
+                main.removeCallbacks(standbyRefresh); main.postDelayed(standbyRefresh, 300)
+                log("长按右镜腿：收起看板（关屏；再长按右镜腿显示）")
+                updateNotification(); notifyUi()
+            }
+            return
+        }
         if (input == GlassesInput.EXITED) {
             // 眼镜退出了页面（长按右镜腿）：停止自动滚动、语音跟读，暂停显示
             stopAutoFlip()

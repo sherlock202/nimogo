@@ -1654,13 +1654,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val home = s.dashHideMode == ReaderService.HIDE_HOME
             howHint.text = if (home) "回官方主界面；眼镜报告「主界面被点亮」时叫回看板。官方 app 连着时这个报告会发给官方 app，" +
                 "NimoGo 收不到，所以要先停止官方 app（「我的 › 和官方 app 切换」）。"
-                else if (s.dashHeadWake) "只关屏幕：抬头亮、低头关。" else "只关屏幕：按右镜腿显示看板，再按一下收起；左镜腿翻屏。"
+                else if (s.dashHeadWake) "只关屏幕：抬头亮、低头关。" else "只关屏幕：长按右镜腿显示看板；显示时单击或长按右镜腿收起，左镜腿翻屏。"
             headToggle.set(s.dashHeadWake)
             headRow.titleV.text = "眼镜的抬头显示"
             headRow.desc(when {
                 s.headUpDisplay == null -> "连上眼镜后读取（和官方 app 里的是同一个设置）"
                 home -> if (s.dashHeadWake) "开：抬头叫回看板，低头回主界面" else "关：左镜腿或手机上叫回看板"
-                else -> if (s.dashHeadWake) "开：抬头显示看板，低头关屏" else "关：按右镜腿显示看板，再按一下收起"
+                else -> if (s.dashHeadWake) "开：抬头显示看板，低头关屏" else "关：长按右镜腿显示看板，单击或长按收起"
             })
             darkToggle.set(s.dashHomeDark)
             darkRow.root.visibility = if (home) View.VISIBLE else View.GONE
