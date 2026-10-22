@@ -1644,8 +1644,15 @@ class ReaderService : Service(), NimoListener, AppHost {
         get() = prefs.getInt("notifySec", 10)
         set(v) { prefs.edit().putInt("notifySec", v).apply(); notifyUi() }
 
+    /** 提词（眼镜上在显示阅读）时不打扰：通知、来电、景点介绍都不弹（默认开，2026-10-22）。 */
+    var quietWhileReading: Boolean
+        get() = prefs.getBoolean("quietReading", true)
+        set(v) { prefs.edit().putBoolean("quietReading", v).apply(); notifyUi() }
+    private val readingOnGlasses get() = appMode == AppMode.READER && !glassesPaused && activeApp == null && linkState == LinkState.READY
+
     fun onPhoneNotification(app: String, title: String, text: String, litMs0: Long = -1, fit: Boolean = false, pkg: String? = null) {
         val litMs = if (litMs0 > 0) litMs0 else notifySeconds * 1000L
+        if (quietWhileReading && readingOnGlasses) { log("提词中，不弹通知：$app" + if (title.isNotEmpty() && title != app) " · $title" else ""); return }
         if (linkState != LinkState.READY) {
             // 眼镜重连期间来的通知先存着，连上后再弹（只留最近 5 条、2 分钟内的）
             if (!fit) {

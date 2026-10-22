@@ -3563,6 +3563,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         top.addRow(perm.root)
         val callToggle = Toggle { NotifyPrefs.setCallAlert(this, !NotifyPrefs.callAlert(this)); refreshNow() }
         top.addRow(Row("来电提醒", "电话、微信等来电时弹出来电人").apply { accessory(callToggle.root) }.root)
+        val quietToggle = Toggle { service?.let { it.quietWhileReading = !it.quietWhileReading }; refreshNow() }
+        top.addRow(Row("提词时不打扰", "眼镜上在显示阅读（提词器）时，通知、来电、景点介绍都不弹").apply { accessory(quietToggle.root) }.root)
         val secChoices = listOf(5, 10, 20, 30)
         val notifySeg = Seg(secChoices.map { "$it 秒" }) { i -> service?.notifySeconds = secChoices[i]; refreshNow() }
         top.addRow(vbox().apply {
@@ -3615,7 +3617,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         filter.addTextChangedListener(onEdit { rebuild() })
         onUpdate(Sub.NOTIFY) {
             onToggle.set(NotifyPrefs.enabled(this))
-            service?.let { s -> notifySeg.select(secChoices.indexOf(s.notifySeconds).coerceAtLeast(0)) }
+            service?.let { s -> notifySeg.select(secChoices.indexOf(s.notifySeconds).coerceAtLeast(0)); quietToggle.set(s.quietWhileReading) }
             callToggle.set(NotifyPrefs.callAlert(this))
             perm.value(when {
                 !PhoneNotificationService.isEnabled(this) -> "去授权"
