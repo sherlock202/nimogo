@@ -26,8 +26,6 @@ interface NimoListener {
     fun onGlassesSetting(key: Int, on: Boolean) {}
     /** 眼镜两次拒绝打开提词器页面（状态 7：设备忙，多半是官方 app 的提词器会话还没结束）。 */
     fun onPrompterRefused() {}
-    /** 提词器里长按右镜腿没按够 2 秒：眼镜的「正在退出」已经撤掉、提词器页面要重新打开，当成一次「下一页」。 */
-    fun onPrompterExitCancelled() {}
     /** 眼镜现在的亮度档位（0..16，连接时读到的）。 */
     fun onBrightnessLevel(level: Int) {}
     /** 眼镜上报的自动亮度档位（0..16）。 */
@@ -87,8 +85,6 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         private val ENTER_RETRY_MS = longArrayOf(300, 600, 900, 1200, 1500)
         /** 打开页面后等多久没收到确认就当作已打开，正式发最后一次。 */
         private const val NAV_ENTER_WAIT_MS = 1_300L
-        /** 提词器里要按住右镜腿这么久才算退出（眼镜自己不到 1 秒就报长按，稍微碰一下就退出了；2026-10-22）。 */
-        private const val PROMPTER_EXIT_HOLD_MS = 2_000L
         /** 关屏退回主界面后多久松开关屏（官方主界面约 10 秒自己熄灭）。 */
         private const val DARK_HOME_RELEASE_MS = 12_000L
         /** 回复看板拉取时告诉眼镜多少秒后再定时来拉（官方默认 60；只有抬头那次拉取才叫回看板，定时的不用）。 */
@@ -947,23 +943,10 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     private fun cancelSynth() { main.removeCallbacks(synthClick); pendingClickRight = null }
 
-    private fun onTouchPress(code: Int) {
-        pressAt = System.currentTimeMillis()
-        if (code == NimoProtocol.INPUT_TOUCH_PRESS_RIGHT) rightDownAt = android.os.SystemClock.uptimeMillis()
-    }
+    private fun onTouchPress(code: Int) { pressAt = System.currentTimeMillis() }
 
     private fun onTouchRelease(code: Int) {
         val right = code == NimoProtocol.INPUT_TOUCH_RELEASE_RIGHT
-        if (right) {
-            rightUpAt = android.os.SystemClock.uptimeMillis()
-            // 提词器里正在等「按够 2 秒」：没按够就松开了 → 不退出
-            if (prompterHold != null) {
-                cancelPrompterExit("按了 ${rightUpAt - rightDownAt} 毫秒就松开")
-                return
-            }
-            // 提词器里的长按刚处理过（退出了或撤销了）：这次松开不再合成单击 / 长按
-            if (rightUpAt - prompterLongAt < 5_000) return
-        }
         val held = System.currentTimeMillis() - pressAt
         if (held > 700) {
             main.postDelayed({
@@ -1036,44 +1019,12 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         }, 400)
     }
 
-    /** 右镜腿最近一次按下 / 松开的时间（uptime；眼镜报了「按下 / 松开」才有）。 */
-    private var rightDownAt = 0L
-    private var rightUpAt = 0L
-    /** 提词器里报了长按、正在等按够 2 秒。 */
-    private var prompterHold: Runnable? = null
-    /** 没有按下 / 松开可参考时：上一次长按的时间，2 秒内再长按一次才退出。 */
-    private var prompterFirstLongAt = 0L
-    /** 提词器里最近一次报长按的时间。 */
-    private var prompterLongAt = 0L
-
     /**
-     * 提词器里长按右镜腿：眼镜显示「正在退出」，然后等手机把会话结束掉（官方 app 会发退出指令）。
-     * 眼镜不到 1 秒就报长按，演讲时稍微碰一下镜腿就退出了（2026-10-22）。所以要按住满 2 秒才退出：
-     *  - 眼镜报了「按下」：等到按下后 2 秒还没松开才退出；没到 2 秒就松开，就不退出、翻到下一页。
-     *  - 没有按下 / 松开可参考：第一次长按不退出（翻到下一页），4 秒内再长按一次才退出。
-     * 不退出时要先把眼镜的「正在退出」撤掉：照样发退出指令，再重新打开提词器（屏幕先关着，内容画好再亮）。
+     * 提词器里长按右镜腿：眼镜显示「正在退出」，然后等手机把会话结束掉（官方 app 会发退出指令）。发退出指令，当作用户退出了页面。
+     * （试过「按住满 2 秒才退出」：提词器里眼镜不报按下 / 松开，量不出按了多久，只能改成按两次，结果眼镜退出后又被重新打开；
+     *   当初「碰一下就退出」其实是单击时顺带的 05 被误当成长按，见 onPrompterAction05。2026-10-22）
      */
-    private fun onPrompterLongPress() {
-        if (enteredApp != NimoProtocol.APP_ID_PROMPTER || prompterHold != null) return
-        val now = android.os.SystemClock.uptimeMillis()
-        prompterLongAt = now
-        val down = rightDownAt
-        if (down > 0 && now - down < 3_000) {
-            if (rightUpAt >= down) { cancelPrompterExit("按了 ${rightUpAt - down} 毫秒就松开"); return }
-            val wait = maxOf(0L, down + PROMPTER_EXIT_HOLD_MS - now)
-            log("提词器里长按右镜腿：按住满 ${PROMPTER_EXIT_HOLD_MS / 1000} 秒才退出（还要 $wait 毫秒）")
-            val r = Runnable {
-                prompterHold = null
-                if (rightUpAt < down) exitPrompter("按住满 ${PROMPTER_EXIT_HOLD_MS / 1000} 秒")
-            }
-            prompterHold = r
-            main.postDelayed(r, wait)
-            return
-        }
-        if (now - prompterFirstLongAt < 4_000) { prompterFirstLongAt = 0; exitPrompter("连续长按两次"); return }
-        prompterFirstLongAt = now
-        cancelPrompterExit("眼镜没报按下 / 松开，分不出按了多久；4 秒内再长按一次才退出")
-    }
+    private fun onPrompterLongPress() = exitPrompter("长按")
 
     private fun exitPrompter(how: String) {
         if (enteredApp != NimoProtocol.APP_ID_PROMPTER) return
@@ -1081,18 +1032,6 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_CONTROL_INSTRUCTION, NimoProtocol.CTRL_QUIT_APP,
             byteArrayOf(NimoProtocol.APP_ID_PROMPTER.toByte())))
         onUserExited("长按右镜腿")
-    }
-
-    /** 长按没按够：撤掉眼镜的「正在退出」，重新打开提词器，交给服务翻到下一页。 */
-    private fun cancelPrompterExit(why: String) {
-        prompterHold?.let { main.removeCallbacks(it) }; prompterHold = null
-        if (enteredApp != NimoProtocol.APP_ID_PROMPTER || state != LinkState.READY) return
-        log("提词器里长按右镜腿不算退出（$why）：翻到下一页")
-        blankScreen()
-        sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_CONTROL_INSTRUCTION, NimoProtocol.CTRL_QUIT_APP,
-            byteArrayOf(NimoProtocol.APP_ID_PROMPTER.toByte())))
-        enteredApp = null
-        main.postDelayed({ if (state == LinkState.READY) listener.onPrompterExitCancelled() }, 700)
     }
 
     /** 眼镜自己退出了我们的页面（长按右镜腿）。 */

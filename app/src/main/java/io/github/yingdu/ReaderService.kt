@@ -126,14 +126,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         notifyUi()
     }
 
-    /** 提词器里长按右镜腿没按够 2 秒（不退出）：当作一次「下一页」，并重新打开提词器显示。 */
-    override fun onPrompterExitCancelled() {
-        if (glassesPaused) return
-        if (appMode == AppMode.READER && activeApp == null) nextPage()
-        if (appMode == AppMode.DASHBOARD) lastPushedDash = ""
-        pushPage()
-    }
-
     fun toggleReaderImage() {
         readerAsImage = !readerAsImage
         log(if (readerAsImage) "阅读改用图片显示" else "阅读改用文字页面显示")
