@@ -919,6 +919,8 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             else -> return
         }
         if (input == GlassesInput.HEAD_UP || input == GlassesInput.HEAD_DOWN) lastHeadAt = android.os.SystemClock.uptimeMillis()
+        // 除了右长按以外的镜腿 / 头部操作：提词器里眼镜会顺带发一条 cmd=7 key=9 状态 05，要分得开
+        if (code != NimoProtocol.INPUT_LONG_PRESS_RIGHT) lastOtherInputAt = android.os.SystemClock.uptimeMillis()
         else {
             lastGestureAt = System.currentTimeMillis()
             cancelSynth()
@@ -1013,6 +1015,25 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         sendAwaitingAck(NimoProtocol.CMD_SET_PARAMETER, NimoProtocol.SET_DASH_RIGHT_LAYOUT, byteArrayOf(layout.toByte())) { ok ->
             log(if (ok) "看板右侧卡片已设为 $layout" else "眼镜没有接受看板右侧卡片设置（$layout）")
         }
+    }
+
+    /** 最近一次收到「右长按以外」的镜腿 / 头部操作的时间（uptime）。 */
+    private var lastOtherInputAt = 0L
+
+    /**
+     * 提词器里眼镜发来 cmd=7 key=9 状态 05。以前一律当成长按右镜腿退出，但实测左单击、右单击时也会顺带发这一条
+     * （2026-10-22 日志：「左单击（13）」紧接着就被当成长按退出了；和导航页里抬头低头时一样）。
+     * 真正的长按眼镜会另外报「右长按（05）」（走 handleInput），所以这条只在前 1.5 秒、后 0.4 秒内
+     * 都没有别的镜腿 / 头部操作时才算长按。
+     */
+    private fun onPrompterAction05(data: ByteArray) {
+        val hex = data.joinToString(" ") { "%02x".format(it) }
+        if (android.os.SystemClock.uptimeMillis() - lastOtherInputAt < 1_500) { log("提词器里眼镜随镜腿操作发来 05（$hex），不算长按"); return }
+        main.postDelayed({
+            if (enteredApp != NimoProtocol.APP_ID_PROMPTER) return@postDelayed
+            if (android.os.SystemClock.uptimeMillis() - lastOtherInputAt < 1_900) log("提词器里眼镜随镜腿操作发来 05（$hex），不算长按")
+            else { log("提词器里眼镜发来 05（$hex），当作长按右镜腿"); onPrompterLongPress() }
+        }, 400)
     }
 
     /** 右镜腿最近一次按下 / 松开的时间（uptime；眼镜报了「按下 / 松开」才有）。 */
@@ -1123,7 +1144,7 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             when (status) {
                 NimoProtocol.INPUT_LONG_PRESS_RIGHT -> when (enteredApp) {
                     NimoProtocol.APP_ID_NAV -> onNavAction05()
-                    NimoProtocol.APP_ID_PROMPTER -> onPrompterLongPress()
+                    NimoProtocol.APP_ID_PROMPTER -> onPrompterAction05(data)
                     else -> {}
                 }
                 else -> {}
