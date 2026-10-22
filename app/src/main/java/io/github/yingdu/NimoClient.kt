@@ -1013,6 +1013,14 @@ class NimoClient(private val context: Context, private val listener: NimoListene
     /** 眼镜自己退出了我们的页面（长按右镜腿）。 */
     private fun onUserExited(how: String) {
         log("眼镜退出了当前页面（$how）")
+        // 导航页里长按右镜腿后，眼镜和提词器一样在等手机把会话结束掉：不发退出指令，这个页面一直卡在「正在退出」，
+        // 几秒内再发「打开导航页」都被眼镜忽略（2026-10-22 13:16 日志：长按收起后再长按，打开导航页次次没反应，只剩主界面）。
+        // 所以这里补发一条退出指令，把会话结束干净（提词器在 onPrompterExit 里已经发过了）
+        if (enteredApp == NimoProtocol.APP_ID_NAV) {
+            sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_CONTROL_INSTRUCTION, NimoProtocol.CTRL_QUIT_APP,
+                byteArrayOf(NimoProtocol.APP_ID_NAV.toByte())))
+            log("给导航页发退出指令，结束这次会话")
+        }
         enteredApp = null
         pending = null
         listener.onInput(GlassesInput.EXITED)
