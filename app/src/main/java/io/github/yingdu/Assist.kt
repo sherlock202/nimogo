@@ -170,13 +170,29 @@ object AssistAi {
         "输出要求：只输出要显示的内容，不要寒暄、不要解释你的思路、不要用 Markdown（不要 #、**、表格），每条一段，前面用 1. 2. 3. 编号。"
 
     /** 现场：kind = answer 参考回答 / question 提问建议。 */
-    fun liveUser(kind: String, scene: AssistScene, transcript: String): String {
+    /**
+     * 要回答的那段：对方最近说的话（最后一句「我」之前或之后、连着的「对方 / 分不清」的几句，最多 3 句）。
+     * 对方最近没说话（一直是我在说）时为空。
+     */
+    fun lastFromOther(lines: List<AssistLine>): String {
+        val ls = lines.filter { it.text.isNotBlank() }
+        var end = ls.size
+        while (end > 0 && ls[end - 1].me == true) end--          // 跳过最后我说的几句
+        var start = end
+        while (start > 0 && ls[start - 1].me != true && end - start < 3) start--
+        return ls.subList(start, end).joinToString(" ") { it.text.trim() }
+    }
+
+    fun liveUser(kind: String, scene: AssistScene, transcript: String, lastOther: String = ""): String {
         val lang = langFor(scene)
         val task = if (kind == "question")
             "请给我 3 个接下来可以问对方的问题，用$lang 写成我可以直接说出口的话。要贴合场景目的和刚才聊到的内容，能自然地推进对话、了解对方真实的想法和情况，" +
                 "避免太突兀或太冒犯的问题；不要重复已经问过、对方已经回答过的。"
         else
-            "对方刚说完。请给我 3 个可以直接说出口的参考回答，用$lang 写，自然口语，每条 1～3 句。三条的方向不同（比如：直接回答、举个自己的例子、顺势反问）。" +
+            (if (lastOther.isNotBlank()) "对方最近说的是：「$lastOther」\n我接下来要回应的就是对方的这段话：如果对方问了问题，就回答这个问题。" +
+                "不要去回答对话里我自己问过对方的问题，也不要替对方回答。（分人可能有错：如果这段明显是我自己说的，就按上下文判断我该怎么接话。）\n"
+            else "（最近没听到对方说话，可能漏听了。请根据对话判断我接下来该怎么说。）\n") +
+            "请给我 3 个可以直接说出口的参考回答，用$lang 写，自然口语，每条 1～3 句。三条的方向不同（比如：直接回答、举个自己的例子、顺势反问）。" +
                 "如果对方的话里有需要小心的地方（陷阱问题、不好直接回答的、需要我确认的事实），在最后单独一行用中文写「提示：……」。"
         val body = if (transcript.isBlank()) "（还没有听到对话）" else transcript
         return "对话：\n$body\n\n$task"
@@ -330,11 +346,12 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         view = View.LISTEN; showText = ""; waitingKind = null
         decoder = OpusDecoder(NimoMic.SAMPLE_RATE, 1)
         busy = false; finals.clear()
+        // 对面的人离麦克风远、声音轻：说话判断放宽一些（比底噪响 4 dB、周期性 0.45、300 ms 里 30% 有声就算），免得漏句
         seg = CaptionSegmenter(object : CaptionSegmenter.Listener {
             override fun partial(id: Int, pcm: ShortArray) {}
             override fun final(id: Int, pcm: ShortArray) { finals.addLast(pcm); pump() }
             override fun dropped(id: Int) {}
-        })
+        }, SpeechDetector(aboveFloor = 4.0, periodicityMin = 0.45, voteNeed = 9))
         if (!env.asrReady()) error = "离线转文字模型还没下载（「全天记忆 › 设置 › 转文字」）"
         env.setMic(true)
         env.takeKeys(true)
@@ -400,8 +417,10 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         val lang = target?.scene?.lang ?: "auto"
         asrExec.execute {
             val r = runCatching {
+                // 分人用原始音量（我近、对方远）；转文字前把音量拉齐，轻声的句子也认得出
                 val voice = Speakers.voiceOf(Speakers.frames(p), 0, p.size / 160)
-                LocalAsr.transcribe(p, if (lang == "auto") "" else lang).trim() to voice
+                val loud = AudioClean.process(p, AudioClean.Mode.NONE, floor = 0.2f, boost = true)
+                LocalAsr.transcribe(loud, if (lang == "auto") "" else lang).trim() to voice
             }
             host.main.post {
                 busy = false
@@ -421,6 +440,8 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
     /** 要建议：kind = answer 参考回答 / question 提问建议。正在说的那句先当作说完，转完再问。 */
     fun ask(kind: String) {
         if (!running) return
+        // 同一个键再按一次：收起（回到只听）
+        if (view != View.LISTEN && showKind == kind) { back(); return }
         askSerial++
         showKind = kind; showText = ""; page = 0
         view = View.THINKING
@@ -436,7 +457,7 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         val (provider, base, key, model) = cfg
         val transcript = AssistAi.transcript(s.lines, MAX_LIVE_CHARS)
         val system = AssistAi.liveSystem(s.scene)
-        val user = AssistAi.liveUser(kind, s.scene, transcript)
+        val user = AssistAi.liveUser(kind, s.scene, transcript, AssistAi.lastFromOther(s.lines))
         val t0 = System.currentTimeMillis()
         show()
         llmExec.execute {
@@ -523,10 +544,23 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         return out
     }
 
-    /** 建议按提词器分页。 */
+    /** 建议按提词器分页（第一行留给「还在听」的那一行，见 liveRow）。 */
     fun textPages(cols: Int, rows: Int): List<List<String>> {
         val r = wrap(showText, cols)
-        return if (r.isEmpty()) listOf(emptyList()) else r.chunked(rows.coerceAtLeast(1))
+        return if (r.isEmpty()) listOf(emptyList()) else r.chunked(maxOf(1, rows - 1))
+    }
+
+    /**
+     * 显示建议时最上面一行：一直接着显示听到的最新一句（太长只留末尾），我说的标【我】；有人正在说时前面加 ●。
+     * （2026-10-23：建议一出来就看不到对方在说什么了。）
+     */
+    fun liveRow(cols: Int): String {
+        val l = session?.lines?.lastOrNull()
+        val t = (if (hearing) "● " else "") + (l?.let { (if (it.me == true) AssistLine.ME_TAG else "") + it.text.trim() } ?: "（还没听到）")
+        val cap = cols.coerceIn(4, 60) * 2
+        var w = 0; var i = t.length
+        while (i > 0) { val cw = if (t[i - 1].code < 0x80) 1 else 2; if (w + cw > cap) break; w += cw; i-- }
+        return if (i == 0) t else "…" + t.substring(i + 1)
     }
 
     /** 眼镜上用提词器文字显示：顶部状态行写场景和状态，正文是最近几句（我说的标【我】）或建议的一页。 */
@@ -543,13 +577,12 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
             View.SHOW -> {
                 val ps = textPages(cols, rows)
                 val p = page.coerceIn(0, ps.size - 1)
-                ps[p].joinToString("\n") to ((if (showKind == "question") "提问建议" else "参考回答") +
+                (listOf(liveRow(cols)) + ps[p]).joinToString("\n") to ((if (showKind == "question") "提问建议" else "参考回答") +
                     (if (ps.size > 1) " ${p + 1}/${ps.size}" else "") + " · $ear")
             }
             View.THINKING -> {
                 val head = if (showKind == "question") "正在想可以问的问题…" else "正在想参考回答…"
-                val last = lastOther()?.let { wrap(it, cols).takeLast(rows - 1) }.orEmpty()
-                (listOf(head) + last).joinToString("\n") to "$name · $ear"
+                (listOf(liveRow(cols), head)).joinToString("\n") to "$name · $ear"
             }
             View.LISTEN -> {
                 val rowsOut = ArrayList<String>()

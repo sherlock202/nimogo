@@ -8,7 +8,7 @@ import java.util.concurrent.Executors
  * 说的过程中每隔一会儿把已经说的部分送去转一次文字（先显示个大概），说完再转一次整句（定稿）。
  * 纯 Kotlin，不依赖 Android，有单元测试。PCM 都是 16 kHz。
  */
-class CaptionSegmenter(private val listener: Listener) {
+class CaptionSegmenter(private val listener: Listener, private val vad: SpeechDetector = SpeechDetector()) {
     interface Listener {
         /** 这一句还在说：到目前为止的声音（id 相同的是同一句）。 */
         fun partial(id: Int, pcm: ShortArray)
@@ -18,7 +18,6 @@ class CaptionSegmenter(private val listener: Listener) {
         fun dropped(id: Int)
     }
 
-    private val vad = SpeechDetector()
     private val pre = ArrayDeque<ShortArray>()
     private var buf: ShortBuilder? = null
     private var id = 0

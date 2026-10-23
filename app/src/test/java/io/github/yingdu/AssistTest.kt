@@ -29,6 +29,20 @@ class AssistTest {
         assertTrue(AssistAi.reviewSystem(AssistScene.DEFAULTS[0]).contains("不要下「对方在说谎」的结论"))
     }
 
+    @Test fun answerFocusesOnTheOtherSide() {
+        // 我照着提问建议问了一句，对方反问我：要回答的是对方的反问，不是我问的那句
+        val ls = listOf(line(true, "你平时周末喜欢做什么？"), line(false, "我喜欢爬山。"), line(false, "那你呢，你周末做什么？"))
+        assertEquals("我喜欢爬山。 那你呢，你周末做什么？", AssistAi.lastFromOther(ls))
+        val u = AssistAi.liveUser("answer", AssistScene.DEFAULTS[0], AssistAi.transcript(ls), AssistAi.lastFromOther(ls))
+        assertTrue(u.contains("对方最近说的是：「我喜欢爬山。 那你呢，你周末做什么？」"))
+        assertTrue(u.contains("不要去回答对话里我自己问过对方的问题"))
+        // 最后几句是我说的：往前找对方说的
+        assertEquals("你是做什么工作的？", AssistAi.lastFromOther(listOf(line(false, "你是做什么工作的？"), line(true, "我是做 IT 的"))))
+        // 对方一直没说话
+        assertEquals("", AssistAi.lastFromOther(listOf(line(true, "你好"))))
+        assertTrue(AssistAi.liveUser("answer", AssistScene.DEFAULTS[0], "我：你好", "").contains("最近没听到对方说话"))
+    }
+
     @Test fun requestBodies() {
         val o = AssistAi.body("groq", "openai/gpt-oss-120b", "S", "U", 100)
         assertEquals("low", o.getString("reasoning_effort"))

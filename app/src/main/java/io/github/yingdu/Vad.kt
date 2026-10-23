@@ -10,7 +10,12 @@ package io.github.yingdu
  * 白噪声、持续的单音（冰箱、空调嗡嗡声会慢慢变成底噪）都不会触发。
  * 参数用真实的眼镜录音调过。
  */
-class SpeechDetector {
+class SpeechDetector(
+    /** 比底噪响多少 dB 才算有声；场景助手要听清对面的人（声音轻、混响多），设得低一些。 */
+    private val aboveFloor: Double = ABOVE_FLOOR_DB,
+    private val periodicityMin: Double = PERIODICITY,
+    private val voteNeed: Int = VOTE_NEED,
+) {
     private var prevIn = 0.0
     private var hp = 0.0
     private var half = 0.0
@@ -62,11 +67,11 @@ class SpeechDetector {
         aboveFloorDb = e - floor
         levelDb = e
         val per = periodicity()
-        pitchHz = if (per > PERIODICITY) 8000.0 / bestLag else 0.0
-        voiced = aboveFloorDb > ABOVE_FLOOR_DB && per > PERIODICITY
+        pitchHz = if (per > periodicityMin) 8000.0 / bestLag else 0.0
+        voiced = aboveFloorDb > aboveFloor && per > periodicityMin
         votes.addLast(voiced); if (voiced) voteCount++
         if (votes.size > VOTE_FRAMES && votes.removeFirst()) voteCount--
-        speaking = voteCount >= VOTE_NEED
+        speaking = voteCount >= voteNeed
     }
 
     private var bestLag = MIN_LAG
