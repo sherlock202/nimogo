@@ -120,6 +120,8 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     /** 眼镜一直拒绝打开提词器页面：阅读改用图片显示（和看板同一个页面，不受提词器影响）。 */
     override fun onPrompterRefused() {
+        // 场景助手只能用提词器：过一会儿再开（不改阅读的显示方式）
+        if (activeApp === assist) { log("场景助手：眼镜暂时不让打开提词器页面，2 秒后再试"); main.postDelayed(restoreCheck, 2_000); return }
         log("眼镜不让打开提词器页面（设备忙），阅读改用图片显示。重启眼镜后可以在「阅读显示」里改回提词器文字")
         if (!readerAsImage) toggleReaderImage()
         if (appMode == AppMode.READER) pushPage()
@@ -130,7 +132,25 @@ class ReaderService : Service(), NimoListener, AppHost {
     override fun keepPrompterOnLongPress(): Boolean = !glassesPaused && ((appMode == AppMode.READER && activeApp == null) || activeApp === assist)
 
     override fun onPrompterRestore() {
-        if (!glassesPaused && (appMode == AppMode.READER || activeApp === assist)) pushPage()
+        if (!glassesPaused && (appMode == AppMode.READER || activeApp === assist)) {
+            restoreTries = 0
+            pushPage()
+            main.removeCallbacks(restoreCheck); main.postDelayed(restoreCheck, 3_000)
+        }
+    }
+
+    /**
+     * 长按后重新打开提词器，3 秒后看一眼：没打开成功（眼镜还在忙着退出、回了状态 7……）就再开一次，最多 3 次，
+     * 免得长按后停在官方主界面、看起来像退出了（2026-10-23：场景助手里长按镜腿还是退出了）。
+     */
+    private var restoreTries = 0
+    private val restoreCheck: Runnable = Runnable {
+        if (glassesPaused || linkState != LinkState.READY || !(appMode == AppMode.READER && activeApp == null || activeApp === assist)) return@Runnable
+        if (client.enteredAppId() == NimoProtocol.APP_ID_PROMPTER || (appMode == AppMode.READER && readerAsImage && !followOn)) return@Runnable
+        if (++restoreTries > 3) { log("长按后重新打开提词器失败 3 次：在手机上点「恢复显示」或重新开始"); return@Runnable }
+        log("长按后提词器没打开：再开一次（第 $restoreTries 次）")
+        pushPage()
+        main.postDelayed(restoreCheck, 3_000)
     }
 
     fun toggleReaderImage() {

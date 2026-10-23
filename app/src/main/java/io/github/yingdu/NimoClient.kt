@@ -1045,7 +1045,8 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             byteArrayOf(NimoProtocol.APP_ID_PROMPTER.toByte())))
         enteredApp = null
         pending = null
-        main.postDelayed({ if (state == LinkState.READY) listener.onPrompterRestore() }, 1_000)
+        // 眼镜退出提词器要一点时间，太快重开会回「设备忙」：等 1.5 秒（之后服务还会检查、没开成再开）
+        main.postDelayed({ if (state == LinkState.READY) listener.onPrompterRestore() }, 1_500)
     }
 
     private fun exitPrompter(how: String) {
