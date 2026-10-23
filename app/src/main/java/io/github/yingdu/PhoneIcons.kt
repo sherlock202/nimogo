@@ -158,6 +158,17 @@ object PhoneIcons {
         "oooooooooooo",
     ), mapOf('#' to c(0xFF2E8B7A), 'o' to c(0xFFB8DDD5)))
 
+    /** 场景助手（NimoGo）：对话气泡，里面三点亮着（给建议）。 */
+    val ASSIST = PixelIcon(listOf(
+        ".############.",
+        "#............#",
+        "#..**.**.**..#",
+        "#............#",
+        ".#####..#####.",
+        ".......##.....",
+        "........#.....",
+    ), mapOf('#' to c(0xFF5A9E6F), '*' to c(0xFFE0A33A)))
+
     /** 实时字幕：一块屏幕，下面两行字。 */
     val CAPTIONS = PixelIcon(listOf(
         "##############",

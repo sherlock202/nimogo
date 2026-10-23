@@ -127,10 +127,10 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     /** 提词器文字显示阅读时，长按右镜腿不退出（只用镜腿翻页；退出在手机上点「收起显示」）。 */
-    override fun keepPrompterOnLongPress(): Boolean = appMode == AppMode.READER && activeApp == null && !glassesPaused
+    override fun keepPrompterOnLongPress(): Boolean = !glassesPaused && ((appMode == AppMode.READER && activeApp == null) || activeApp === assist)
 
     override fun onPrompterRestore() {
-        if (appMode == AppMode.READER && !glassesPaused) pushPage()
+        if (!glassesPaused && (appMode == AppMode.READER || activeApp === assist)) pushPage()
     }
 
     fun toggleReaderImage() {
@@ -214,6 +214,164 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     override fun popup(title: String, text: String) { if (linkState == LinkState.READY) client.sendNotification(title, text) }
 
+    // ---------- 私人定制（NimoGo）：填了作者发的密钥才能用更多场景，见 License ----------
+
+    /** 这台手机的设备码（客户发给作者买密钥用）。 */
+    val deviceCode: String by lazy {
+        License.deviceCode(android.provider.Settings.Secure.getString(contentResolver, android.provider.Settings.Secure.ANDROID_ID).orEmpty())
+    }
+    var licenseKey: String
+        get() = prefs.getString("licenseKey", "").orEmpty()
+        set(v) { prefs.edit().putString("licenseKey", v.trim()).apply(); licensedCache = null; notifyUi() }
+    private var licensedCache: Boolean? = null
+    /** 开通了私人定制（密钥是给这台手机签的）。 */
+    val licensed: Boolean get() = licensedCache ?: License.verify(licenseKey, deviceCode).also { licensedCache = it }
+
+    // ---------- 场景助手（NimoGo） ----------
+
+    private val assistPrefs by lazy { getSharedPreferences("assist", MODE_PRIVATE) }
+    val assistStore by lazy { AssistStore(java.io.File(filesDir, "assist")) }
+    fun assistGet(k: String, def: String = ""): String = assistPrefs.getString(k, def) ?: def
+    fun assistSet(k: String, v: String) { assistPrefs.edit().putString(k, v.trim()).apply(); notifyUi() }
+    val assistPreset get() = AssistAi.preset(assistGet("preset", "groq"))
+    /** 换大模型服务：每家的 Key 分开存，换过去时自动换成那家上次填的；接口地址、型号回到默认。 */
+    fun assistSwitchPreset(newId: String) {
+        val old = assistPreset.id
+        if (old == newId) return
+        assistPrefs.edit().putString("key@$old", assistGet("key")).putString("key", assistGet("key@$newId"))
+            .putString("preset", newId).putString("base", "").putString("live", "").putString("review", "").apply()
+        notifyUi()
+    }
+    fun assistBase() = assistGet("base").ifEmpty { assistPreset.base }
+    fun assistLiveModel() = assistGet("live").ifEmpty { assistPreset.live }
+    fun assistReviewModel() = assistGet("review").ifEmpty { assistPreset.review }
+    /** 存着的全部场景（没开通私人定制时也留着，开通后就能用）。 */
+    private val assistScenesAll get() = AssistScene.listFromJson(assistPrefs.getString("scenes", null))
+    /** 能用的场景：普通版只有「面试」，私人定制版是全部。 */
+    var assistScenes: List<AssistScene>
+        get() = assistScenesAll.let { all -> if (licensed) all else listOf(all.firstOrNull { it.id == AssistScene.FREE_ID } ?: AssistScene.DEFAULTS.first { it.id == AssistScene.FREE_ID }) }
+        set(v) {
+            // 普通版只能改「面试」：其他存着的场景原样留着，不会因为看不到就被删掉
+            val out = if (licensed) v else assistScenesAll.let { all -> all.map { s -> v.firstOrNull { it.id == s.id } ?: s } + v.filter { n -> all.none { it.id == n.id } } }
+            assistPrefs.edit().putString("scenes", AssistScene.listToJson(out)).apply(); notifyUi()
+        }
+    var assistSceneId: String
+        get() = assistGet("scene", AssistScene.FREE_ID)
+        set(v) { assistSet("scene", v) }
+    val assistScene: AssistScene get() = assistScenes.let { l -> l.firstOrNull { it.id == assistSceneId } ?: l.first() }
+    private var assistWantsMic = false
+
+    val assist by lazy { AssistApp(this, object : AssistApp.Env {
+        override fun scene() = assistScene
+        override fun llm() = listOf(assistPreset.id, assistBase(), assistGet("key"), assistLiveModel())
+        override fun setMic(on: Boolean) { assistWantsMic = on; glassesMic(on) }
+        // 场景助手一直分我和对方（不看全天记忆里「分辨说话人」的开关）
+        // 先记下这句的音量（按最近的音量分「响的一群」和「轻的一群」，响的是我；不记的话一直分不出来）
+        override fun isMe(v: Speakers.Voice?): Boolean? { v?.let { speakerModel.observe(it) }; return speakerModel.isMe(v) }
+        override fun save(s: AssistSession) { val id = s.id; val j = s.toJson().toString(); io.execute { assistStore.write(id, j) } }
+        override fun asrReady() = LocalAsr.ready()
+        override fun takeKeys(on: Boolean) { if (on) assistMediaOn() else assistMediaOff() }
+    }) }
+
+    /** 遥控（戒指、耳机、音量键、手机上的按钮）；场景助手没开着时返回 false。 */
+    fun assistRemote(action: String): Boolean {
+        if (activeApp !== assist || !assist.running) return false
+        if (glassesPaused) resumeGlasses()
+        assist.remote(action)
+        return true
+    }
+
+    /** 正在复盘的那几场（id）、最近一次复盘的错误。 */
+    val assistReviewing = HashSet<String>()
+    var assistReviewError = ""; private set
+
+    /** 结束后复盘：整场对话交给「复盘用的型号」（后台线程，几十秒到一两分钟）。 */
+    fun assistReview(id: String) {
+        val s = assistStore.load(id) ?: return
+        if (!assistReviewing.add(id)) return
+        assistReviewError = ""
+        val provider = assistPreset.id; val base = assistBase(); val key = assistGet("key"); val model = assistReviewModel()
+        val system = AssistAi.reviewSystem(s.scene); val user = AssistAi.reviewUser(s)
+        log("场景助手：开始复盘「${s.title}」（$model）")
+        notifyUi()
+        Thread {
+            val t0 = System.currentTimeMillis()
+            val r = runCatching { AssistAi.chat(provider, base, key, model, system, user, 8000, 300_000) }
+            main.post {
+                assistReviewing.remove(id)
+                r.onSuccess { text ->
+                    val cur = assistStore.load(id) ?: s
+                    cur.review = text; cur.reviewModel = model; cur.reviewAt = System.currentTimeMillis()
+                    val j = cur.toJson().toString(); io.execute { assistStore.write(id, j); main.post { notifyUi() } }
+                    log("场景助手：复盘好了（${(System.currentTimeMillis() - t0) / 1000} 秒，${text.length} 字）")
+                }.onFailure { assistReviewError = it.message ?: it.javaClass.simpleName; log("场景助手：复盘出错：$assistReviewError") }
+                notifyUi()
+            }
+        }.start()
+    }
+
+    /** 改一句话是谁说的（手机上点那句话）。 */
+    fun assistSetSpeaker(id: String, index: Int, me: Boolean?) {
+        val live = assist.session?.takeIf { it.id == id }
+        val s = live ?: assistStore.load(id) ?: return
+        val l = s.lines.getOrNull(index) ?: return
+        l.me = me
+        // 改过的例子教给分人的模型（和全天记忆共用），之后分得更准
+        if (me != null) l.voice?.let { speakerModel.teach(it, me) }
+        val j = s.toJson().toString(); io.execute { assistStore.write(id, j); main.post { notifyUi() } }
+        notifyUi()
+    }
+
+    fun assistDelete(id: String) { io.execute { assistStore.delete(id); main.post { notifyUi() } } }
+
+    /**
+     * 场景助手开着时接管音量键和蓝牙耳机的按键：做一个「正在远程播放」的媒体会话，系统就把音量键交给它（不调手机音量），
+     * 耳机的上一曲 / 下一曲 / 播放暂停也发给它，手机息屏、放在口袋里也能用（各家系统不一定都行，日志里记下收到了什么）。
+     */
+    private var assistMedia: android.media.session.MediaSession? = null
+    private fun assistMediaOn() {
+        if (assistMedia != null) return
+        runCatching {
+            val ms = android.media.session.MediaSession(this, "NimoGo-assist")
+            fun act(a: String?, from: String) {
+                log("场景助手：$from" + (a?.let { " → ${AssistApp.actionName(it)}" } ?: "（没有用到）"))
+                if (a != null) main.post { assistRemote(a) }
+            }
+            ms.setCallback(object : android.media.session.MediaSession.Callback() {
+                override fun onMediaButtonEvent(i: Intent): Boolean {
+                    @Suppress("DEPRECATION")
+                    val e = i.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT) ?: return false
+                    if (e.action == android.view.KeyEvent.ACTION_DOWN && e.repeatCount == 0)
+                        act(AssistApp.keyAction(e.keyCode), "耳机键 " + android.view.KeyEvent.keyCodeToString(e.keyCode).removePrefix("KEYCODE_"))
+                    return true
+                }
+                override fun onSkipToNext() = act("next", "下一曲")
+                override fun onSkipToPrevious() = act("prev", "上一曲")
+                override fun onPlay() = act("back", "播放")
+                override fun onPause() = act("back", "暂停")
+            }, main)
+            ms.setPlaybackToRemote(object : android.media.VolumeProvider(VOLUME_CONTROL_RELATIVE, 100, 50) {
+                override fun onAdjustVolume(direction: Int) {
+                    if (direction > 0) act("prev", "音量 +") else if (direction < 0) act("next", "音量 −")
+                }
+            })
+            ms.setPlaybackState(android.media.session.PlaybackState.Builder()
+                .setActions(android.media.session.PlaybackState.ACTION_PLAY or android.media.session.PlaybackState.ACTION_PAUSE or
+                    android.media.session.PlaybackState.ACTION_PLAY_PAUSE or android.media.session.PlaybackState.ACTION_SKIP_TO_NEXT or
+                    android.media.session.PlaybackState.ACTION_SKIP_TO_PREVIOUS)
+                .setState(android.media.session.PlaybackState.STATE_PLAYING, 0, 1f).build())
+            ms.isActive = true
+            assistMedia = ms
+            log("场景助手：接管音量键和耳机键（结束后恢复）")
+        }.onFailure { log("场景助手：接管音量键失败：$it") }
+    }
+    private fun assistMediaOff() {
+        val ms = assistMedia ?: return
+        assistMedia = null
+        runCatching { ms.isActive = false; ms.release() }
+        log("场景助手：放开音量键和耳机键")
+    }
+
     /** 在眼镜上打开一个全屏功能（阅读的自动滚动、看板的轮换和自动收起都先停下）。 */
     fun openApp(app: GlassesApp) {
         if (activeApp !== app) activeApp?.onClose()
@@ -233,6 +391,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         activeApp = null
         app.onClose()
         lastPushedDash = ""
+        // 原来在阅读：关掉功能后眼镜回到官方主界面，不再自己跳出提词的内容（2026-10-23）；要接着读在手机上点「恢复显示」
+        if (baseMode == AppMode.READER) { log("关掉「${app.title}」：眼镜回到主界面"); pauseGlasses(); return }
         if (baseMode == AppMode.DASHBOARD) { dashPage = 0; refreshDashboard() }
         pushPage()
     }
@@ -1029,6 +1189,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         main.removeCallbacks(dailyTimeSync)
         instance = null
         activeApp?.onClose()
+        assistMediaOff()
         if (navCreated) nav.shutdown()
         steps.stop()
         main.removeCallbacks(dashLive); main.removeCallbacks(stockLive)
@@ -1600,6 +1761,10 @@ class ReaderService : Service(), NimoListener, AppHost {
         pushPage()
     }
 
+    /** 文字显示（提词器）一屏的字数、行数（不管阅读是不是设成了图片）。 */
+    fun textCols() = prefs.getInt("charsPerLine$layoutSuffix", if (displayPage == DisplayPage.NOTE) 16 else 27)
+    fun textRows() = prefs.getInt("linesPerPage$layoutSuffix", if (displayPage == DisplayPage.NOTE) 3 else 5)
+
     private fun savedOffset(): Int = bookUri?.let { prefs.getInt("pos:$it", 0) } ?: 0
 
     /** 把当前页推到眼镜上，同时保存进度。 */
@@ -1610,6 +1775,12 @@ class ReaderService : Service(), NimoListener, AppHost {
             AppMode.APP -> {
                 val app = activeApp ?: return
                 glassesPaused = false
+                // 用提词器文字显示的功能（场景助手）
+                app.glassesText(textCols(), textRows())?.let { (body, status) ->
+                    client.showText(glassesText(body.ifEmpty { " " }), glassesText(status))
+                    notifyUi()
+                    return
+                }
                 client.showImage(app.render(glassesFontPx), ReaderImage.W, ReaderImage.H)
                 notifyUi()
                 return
@@ -1663,10 +1834,12 @@ class ReaderService : Service(), NimoListener, AppHost {
         get() = prefs.getBoolean("quietReading", true)
         set(v) { prefs.edit().putBoolean("quietReading", v).apply(); notifyUi() }
     private val readingOnGlasses get() = appMode == AppMode.READER && !glassesPaused && activeApp == null && linkState == LinkState.READY
+    /** 场景助手开着（和提词一样不打扰）。 */
+    private val assistOnGlasses get() = activeApp === assist && !glassesPaused && linkState == LinkState.READY
 
     fun onPhoneNotification(app: String, title: String, text: String, litMs0: Long = -1, fit: Boolean = false, pkg: String? = null) {
         val litMs = if (litMs0 > 0) litMs0 else notifySeconds * 1000L
-        if (quietWhileReading && readingOnGlasses) { log("提词中，不弹通知：$app" + if (title.isNotEmpty() && title != app) " · $title" else ""); return }
+        if (quietWhileReading && (readingOnGlasses || assistOnGlasses)) { log((if (readingOnGlasses) "提词中" else "场景助手开着") + "，不弹通知：$app" + if (title.isNotEmpty() && title != app) " · $title" else ""); return }
         if (linkState != LinkState.READY) {
             // 眼镜重连期间来的通知先存着，连上后再弹（只留最近 5 条、2 分钟内的）
             if (!fit) {
@@ -2385,13 +2558,14 @@ class ReaderService : Service(), NimoListener, AppHost {
     private var captionsWantMic = false
     private fun glassesMic(on: Boolean) {
         if (on) client.micStart()
-        else if (!memWantsMic && !captionsWantMic && !followWantsMic) client.micStop()
+        else if (!memWantsMic && !captionsWantMic && !followWantsMic && !assistWantsMic) client.micStop()
     }
 
     override fun onMicFrames(frames: List<NimoMic.Frame>) {
         if (followOn) followFrames(frames)
         if (memEngine.running) { memEngine.onGlassesFrames(frames); memUi() }
         if (captions.running) captions.onFrames(frames)
+        if (assist.running) assist.onFrames(frames)
     }
 
     val micAvailable get() = ::client.isInitialized && client.micAvailable

@@ -18,3 +18,5 @@ signing/
 app/src/main/assets/licenses/navsdk/
 # 编译时自动下载的 sherpa-onnx AAR
 app/libs/
+# 私人定制密钥的签发脚本（和私钥一起放在仓库外的签名文件夹里）
+tools/license.py

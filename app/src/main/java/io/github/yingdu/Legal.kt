@@ -5,7 +5,7 @@ package io.github.yingdu
  * 内容有实质改动时把 VERSION 加一，用户下次打开会再看到一次。
  */
 object Legal {
-    const val VERSION = 10
+    const val VERSION = 11
 
     const val DISCLAIMER =
         "1. NimoGo 是个人开发的非官方第三方 app，与 Nimo 眼镜的厂商没有任何关系，也没有得到厂商的授权或认可。" +
@@ -27,6 +27,8 @@ object Legal {
         "· 全天记忆、实时字幕 · 转文字：选「手机离线」时在手机上转，录音不发出去；选在线服务时，录音发给你选的语音识别服务（硅基流动、OpenAI、Groq、阿里百炼国内站或国际站，或你填的 OpenAI 兼容接口），用你自己的 API Key。" +
         "录音只用来转文字：全天记忆的录音转好文字就删掉（没转成的最多留一天），实时字幕的声音不在手机上保存。\n" +
         "· 全天记忆 · 每天总结、问 AI：转写的文字发给你选的大模型（Claude、硅基流动、DeepSeek、OpenAI，或你填的 OpenAI 兼容接口），用你自己的 API Key。\n" +
+        "· 场景助手：录音在手机上离线转文字，不发出去；按键要建议时，最近一段对话的文字和场景设置发给你选的大模型（Groq、Google Gemini、Claude、OpenAI、DeepSeek，或你填的 OpenAI 兼容接口），" +
+        "复盘时发整场对话的文字，用你自己的 API Key。对话和复盘只存在手机上。\n" +
         "· 导航：导航期间的精确位置、目的地和路线由 Google Navigation SDK 发给 Google，用你自己的 API Key；" +
         "从 Google Maps 共享过来的短链接会访问 Google 的服务器展开；在 NimoGo 里输入地名时，地名和当前位置发给 Google 地点搜索（Places API，用你自己的 API Key；用不了时改用手机系统的地理编码）。\n" +
         "· 景点介绍：精确位置发给你选的地图服务（高德或 Google），景点名称发给百度百科、维基百科。\n" +

@@ -26,6 +26,11 @@ interface GlassesApp {
     fun onResume() {}
     /** 通知栏里的一句状态。 */
     fun status(): String = title
+    /**
+     * 用提词器文字显示（比图片快；提词器里眼镜会把单击、长按报给手机，长按也不会直接退出）：
+     * 返回 (正文, 顶部状态行)，cols × rows 是提词器一屏的字数和行数；null = 画成图片。
+     */
+    fun glassesText(cols: Int, rows: Int): Pair<String, String>? = null
 }
 
 /** 全屏功能要用到的服务能力。 */

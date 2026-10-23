@@ -83,7 +83,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
     private enum class Sub {
         READ, STOCKS, AGENDA, NOTIFY, GAMES, GAME, CLOCK, POMO, POMO_SET, PARTY,
         DASH_SET, FONT, READ_SET, OFFICIAL, LOG, ABOUT, LICENSES, MEMORY, MEMORY_SET, MEMORY_LISTEN, MEMORY_API, CAPTIONS, SIGHTS, MANUAL, MANUAL_TOPIC,
-        NAV, NAV_SET
+        NAV, NAV_SET, ASSIST, ASSIST_SET, ASSIST_SESSION
     }
 
     private var service: ReaderService? = null
@@ -225,6 +225,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         val code = event.keyCode
         if (speech != null && speechKey(event)) return true
+        // 场景助手页面里（场景助手开着）：戒指、耳机、音量键交给场景助手
+        if (sub == Sub.ASSIST && service?.assist?.running == true) {
+            AssistApp.keyAction(code)?.let { a ->
+                if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) { service?.assistRemote(a); toast(AssistApp.actionName(a)) }
+                return true
+            }
+        }
         // 阅读页面里：戒指、方向键、翻页笔也能翻（上下翻行，左右翻页）
         if (sub == Sub.READ && service?.let { it.appMode == ReaderService.AppMode.READER && it.pageCount > 0 } == true) {
             PromptRemote.key(code)?.let { m -> if (event.action == android.view.KeyEvent.ACTION_DOWN) remoteMove(m, event.repeatCount > 0); return true }
@@ -271,6 +278,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val code = e.keyCode
         if (code == android.view.KeyEvent.KEYCODE_BACK) { if (e.action == android.view.KeyEvent.ACTION_UP) exitSpeech(); return true }
         if (code == android.view.KeyEvent.KEYCODE_POWER) return false
+        if (speechAssist) {
+            val a = AssistApp.keyAction(code)
+            if (e.action != android.view.KeyEvent.ACTION_DOWN || e.repeatCount > 0) return true
+            if (a != null) speechShow(AssistApp.actionName(a) + if (service?.assistRemote(a) == true) "" else "（场景助手没开）")
+            else speechShow("收到 ${android.view.KeyEvent.keyCodeToString(code).removePrefix("KEYCODE_")}（没有用到）")
+            return true
+        }
         val m = when (code) {
             android.view.KeyEvent.KEYCODE_VOLUME_UP, android.view.KeyEvent.KEYCODE_VOLUME_DOWN ->
                 PromptRemote.volume(code == android.view.KeyEvent.KEYCODE_VOLUME_UP, service?.volumeKeys ?: 2)
@@ -289,15 +303,23 @@ class MainActivity : Activity(), ReaderService.UiListener {
         uiHandler.removeCallbacks(speechFade); uiHandler.postDelayed(speechFade, 2000)
     }
 
+    /** 黑屏模式是给场景助手用的（按键交给场景助手）。 */
+    private var speechAssist = false
+
     @SuppressLint("ClickableViewAccessibility")
-    private fun enterSpeech() {
+    private fun enterSpeech(forAssist: Boolean = false) {
         val s = service ?: return
-        if (s.book == null || s.pageCount == 0) { toast("先打开讲稿（TXT、EPUB…）"); return }
-        if (s.appMode != ReaderService.AppMode.READER) s.switchAppMode(ReaderService.AppMode.READER)
+        if (speech != null) return
+        if (!forAssist) {
+            if (s.book == null || s.pageCount == 0) { toast("先打开讲稿（TXT、EPUB…）"); return }
+            if (s.appMode != ReaderService.AppMode.READER) s.switchAppMode(ReaderService.AppMode.READER)
+        }
         if (s.glassesPaused) s.resumeGlasses()
+        speechAssist = forAssist
         val dim = 0xFF4A4A4A.toInt()
-        val hint = text("演讲模式\n\n戒指 / 方向键：上下翻行，左右翻页\n音量键：" +
-            (if (s.volumeKeys == 1) "翻页" else "翻行") + "\n\n长按屏幕或按返回键退出", 15f, dim).apply {
+        val hintText = if (forAssist) "场景助手\n\n眼镜：右单击参考回答，左单击提问建议\n戒指：下键回答、上键提问、左右翻页\n音量键、耳机上一曲 / 下一曲：翻页\n\n长按屏幕或按返回键退出（助手照样在听）"
+            else "演讲模式\n\n戒指 / 方向键：上下翻行，左右翻页\n音量键：" + (if (s.volumeKeys == 1) "翻页" else "翻行") + "\n\n长按屏幕或按返回键退出"
+        val hint = text(hintText, 15f, dim).apply {
             gravity = Gravity.CENTER; setLineSpacing(0f, 1.3f)
         }
         val label = text("", 13f, dim).apply { gravity = Gravity.CENTER }
@@ -325,7 +347,11 @@ class MainActivity : Activity(), ReaderService.UiListener {
                         uiHandler.removeCallbacks(exitLater)
                         if (fromRing && ev.actionMasked == android.view.MotionEvent.ACTION_UP) {
                             val m = PromptRemote.swipe(ev.rawX - downX, ev.rawY - downY, min)
-                            if (m != null) remoteMove(m, false) else speechShow("收到点击（没有用到）")
+                            if (m != null && speechAssist) {
+                                // 场景助手：上下滑 = 戒指的上下键（回答 / 提问），左右滑翻页
+                                val a = when { m.lines > 0 -> "answer"; m.lines < 0 -> "question"; m.pages > 0 -> "next"; else -> "prev" }
+                                speechShow(AssistApp.actionName(a) + if (service?.assistRemote(a) == true) "" else "（场景助手没开）")
+                            } else if (m != null) remoteMove(m, false) else speechShow("收到点击（没有用到）")
                         } else if (!fromRing) {
                             hint.alpha = 1f; hint.animate().alpha(0f).setStartDelay(3000).setDuration(800).start()
                         }
@@ -726,6 +752,9 @@ class MainActivity : Activity(), ReaderService.UiListener {
         subPages[Sub.SIGHTS] = buildSights()
         subPages[Sub.NAV] = buildNav()
         subPages[Sub.NAV_SET] = buildNavSettings()
+        subPages[Sub.ASSIST] = buildAssist()
+        subPages[Sub.ASSIST_SET] = buildAssistSettings()
+        subPages[Sub.ASSIST_SESSION] = buildAssistSession()
         subPages[Sub.ABOUT] = buildAbout()
         subPages[Sub.MANUAL] = buildManual()
         subPages[Sub.MANUAL_TOPIC] = buildManualTopic()
@@ -952,6 +981,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.MEMORY -> "全天记忆"; Sub.CAPTIONS -> "实时字幕"; Sub.MEMORY_LISTEN -> "收音方式和耗电"; Sub.MEMORY_API -> "转文字和总结"; Sub.MEMORY_SET -> "全天记忆设置"; Sub.SIGHTS -> "景点介绍"
         Sub.MANUAL -> "使用手册"; Sub.MANUAL_TOPIC -> manualTopic.title
         Sub.NAV -> "导航"; Sub.NAV_SET -> "导航设置"
+        Sub.ASSIST -> "场景助手"; Sub.ASSIST_SET -> "场景助手设置"; Sub.ASSIST_SESSION -> "记录和复盘"
     }
 
     /** 子页面右上角的文字按钮。 */
@@ -960,6 +990,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.POMO -> "⚙ 设置" to { openSub(Sub.POMO_SET) }
         Sub.MEMORY -> "⚙ 设置" to { openSub(Sub.MEMORY_SET) }
         Sub.NAV -> "⚙ 设置" to { openSub(Sub.NAV_SET) }
+        Sub.ASSIST -> "⚙ 设置" to { openSub(Sub.ASSIST_SET) }
+        Sub.ASSIST_SET -> "说明" to { openManual("assist") }
         Sub.GAME -> "说明" to { (service?.activeApp as? GameApp)?.let { message(it.title, it.help) }; Unit }
         // 设置页只留一行字，详细说明在使用手册里：右上角「说明」直接跳到对应的一页
         Sub.NOTIFY -> "说明" to { openManual("notify") }
@@ -979,6 +1011,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.PARTY -> glassesButton(s, s.party, "在眼镜上打开")
         Sub.NAV -> if (s.nav.phase == NavApp.Phase.IDLE) null else glassesButton(s, s.nav, "在眼镜上显示导航")
         Sub.CAPTIONS -> if (s.activeApp === s.captions && !s.glassesPaused) "关掉字幕" else glassesButton(s, s.captions, "在眼镜上开字幕")
+        Sub.ASSIST -> if (s.activeApp === s.assist && s.assist.running) "结束这一场" else "开始（眼镜 + 手机黑屏）"
         else -> null
     }
 
@@ -998,6 +1031,12 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 if (s.activeApp !== s.captions && !s.asrReady()) { toast("先在「全天记忆 › 设置」里填转文字的 API Key"); return }
                 if (s.activeApp !== s.captions && s.linkState != LinkState.READY) { toast("先连上眼镜"); return }
                 toggleOnGlasses { it.captions }
+            }
+            Sub.ASSIST -> {
+                if (s.activeApp === s.assist && s.assist.running) {
+                    s.closeApp()
+                    toast("这一场结束了，在下面「以前的记录」里可以复盘")
+                } else startAssist()
             }
             else -> {}
         }
@@ -1178,6 +1217,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             app(px(PhoneIcons.PARTY), "聚会工具") { openSub(Sub.PARTY) }, app(px(PhoneIcons.OFFICIAL), "官方 app") { openSub(Sub.OFFICIAL) },
             app(px(PhoneIcons.MEMORY), "全天记忆") { openSub(Sub.MEMORY) },
             app(px(PhoneIcons.CAPTIONS), "实时字幕") { openSub(Sub.CAPTIONS) },
+            app(px(PhoneIcons.ASSIST), "场景助手") { openSub(Sub.ASSIST) },
             app(px(PhoneIcons.SIGHTS), "景点介绍") { openSub(Sub.SIGHTS) }, app(px(PhoneIcons.MANUAL), "使用手册") { openSub(Sub.MANUAL) })
         apps.chunked(4).forEach { r -> grid.addView(hbox().apply {
             (r + List(4 - r.size) { View(this@MainActivity) }).forEach { addView(it, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)) }
@@ -1239,6 +1279,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
                             a === s.pomodoro -> openSub(Sub.POMO)
                             a === s.party -> openSub(Sub.PARTY)
                             a === s.captions -> openSub(Sub.CAPTIONS)
+                            a === s.assist -> openSub(Sub.ASSIST)
                             a === s.nav -> openSub(Sub.NAV)
                         }
                     }
@@ -2405,6 +2446,356 @@ class MainActivity : Activity(), ReaderService.UiListener {
             }
         }
         return page
+    }
+
+    // =====================================================================
+    // 场景助手（NimoGo）
+    // =====================================================================
+
+    /** 场景助手的记录页看的是哪一场。 */
+    private var assistSessionId = ""
+
+    private fun copyText(label: String, t: String) {
+        if (t.isBlank()) { toast("没有内容"); return }
+        (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText(label, t))
+        toast("已复制")
+    }
+
+    /** 开始：眼镜上打开场景助手，手机进入黑屏模式（戒指、音量键、耳机键都能用）。 */
+    private fun startAssist() {
+        val s = service ?: return
+        if (s.linkState != LinkState.READY) { toast("先连上眼镜"); return }
+        if (!LocalAsr.ready()) {
+            AlertDialog.Builder(this).setTitle("先下载离线转文字模型")
+                .setMessage("场景助手在手机上离线转文字（SenseVoice，中、日、英、韩、粤语），压缩包约 166 MB，建议连 Wi-Fi 下载。下载好后再点「开始」。")
+                .setPositiveButton("下载") { _, _ -> LocalAsr.startDownload(); refreshNow() }
+                .setNegativeButton("取消", null).show()
+            return
+        }
+        if (s.assistGet("key").isEmpty()) toast("还没填大模型的 Key：先只听写，要建议时会提示")
+        s.openApp(s.assist)
+        enterSpeech(forAssist = true)
+        refreshNow()
+    }
+
+    private fun buildAssist(): View {
+        val page = vbox()
+        // 眼镜上用提词器文字显示：预览也是文字（第一行是提词器顶部的状态行）
+        val preview = screen().apply { minLines = 6 }
+        page.addView(preview, lp(bottom = 8))
+        val state = hint("")
+        page.addView(state, lp(bottom = 8))
+
+        page.addView(section("场景", "编辑场景" to { openSub(Sub.ASSIST_SET) }))
+        val chips = hbox().apply { setPadding(dp(2), 0, dp(2), dp(6)) }
+        val chipScroll = android.widget.HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(chips) }
+        page.addView(chipScroll)
+        val sceneInfo = note("")
+        page.addView(sceneInfo)
+
+        val askRow = pillRow(
+            pill("参考回答", dark = false, small = true) { if (service?.assistRemote("answer") != true) toast("先点下面的「开始」") },
+            pill("提问建议", dark = false, small = true) { if (service?.assistRemote("question") != true) toast("先点下面的「开始」") },
+            pill("黑屏模式", dark = false, small = true) { if (service?.assist?.running == true) enterSpeech(forAssist = true) else toast("先点下面的「开始」") })
+        page.addView(askRow, lp(bottom = 10))
+
+        page.addView(section("眼镜上的建议", "复制" to { copyText("建议", service?.assist?.showText.orEmpty()) }))
+        val adviceBox = card()
+        val advice = text("", 14f).apply { setLineSpacing(0f, 1.4f); setTextIsSelectable(true) }
+        adviceBox.addView(advice)
+        page.addView(adviceBox)
+
+        page.addView(section("这一场听到的对话"))
+        val (liveV, live) = scrollListBox(360)
+        page.addView(liveV)
+        page.addView(note("眼镜上：右单击要参考回答，左单击要提问建议，双击翻页。戒指：下键回答、上键提问、左右翻页；" +
+            "蓝牙耳机：上一曲 / 下一曲翻页、播放暂停收起建议；手机音量键：翻页（音量 − 下一页）。点一句话可以改是谁说的。"))
+
+        page.addView(section("以前的记录"))
+        val past = listBox()
+        page.addView(past)
+
+        var liveSig = ""; var pastSig = ""; var chipSig = ""
+        onUpdate(Sub.ASSIST) { s ->
+            val a = s.assist
+            val on = a.running
+            val scene = a.session?.scene ?: s.assistScene
+            state.text = when {
+                !on -> if (!LocalAsr.ready()) "离线转文字模型还没下载（点「开始」会提示下载）" else "没开。选好场景，点下面的「开始」"
+                a.error.isNotEmpty() -> a.error
+                a.view == AssistApp.View.THINKING -> "正在想${if (a.showKind == "question") "提问建议" else "参考回答"}…"
+                a.hearing -> "● 有人在说话"
+                a.transcribing -> "转写中…"
+                else -> "在听…（${scene.name} · 建议用${scene.langName}）"
+            }
+            val cs = s.assistScenes.joinToString { it.id + it.name } + s.assistSceneId + on + s.licensed
+            if (cs != chipSig) {
+                chipSig = cs
+                chips.removeAllViews()
+                for (sc in s.assistScenes) chips.addView(chip(sc.name, sc.id == scene.id) {
+                    if (service?.assist?.running == true) toast("这一场结束后才能换场景") else { service?.assistSceneId = sc.id; refreshNow() }
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(6) })
+                if (!s.licensed) chips.addView(chip("＋ 更多场景", false) { moreScenes() })
+            }
+            sceneInfo.text = scene.kindName + " · 建议用" + scene.langName + (if (scene.goal.isNotBlank()) " · " + scene.goal else "") +
+                (if (scene.aboutMe.isBlank()) "\n还没写「关于我」：在「编辑场景」里写上，建议和复盘会更贴合你。" else "")
+            val (body, status) = a.glassesText(s.textCols(), s.textRows())
+            preview.text = status + "\n" + body
+            advice.text = when {
+                a.view == AssistApp.View.SHOW -> a.showText
+                a.view == AssistApp.View.THINKING -> "正在想…"
+                else -> "还没有。按镜腿或上面的按钮要建议"
+            }
+            val sess = a.session
+            val ls = sess?.lines.orEmpty()
+            val sig = (sess?.id ?: "") + ls.size + ls.joinToString("") { (it.me?.toString() ?: "n") }
+            if (sig != liveSig) {
+                liveSig = sig
+                live.removeAllViews()
+                if (ls.isEmpty()) live.addRow(Row(if (on) "还没听到对话" else "没在听").root)
+                val hms = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                ls.withIndex().reversed().forEach { (i, l) -> live.addRow(assistLineRow(hms, l) { pickSpeaker(sess!!.id, i, l.me) }) }
+            }
+            val list = s.assistStore.list()
+            val psig = list.joinToString { it.id + it.lines.size + it.review.length } + s.assistReviewing.size
+            if (psig != pastSig) {
+                pastSig = psig
+                past.removeAllViews()
+                if (list.isEmpty()) past.addRow(Row("还没有记录", "每次「开始」到「结束」是一场，结束后可以复盘").root)
+                list.take(50).forEach { x ->
+                    val st = when {
+                        x.id in s.assistReviewing -> "复盘中…"
+                        x.review.isNotEmpty() -> "已复盘"
+                        else -> "${x.lines.size} 句"
+                    }
+                    past.addRow(Row(x.title, chevron = true) { assistSessionId = x.id; openSub(Sub.ASSIST_SESSION) }.apply { value(st) }.root)
+                }
+            }
+        }
+        return page
+    }
+
+    /** 对话里的一句：时间、谁说的、内容；点一下改是谁说的。 */
+    private fun assistLineRow(hms: java.text.SimpleDateFormat, l: AssistLine, onClick: () -> Unit) = vbox().apply {
+        setPadding(dp(14), dp(9), dp(14), dp(9))
+        val who = when (l.me) { true -> AssistLine.ME_TAG; false -> "对方"; null -> "分不清" }
+        addView(text(hms.format(java.util.Date(l.at)) + " · " + who, 11f, if (l.me == true) TAN else SUB))
+        addView(text(l.text, 14.5f, INK).apply { setLineSpacing(0f, 1.35f) }, lp(top = 3))
+        setOnClickListener { onClick() }
+    }
+
+    private fun pickSpeaker(id: String, index: Int, cur: Boolean?) {
+        choose("这句话是谁说的", listOf("我", "对方", "分不清")) { k ->
+            service?.assistSetSpeaker(id, index, listOf(true, false, null)[k]); refreshNow()
+        }
+    }
+
+    /** 一场的记录：复盘、对话、现场给过的建议。 */
+    private fun buildAssistSession(): View {
+        val page = vbox()
+        val head = card()
+        val title = text("", 16f, INK, true)
+        val info = hint("")
+        head.addView(title); head.addView(info, lp(top = 4))
+        page.addView(head)
+        val reviewBtn = pill("复盘", small = true) {
+            val s = service ?: return@pill
+            if (s.assistGet("key").isEmpty()) { toast("先在「场景助手 › 设置」里填大模型的 Key"); openSub(Sub.ASSIST_SET); return@pill }
+            s.assistReview(assistSessionId); refreshNow()
+        }
+        page.addView(pillRow(reviewBtn,
+            pill("复制对话", dark = false, small = true) {
+                service?.assistStore?.load(assistSessionId)?.let { copyText("对话", AssistAi.transcript(it.lines, withTime = true)) }
+            },
+            pill("删除", dark = false, small = true) {
+                AlertDialog.Builder(this).setTitle("删除这一场？").setMessage("对话和复盘都会删掉，不能恢复。")
+                    .setPositiveButton("删除") { _, _ -> service?.assistDelete(assistSessionId); closeSub() }.setNegativeButton("取消", null).show()
+            }), lp(bottom = 10))
+        page.addView(section("复盘", "复制" to { service?.assistStore?.load(assistSessionId)?.let { copyText("复盘", it.review) } }))
+        val reviewBox = card()
+        val review = text("", 14f).apply { setLineSpacing(0f, 1.45f); setTextIsSelectable(true) }
+        reviewBox.addView(review)
+        page.addView(reviewBox)
+        page.addView(note("复盘只根据转写的文字，转写和分人都可能有错；只凭文字判断不了一个人是不是在说谎，「值得再确认」的地方请自己核实。"))
+        page.addView(section("对话"))
+        val (lv, lines) = scrollListBox(480)
+        page.addView(lv)
+        page.addView(section("现场给过的建议"))
+        val asks = listBox()
+        page.addView(asks)
+        var sig = ""
+        onUpdate(Sub.ASSIST_SESSION) { s ->
+            val x = s.assistStore.load(assistSessionId)
+            if (x == null) { title.text = "这一场已经删除"; return@onUpdate }
+            val reviewing = x.id in s.assistReviewing
+            title.text = x.title
+            val mins = ((if (x.end > 0) x.end else System.currentTimeMillis()) - x.start) / 60_000
+            info.text = "${x.scene.kindName} · 约 $mins 分钟 · ${x.lines.size} 句 · 建议 ${x.asks.size} 次" +
+                (if (x.reviewModel.isNotEmpty()) " · 复盘用 ${x.reviewModel}" else "")
+            reviewBtn.text = when { reviewing -> "复盘中…"; x.review.isNotEmpty() -> "重新复盘"; else -> "复盘" }
+            review.text = when {
+                reviewing -> "正在复盘（用「${s.assistReviewModel()}」，长的对话要一两分钟）…"
+                x.review.isNotEmpty() -> x.review
+                s.assistReviewError.isNotEmpty() -> "复盘出错：${s.assistReviewError}"
+                else -> "还没复盘。点上面的「复盘」：" + when (x.scene.kind) {
+                    "DATE" -> "分析对方的性格和价值观、需要再确认的地方、你的表现。"
+                    "INTERVIEW" -> "分析职位的实际情况、是否适合你、需要追问的地方、你的回答表现。"
+                    else -> "整理要点、对方的意图、需要再确认的地方。"
+                }
+            }
+            val ns = x.id + x.lines.size + x.lines.joinToString("") { it.me?.toString() ?: "n" } + x.asks.size
+            if (ns == sig) return@onUpdate
+            sig = ns
+            lines.removeAllViews()
+            val hms = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+            if (x.lines.isEmpty()) lines.addRow(Row("没有听到对话").root)
+            x.lines.forEachIndexed { i, l -> lines.addRow(assistLineRow(hms, l) { pickSpeaker(x.id, i, l.me) }) }
+            asks.removeAllViews()
+            if (x.asks.isEmpty()) asks.addRow(Row("没有要过建议").root)
+            x.asks.forEach { a ->
+                asks.addRow(vbox().apply {
+                    setPadding(dp(14), dp(9), dp(14), dp(9))
+                    addView(text(java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date(a.at)) + " · " +
+                        (if (a.kind == "question") "提问建议" else "参考回答"), 11f, SUB))
+                    addView(text(a.text, 13.5f, INK).apply { setLineSpacing(0f, 1.35f) }, lp(top = 3))
+                })
+            }
+        }
+        return page
+    }
+
+    /** 设置：大模型、场景。 */
+    private fun buildAssistSettings(): View {
+        val page = vbox()
+        fun edit(title: String, key: String, secret: Boolean, hintText: String) {
+            val s = service ?: return
+            val f = field(hintText).apply {
+                setText(s.assistGet(key)); if (secret) inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            }
+            AlertDialog.Builder(this).setTitle(title).setView(vbox().apply { setPadding(dp(20), dp(8), dp(20), 0); addView(f) })
+                .setPositiveButton("保存") { _, _ -> s.assistSet(key, f.text.toString()); refreshNow() }.setNegativeButton("取消", null).show()
+        }
+        page.addView(section("私人定制"))
+        val lic = listBox()
+        val devRow = Row("设备码", "点一下复制，发给作者购买密钥") { service?.let { copyText("设备码", it.deviceCode) } }
+        val keyRow = Row("密钥", chevron = true) {
+            val s = service ?: return@Row
+            val f = field("NG1-…", multi = true).apply { setText(s.licenseKey) }
+            AlertDialog.Builder(this).setTitle("填写密钥").setView(vbox().apply {
+                setPadding(dp(20), dp(8), dp(20), 0); addView(f)
+                addView(hint("这台手机的设备码：${s.deviceCode}"), lp(top = 8))
+            }).setPositiveButton("保存") { _, _ ->
+                s.licenseKey = f.text.toString()
+                when {
+                    s.licensed -> message("已开通私人定制", "可以用「相亲」等更多场景，也可以自己添加场景了。")
+                    s.licenseKey.isNotEmpty() -> message("密钥不对", "这个密钥不是给这台手机的（设备码 ${s.deviceCode}），或者没复制完整。请把设备码发给作者核对。")
+                }
+                refreshNow()
+            }.setNegativeButton("取消", null).show()
+        }
+        lic.addRow(devRow.root); lic.addRow(keyRow.root)
+        page.addView(lic)
+        page.addView(note("普通版只有「面试」一个场景。私人定制版可以用「相亲」等更多场景、自己添加场景，并按你的情况调好。" +
+            "把上面的设备码发给作者购买密钥；密钥只在这台手机上有效，换手机、恢复出厂设置后要重新申请。"))
+
+        page.addView(section("大模型"))
+        val llm = listBox()
+        val preset = Row("服务", chevron = true) {
+            choose("大模型服务", AssistAi.PRESETS.map { it.name }) { i -> service?.assistSwitchPreset(AssistAi.PRESETS[i].id); refreshNow() }
+        }
+        val key = Row("API Key", chevron = true) { edit("API Key", "key", true, "Key") }
+        val live = Row("现场用的型号", "要快：按键后一两秒出建议", chevron = true) { edit("现场用的型号", "live", false, service?.assistPreset?.live ?: "") }
+        val rev = Row("复盘用的型号", "可以慢，要细", chevron = true) { edit("复盘用的型号", "review", false, service?.assistPreset?.review ?: "") }
+        val base = Row("接口地址", chevron = true) { edit("接口地址（到 /v1 为止）", "base", false, service?.assistPreset?.base ?: "https://…/v1") }
+        listOf(preset, key, live, rev, base).forEach { llm.addRow(it.root) }
+        page.addView(llm)
+        val presetNote = note("")
+        page.addView(presetNote)
+
+        page.addView(section("场景", "添加" to { if (service?.licensed == true) editScene(null) else moreScenes() }))
+        val scenes = listBox()
+        page.addView(scenes)
+        page.addView(note("每个场景写清楚「场景说明和目的」「关于我」（经历、期望、在意的事），参考回答和复盘才会贴合你；" +
+            "面试时「关于我」写上应聘的职位、你的经历和期望的条件，复盘才能判断这个职位适不适合你。"))
+        page.addView(note("转文字用手机离线的 SenseVoice（和「全天记忆」的「手机离线」共用一个模型），录音不离开手机。" +
+            "只有按键要建议、或者复盘时，才把对话的文字发给上面选的大模型。"))
+        var sig = ""
+        onUpdate(Sub.ASSIST_SET) { s ->
+            val p = s.assistPreset
+            preset.value(p.name.substringBefore("（"))
+            val k = s.assistGet("key"); key.value(if (k.isEmpty()) "未填" else "••••" + k.takeLast(4))
+            live.value(s.assistLiveModel()); rev.value(s.assistReviewModel())
+            base.value(if (s.assistGet("base").isEmpty()) "默认" else s.assistBase())
+            devRow.value(s.deviceCode)
+            keyRow.value(when { s.licensed -> "已开通"; s.licenseKey.isEmpty() -> "未开通"; else -> "密钥不对" })
+            presetNote.text = p.note
+            presetNote.visibility = if (p.note.isEmpty()) View.GONE else View.VISIBLE
+            val l = s.assistScenes
+            val ns = l.joinToString { it.toJson().toString() } + s.licensed
+            if (ns == sig) return@onUpdate
+            sig = ns
+            scenes.removeAllViews()
+            l.forEach { sc ->
+                scenes.addRow(Row(sc.name, sc.kindName + " · 建议用" + sc.langName + (if (sc.aboutMe.isBlank()) " · 还没写「关于我」" else ""), chevron = true) { editScene(sc) }.root)
+            }
+        }
+        return page
+    }
+
+    /** 普通版点「更多场景」「添加」：说明私人定制，去填密钥。 */
+    private fun moreScenes() {
+        val s = service ?: return
+        AlertDialog.Builder(this).setTitle("私人定制")
+            .setMessage("普通版只有「面试」一个场景。私人定制版可以用「相亲」等更多场景、自己添加场景，并按你的情况调好。\n\n" +
+                "把设备码 ${s.deviceCode} 发给作者购买密钥，填进「场景助手 › 设置 › 私人定制」。")
+            .setPositiveButton("复制设备码") { _, _ -> copyText("设备码", s.deviceCode) }
+            .setNeutralButton("去填密钥") { _, _ -> if (sub != Sub.ASSIST_SET) openSub(Sub.ASSIST_SET) }
+            .setNegativeButton("关闭", null).show()
+    }
+
+    /** 新建 / 编辑一个场景。 */
+    private fun editScene(old: AssistScene?) {
+        val s = service ?: return
+        val name = field("名称（比如：相亲、面试、商务洽谈）").apply { setText(old?.name ?: "") }
+        var kind = old?.kind ?: "OTHER"
+        var lang = old?.lang ?: "zh"
+        val kinds = AssistScene.KINDS; val langs = AssistScene.LANGS
+        lateinit var refresh: () -> Unit
+        val kindSeg = Seg(kinds.map { it.second }) { i -> kind = kinds[i].first; refresh() }
+        val langSeg = Seg(langs.map { it.second }) { i -> lang = langs[i].first; refresh() }
+        refresh = { kindSeg.select(kinds.indexOfFirst { it.first == kind }); langSeg.select(langs.indexOfFirst { it.first == lang }) }
+        refresh()
+        val goal = field("场景说明和目的（对方是谁、我想达成什么）", multi = true).apply { setText(old?.goal ?: "") }
+        val about = field("关于我（经历、期望、在意的事；面试写应聘的职位和期望条件）", multi = true).apply { setText(old?.aboutMe ?: ""); minLines = 3 }
+        // 普通版：「面试」的名称和种类不能改（只改语言、说明和「关于我」）
+        val free = !s.licensed
+        val box = vbox().apply {
+            setPadding(dp(20), dp(8), dp(20), 0)
+            if (!free) addView(name)
+            if (!free) { addView(hint("复盘看什么"), lp(top = 12)); addView(kindSeg.root, lp(top = 4)) }
+            addView(hint("建议用什么语言写（转文字也按这个语言）"), lp(top = 12)); addView(langSeg.root, lp(top = 4))
+            addView(goal, lp(top = 12))
+            addView(about, lp(top = 8))
+        }
+        val d = AlertDialog.Builder(this).setTitle(if (old == null) "添加场景" else "编辑场景")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("保存") { _, _ ->
+                val n = name.text.toString().trim().ifEmpty { "未命名场景" }
+                val sc = AssistScene(old?.id ?: ("s" + System.currentTimeMillis()), n, kind, lang, goal.text.toString().trim(), about.text.toString().trim())
+                val l = s.assistScenes.toMutableList()
+                val i = l.indexOfFirst { it.id == sc.id }
+                if (i >= 0) l[i] = sc else l.add(sc)
+                s.assistScenes = l
+                if (old == null) s.assistSceneId = sc.id
+                refreshNow()
+            }
+            .setNegativeButton("取消", null)
+        if (old != null && !free && s.assistScenes.size > 1) d.setNeutralButton("删除") { _, _ ->
+            s.assistScenes = s.assistScenes.filter { it.id != old.id }
+            if (s.assistSceneId == old.id) s.assistSceneId = s.assistScenes.first().id
+            refreshNow()
+        }
+        d.show()
     }
 
     /** 全天记忆看哪一天（默认今天）。 */
