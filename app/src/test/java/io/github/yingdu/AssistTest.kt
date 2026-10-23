@@ -35,12 +35,28 @@ class AssistTest {
         assertEquals("我喜欢爬山。 那你呢，你周末做什么？", AssistAi.lastFromOther(ls))
         val u = AssistAi.liveUser("answer", AssistScene.DEFAULTS[0], AssistAi.transcript(ls), AssistAi.lastFromOther(ls))
         assertTrue(u.contains("对方最近说的是：「我喜欢爬山。 那你呢，你周末做什么？」"))
-        assertTrue(u.contains("不要去回答对话里我自己问过对方的问题"))
+        assertTrue(u.contains("不要去回答我自己想问对方的问题"))
         // 最后几句是我说的：往前找对方说的
         assertEquals("你是做什么工作的？", AssistAi.lastFromOther(listOf(line(false, "你是做什么工作的？"), line(true, "我是做 IT 的"))))
         // 对方一直没说话
         assertEquals("", AssistAi.lastFromOther(listOf(line(true, "你好"))))
         assertTrue(AssistAi.liveUser("answer", AssistScene.DEFAULTS[0], "我：你好", "").contains("最近没听到对方说话"))
+    }
+
+    @Test fun myRepeatHelpsUnderstandTheQuestion() {
+        // 对方的话没认清，我复述确认了一下：复述也交给大模型参考
+        val ls = listOf(line(false, "你对库伯内特斯有经验吗"), line(true, "您是问 Kubernetes 的经验吗？"))
+        assertEquals("你对库伯内特斯有经验吗", AssistAi.lastFromOther(ls))
+        assertEquals("您是问 Kubernetes 的经验吗？", AssistAi.myFollowUp(ls))
+        val u = AssistAi.liveUser("answer", AssistScene.DEFAULTS[1], AssistAi.transcript(ls), AssistAi.lastFromOther(ls), AssistAi.myFollowUp(ls))
+        assertTrue(u.contains("对方说完后，我说了：「您是问 Kubernetes 的经验吗？」"))
+        assertTrue(u.contains("以我的复述为准"))
+        // 最后是对方在说：没有复述
+        assertEquals("", AssistAi.myFollowUp(listOf(line(true, "你好"), line(false, "你好"))))
+        // 对方还没说过话：我说的不算复述
+        assertEquals("", AssistAi.myFollowUp(listOf(line(true, "你好"))))
+        // 最多 2 句
+        assertEquals("b c", AssistAi.myFollowUp(listOf(line(false, "x"), line(true, "a"), line(true, "b"), line(true, "c"))))
     }
 
     @Test fun technicalTerms() {

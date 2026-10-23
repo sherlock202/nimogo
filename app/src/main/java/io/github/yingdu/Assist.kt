@@ -205,15 +205,31 @@ object AssistAi {
         return ls.subList(start, end).joinToString(" ") { it.text.trim() }
     }
 
-    fun liveUser(kind: String, scene: AssistScene, transcript: String, lastOther: String = ""): String {
+    /**
+     * 对方说完以后我说的话（最后连着的「我」，最多 2 句）：常常是我在复述、确认对方的问题（「您是问……吗？」），
+     * 我离麦克风近、识别得更准，可以帮大模型弄清对方问的是什么（2026-10-23）。对方还没说过话时为空。
+     */
+    fun myFollowUp(lines: List<AssistLine>): String {
+        val ls = lines.filter { it.text.isNotBlank() }
+        var start = ls.size
+        while (start > 0 && ls[start - 1].me == true && ls.size - start < 2) start--
+        if (start == ls.size || ls.subList(0, start).none { it.me != true }) return ""
+        return ls.subList(start, ls.size).joinToString(" ") { it.text.trim() }
+    }
+
+    fun liveUser(kind: String, scene: AssistScene, transcript: String, lastOther: String = "", myFollow: String = ""): String {
         val lang = langFor(scene)
         val task = if (kind == "question")
             "请给我 3 个接下来可以问对方的问题，用$lang 写成我可以直接说出口的话。要贴合场景目的和刚才聊到的内容，能自然地推进对话、了解对方真实的想法和情况，" +
                 "避免太突兀或太冒犯的问题；不要重复已经问过、对方已经回答过的。"
         else
             (if (lastOther.isNotBlank()) "对方最近说的是：「$lastOther」\n我接下来要回应的就是对方的这段话：如果对方问了问题，就回答这个问题。" +
-                "不要去回答对话里我自己问过对方的问题，也不要替对方回答。（分人可能有错：如果这段明显是我自己说的，就按上下文判断我该怎么接话。）\n"
+                "不要去回答我自己想问对方的问题，也不要替对方回答。（分人可能有错：如果这段明显是我自己说的，就按上下文判断我该怎么接话。）\n"
             else "（最近没听到对方说话，可能漏听了。请根据对话判断我接下来该怎么说。）\n") +
+            (if (myFollow.isNotBlank()) "对方说完后，我说了：「$myFollow」\n" +
+                "如果这是我在复述、确认对方的问题（比如「您是问……吗？」「是说……对吧」），就以我的复述为准来理解对方问的是什么" +
+                "（我离麦克风近，我的话识别得更准，对方的话可能有错字或漏字），回答的仍然是对方的这个问题；" +
+                "如果这是我新问对方的问题，就不要回答它，按对方最近说的话来回应。\n" else "") +
             "请给我 3 个可以直接说出口的参考回答，用$lang 写，自然口语，每条 1～3 句。三条的方向不同（比如：直接回答、举个自己的例子、顺势反问）。" +
                 "如果对方的话里有需要小心的地方（陷阱问题、不好直接回答的、需要我确认的事实），在最后单独一行用中文写「提示：……」。"
         val body = if (transcript.isBlank()) "（还没有听到对话）" else transcript
@@ -491,7 +507,7 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         val (provider, base, key, model) = cfg
         val transcript = AssistAi.transcript(s.lines, MAX_LIVE_CHARS)
         val system = AssistAi.liveSystem(s.scene)
-        val user = AssistAi.liveUser(kind, s.scene, transcript, AssistAi.lastFromOther(s.lines))
+        val user = AssistAi.liveUser(kind, s.scene, transcript, AssistAi.lastFromOther(s.lines), AssistAi.myFollowUp(s.lines))
         val t0 = System.currentTimeMillis()
         show()
         llmExec.execute {
