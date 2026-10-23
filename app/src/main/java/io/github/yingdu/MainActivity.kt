@@ -2695,7 +2695,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         }
         lic.addRow(devRow.root); lic.addRow(keyRow.root)
         page.addView(lic)
-        page.addView(note("普通版只有「面试」一个场景。私人定制版可以用「相亲」等更多场景、自己添加场景，并按你的情况调好。" +
+        page.addView(note("普通版只有「面试」一个场景。私人定制版解锁「商务谈判」「相亲约会」等全部场景、可以自己添加场景，并按你的情况调好。" +
+            "购买密钥请加作者微信 ${License.WECHAT_ID}（${License.WECHAT_NOTE}）。" +
             "把上面的设备码发给作者购买密钥；密钥只在这台手机上有效，换手机、恢复出厂设置后要重新申请。"))
 
         page.addView(section("转文字"))
@@ -2767,12 +2768,15 @@ class MainActivity : Activity(), ReaderService.UiListener {
     /** 普通版点「更多场景」「添加」：说明私人定制，去填密钥。 */
     private fun moreScenes() {
         val s = service ?: return
-        AlertDialog.Builder(this).setTitle("私人定制")
-            .setMessage("普通版只有「面试」一个场景。私人定制版可以用「相亲」等更多场景、自己添加场景，并按你的情况调好。\n\n" +
-                "把设备码 ${s.deviceCode} 发给作者购买密钥，填进「场景助手 › 设置 › 私人定制」。")
-            .setPositiveButton("复制设备码") { _, _ -> copyText("设备码", s.deviceCode) }
-            .setNeutralButton("去填密钥") { _, _ -> if (sub != Sub.ASSIST_SET) openSub(Sub.ASSIST_SET) }
-            .setNegativeButton("关闭", null).show()
+        AlertDialog.Builder(this).setTitle("解锁更多场景（私人定制）")
+            .setMessage("普通版只有「面试」一个场景。私人定制版解锁「商务谈判」「相亲约会」等全部场景，还能自己添加场景，" +
+                "作者会按你的情况帮你调好场景说明和专业名词。\n\n" +
+                "购买密钥请加作者微信：${License.WECHAT_ID}\n（${License.WECHAT_NOTE}）\n\n" +
+                "并把这台手机的设备码发过来：${s.deviceCode}\n收到密钥后填进「场景助手 › 设置 › 私人定制」。")
+            .setPositiveButton("复制微信号") { _, _ -> copyText("微信号", License.WECHAT_ID) }
+            .setNeutralButton("复制设备码") { _, _ -> copyText("设备码", s.deviceCode) }
+            .setNegativeButton("去填密钥") { _, _ -> if (sub != Sub.ASSIST_SET) openSub(Sub.ASSIST_SET) }
+            .show()
     }
 
     /** 新建 / 编辑一个场景。 */

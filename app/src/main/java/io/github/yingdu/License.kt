@@ -19,6 +19,9 @@ object License {
     /** 作者的公钥（X.509 SubjectPublicKeyInfo，Base64）。 */
     const val PUBLIC_KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE4xbRZHRdfH1rQxtSDZMdO2wH2CxYMokOjkj31urmd0btpyJJVYuqQje2HWNesb6fasbbxswFlwyML2Kd9uav6g=="
     const val PLAN = "pro"
+    /** 购买密钥找作者的联系方式（只在 app 里显示；仓库里不写明文，免得被搜到）。 */
+    val WECHAT_ID: String by lazy { String(Base64.getDecoder().decode("c2hlcmxvY2syMDI="), Charsets.UTF_8) }
+    const val WECHAT_NOTE = "加好友请注明 NimoGo"
     const val PREFIX = "NG1-"
     /** Crockford Base32：不用 I、L、O、U，抄写时不容易看错。 */
     private const val ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"

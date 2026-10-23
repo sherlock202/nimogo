@@ -266,7 +266,19 @@ class ReaderService : Service(), NimoListener, AppHost {
     fun assistLiveModel() = assistGet("live").ifEmpty { assistPreset.live }
     fun assistReviewModel() = assistGet("review").ifEmpty { assistPreset.review }
     /** 存着的全部场景（没开通私人定制时也留着，开通后就能用）。 */
-    private val assistScenesAll get() = AssistScene.listFromJson(assistPrefs.getString("scenes", null))
+    private val assistScenesAll: List<AssistScene> get() {
+        val l = AssistScene.listFromJson(assistPrefs.getString("scenes", null))
+        // v1.2.1 新加的「商务谈判」：老用户存着自己的场景列表，补上一次（删掉以后不再补）
+        if (assistPrefs.getString("scenes", null) != null && !assistPrefs.getBoolean("addedNegotiation", false)) {
+            assistPrefs.edit().putBoolean("addedNegotiation", true).apply()
+            if (l.none { it.id == AssistScene.NEGOTIATION_ID }) {
+                val n = l + AssistScene.DEFAULTS.first { it.id == AssistScene.NEGOTIATION_ID }
+                assistPrefs.edit().putString("scenes", AssistScene.listToJson(n)).apply()
+                return n
+            }
+        }
+        return l
+    }
     /** 能用的场景：普通版只有「面试」，私人定制版是全部。 */
     var assistScenes: List<AssistScene>
         get() = assistScenesAll.let { all -> if (licensed) all else listOf(all.firstOrNull { it.id == AssistScene.FREE_ID } ?: AssistScene.DEFAULTS.first { it.id == AssistScene.FREE_ID }) }

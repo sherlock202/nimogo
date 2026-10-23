@@ -18,7 +18,7 @@ import java.util.concurrent.Executors
  * 这个文件里：场景、对话记录和存储、提示词和大模型调用（纯 Kotlin，有单元测试），以及眼镜上的全屏功能 AssistApp。
  */
 
-/** 场景。kind：DATE 相亲、INTERVIEW 面试、OTHER 其他（决定复盘看什么）。lang：建议用什么语言写（zh / ja / en / auto）。 */
+/** 场景。kind：INTERVIEW 面试、NEGOTIATION 商务谈判、DATE 相亲约会、OTHER 其他（决定复盘看什么）。lang：建议用什么语言写（zh / ja / en / auto）。 */
 data class AssistScene(val id: String, val name: String, val kind: String, val lang: String, val goal: String, val aboutMe: String,
                        /** 会说到的专业名词（英文缩写、产品名……），用逗号或换行隔开：告诉大模型和在线转文字，免得被认成同音的中文。 */
                        val terms: String = "") {
@@ -34,17 +34,21 @@ data class AssistScene(val id: String, val name: String, val kind: String, val l
     companion object {
         /** 普通版能用的那一个场景（面试）；其他场景要开通私人定制。 */
         const val FREE_ID = "interview"
-        val KINDS = listOf("DATE" to "相亲", "INTERVIEW" to "面试", "OTHER" to "其他")
+        val KINDS = listOf("INTERVIEW" to "面试", "NEGOTIATION" to "商务谈判", "DATE" to "相亲约会", "OTHER" to "其他")
+        /** 商务谈判（v1.2.1 加的，老用户的场景列表里自动补上一次）。 */
+        const val NEGOTIATION_ID = "negotiation"
         val LANGS = listOf("zh" to "中文", "ja" to "日语", "en" to "英语", "auto" to "自动")
 
         fun fromJson(o: JSONObject) = AssistScene(o.optString("id"), o.optString("name"), o.optString("kind", "OTHER"),
             o.optString("lang", "zh"), o.optString("goal"), o.optString("aboutMe"), o.optString("terms"))
 
         val DEFAULTS = listOf(
-            AssistScene("date", "相亲", "DATE", "zh",
-                "第一次见面的相亲。我想聊得自然、不冷场，了解对方的性格、价值观和生活方式，也让对方了解我。", ""),
+            AssistScene("date", "相亲约会", "DATE", "zh",
+                "相亲或约会。我想聊得自然、不冷场、有来有回，了解对方的性格、价值观和生活方式，也让对方了解我、对我留下好印象。", ""),
             AssistScene("interview", "面试", "INTERVIEW", "ja",
                 "日本公司的面试，对方是面试官。我想回答得得体、有条理，也想弄清这个职位和公司是否真的适合我。", ""),
+            AssistScene(NEGOTIATION_ID, "商务谈判", "NEGOTIATION", "zh",
+                "商务谈判，对方是客户或合作方。我想摸清对方的真实需求、预算、底线和顾虑，在价格、交期、条件上争取对我方有利的结果，同时维持好关系。", ""),
         )
 
         fun listToJson(l: List<AssistScene>) = JSONArray().apply { l.forEach { put(it.toJson()) } }.toString()
@@ -248,6 +252,13 @@ object AssistAi {
                 "五、我的表现：说得好的地方、可以改进的地方（具体到哪句话、可以怎么说）。\n" +
                 "六、下次见面可以聊的话题和可以问的问题。\n" +
                 "七、总体印象（几句话，客观，不替我做决定）。"
+            "NEGOTIATION" -> "请按下面几部分写：\n" +
+                "一、谈判结果：谈了哪些条件（价格、数量、交期、付款、范围、责任等），哪些达成一致、哪些还悬着，双方各自答应了什么（引用原话）。\n" +
+                "二、对方的真实需求和底线：对方最在意什么、预算或可接受范围的信号、决策流程和决策人、时间压力，每点附上依据。\n" +
+                "三、对方的谈判手法：施压、拖延、以竞争对手比较、模糊承诺等，以及当时我的应对是否得当。\n" +
+                "四、风险和需要书面确认的地方：口头承诺、含糊的条款、前后不一致的说法，逐条引用原话，说明下一步怎么确认。\n" +
+                "五、我的表现：让步是否过早过多、哪里可以争取更多、更好的说法（用谈判时的语言写例句）。\n" +
+                "六、下一步：要准备的材料、下次谈判的策略和可以提的条件。"
             "INTERVIEW" -> "请按下面几部分写：\n" +
                 "一、从对话里了解到的职位和公司：实际的工作内容、团队、上司、工作方式、加班和出差、评价和晋升、待遇等，只写对话里出现过的，没提到的列为「没问到」。\n" +
                 "二、面试官透露的信号：重视什么、担心什么、对我的反应。\n" +
