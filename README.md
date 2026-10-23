@@ -53,8 +53,8 @@ Nimo 智能眼镜的非官方海外版伴侣 app：用 Google 导航，在日本
 
 **发布新版本（自动发到 Releases）**
 1. 改 `app/build.gradle.kts` 里的 `versionName`（和 `versionCode` 加一），在 `docs/release-notes.md` 里写这一版的说明，提交。
-2. 打标签并推送：`git tag v1.1.4 && git push origin main v1.1.4`。
-3. Actions 编好后会自动建一个 Release，附上 `NimoGo-v1.1.4.apk`。发布版必须用固定签名（上面第 4 步的 Secrets），没设置会报错停止。
+2. 打标签并推送：`git tag v1.2.0 && git push origin main v1.2.0`。
+3. Actions 编好后会自动建一个 Release，附上 `NimoGo-v1.2.0.apk`。发布版必须用固定签名（上面第 4 步的 Secrets），没设置会报错停止。
 
 **方法二：Android Studio**（必须用 Android Studio / Gradle）
 
