@@ -2511,6 +2511,13 @@ class ReaderService : Service(), NimoListener, AppHost {
             }
             return
         }
+        // 阅读已经收起（眼镜上长按退出了、关掉功能后回了主界面）：镜腿操作不再把阅读叫出来，眼镜留在主界面；
+        // 要接着读在手机上点「恢复显示」（2026-10-23：长按退出后再按右镜腿，又跳出了阅读）
+        if (glassesPaused) {
+            if (input != GlassesInput.HEAD_UP && input != GlassesInput.HEAD_DOWN && input != GlassesInput.HOME_WAKE && input != GlassesInput.EXITED)
+                log("阅读已收起：镜腿操作不恢复阅读（在手机上点「恢复显示」）")
+            return
+        }
         when (input) {
             GlassesInput.CLICK_RIGHT -> nextPage()
             GlassesInput.CLICK_LEFT -> prevPage()
