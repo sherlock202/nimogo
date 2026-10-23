@@ -19,9 +19,14 @@ import java.util.concurrent.Executors
  */
 
 /** 场景。kind：DATE 相亲、INTERVIEW 面试、OTHER 其他（决定复盘看什么）。lang：建议用什么语言写（zh / ja / en / auto）。 */
-data class AssistScene(val id: String, val name: String, val kind: String, val lang: String, val goal: String, val aboutMe: String) {
+data class AssistScene(val id: String, val name: String, val kind: String, val lang: String, val goal: String, val aboutMe: String,
+                       /** 会说到的专业名词（英文缩写、产品名……），用逗号或换行隔开：告诉大模型和在线转文字，免得被认成同音的中文。 */
+                       val terms: String = "") {
     fun toJson(): JSONObject = JSONObject().put("id", id).put("name", name).put("kind", kind).put("lang", lang)
-        .put("goal", goal).put("aboutMe", aboutMe)
+        .put("goal", goal).put("aboutMe", aboutMe).put("terms", terms)
+
+    /** 专业名词列表（去重、去空）。 */
+    val termList: List<String> get() = terms.split(Regex("[,，、;；\\n]+")).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
 
     val kindName get() = KINDS.firstOrNull { it.first == kind }?.second ?: "其他"
     val langName get() = LANGS.firstOrNull { it.first == lang }?.second ?: "自动"
@@ -33,7 +38,7 @@ data class AssistScene(val id: String, val name: String, val kind: String, val l
         val LANGS = listOf("zh" to "中文", "ja" to "日语", "en" to "英语", "auto" to "自动")
 
         fun fromJson(o: JSONObject) = AssistScene(o.optString("id"), o.optString("name"), o.optString("kind", "OTHER"),
-            o.optString("lang", "zh"), o.optString("goal"), o.optString("aboutMe"))
+            o.optString("lang", "zh"), o.optString("goal"), o.optString("aboutMe"), o.optString("terms"))
 
         val DEFAULTS = listOf(
             AssistScene("date", "相亲", "DATE", "zh",
@@ -160,6 +165,23 @@ object AssistAi {
         append("场景：").append(scene.name).append("（").append(scene.kindName).append("）。")
         if (scene.goal.isNotBlank()) append("\n场景说明和我的目的：").append(scene.goal.trim())
         if (scene.aboutMe.isNotBlank()) append("\n关于我：").append(scene.aboutMe.trim())
+        val t = scene.termList
+        if (t.isNotEmpty()) append("\n对话里会说到的专业名词：").append(t.joinToString("、"))
+        // 中文里夹着的英文专业名词，语音识别常认成发音相近的中文或拼错（2026-10-23）
+        append("\n注意：对话中夹着的英文专业名词、缩写、产品名，语音识别经常认成发音相近的中文字或拼错（比如「杰森」可能是 JSON、「瑞迪斯」可能是 Redis）。" +
+            "请结合上下文" + (if (t.isNotEmpty()) "和上面的专业名词" else "") + "还原成正确的词来理解，你写的建议里也用正确的写法。")
+    }
+
+    /** 在线转文字（Whisper）的提示词：放专业名词，转出来就是正确的写法。 */
+    fun asrPrompt(scene: AssistScene): String? {
+        val t = scene.termList
+        if (t.isEmpty()) return null
+        val words = t.joinToString(", ").take(160)
+        return when (scene.lang) {
+            "ja" -> "日本語の会話です。専門用語：$words。"
+            "en" -> "Conversation with technical terms: $words."
+            else -> "以下是普通话的对话，中间夹着英文专业名词：$words。使用简体中文，并加上标点符号。"
+        }
     }
 
     /** 现场：系统提示。 */
@@ -304,8 +326,12 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         fun setMic(on: Boolean)
         fun isMe(v: Speakers.Voice?): Boolean?
         fun save(s: AssistSession)
-        /** 离线转文字模型下好了。 */
+        /** 转文字能用了（离线模型下好了，或者设了在线服务）。 */
         fun asrReady(): Boolean
+        /** 在线转文字：(接口地址, Key, 模型)；null = 手机离线。 */
+        fun onlineAsr(): Triple<String, String, String>? = null
+        /** 离线转文字不指定语言、自动识别（中英混说时试试）。 */
+        fun asrAutoLang(): Boolean = false
         /** 接管 / 放开音量键和耳机键（手机息屏也能翻页）。 */
         fun takeKeys(on: Boolean)
     }
@@ -352,7 +378,7 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
             override fun final(id: Int, pcm: ShortArray) { finals.addLast(pcm); pump() }
             override fun dropped(id: Int) {}
         }, SpeechDetector(aboveFloor = 4.0, periodicityMin = 0.45, voteNeed = 9))
-        if (!env.asrReady()) error = "离线转文字模型还没下载（「全天记忆 › 设置 › 转文字」）"
+        if (!env.asrReady()) error = ASR_MISSING
         env.setMic(true)
         env.takeKeys(true)
         lastFrameAt = System.currentTimeMillis()
@@ -411,16 +437,24 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         if (busy) return
         val p = finals.removeFirstOrNull()
         if (p == null) { waitingKind?.let { waitingKind = null; askNow(it) }; return }
-        if (!env.asrReady()) { finals.clear(); error = "离线转文字模型还没下载（「全天记忆 › 设置 › 转文字」）"; show(); return }
+        if (!env.asrReady()) { finals.clear(); error = ASR_MISSING; show(); return }
         busy = true
         val target = session ?: ending
         val lang = target?.scene?.lang ?: "auto"
+        val online = env.onlineAsr()
+        val prompt = target?.scene?.let { AssistAi.asrPrompt(it) }
+        val localLang = if (lang == "auto" || env.asrAutoLang()) "" else lang
         asrExec.execute {
             val r = runCatching {
                 // 分人用原始音量（我近、对方远）；转文字前把音量拉齐，轻声的句子也认得出
                 val voice = Speakers.voiceOf(Speakers.frames(p), 0, p.size / 160)
                 val loud = AudioClean.process(p, AudioClean.Mode.NONE, floor = 0.2f, boost = true)
-                LocalAsr.transcribe(loud, if (lang == "auto") "" else lang).trim() to voice
+                val text = if (online != null)
+                    // 在线（比如 Groq 的 Whisper）：中英混说更准，场景里的专业名词放进提示词
+                    SpeechToText.transcribe(online.first, online.second, online.third, if (lang == "auto") "" else lang,
+                        "assist.wav", "audio/wav", OggOpus.wav(loud), prompt)
+                else LocalAsr.transcribe(loud, localLang)
+                text.trim() to voice
             }
             host.main.post {
                 busy = false
@@ -682,6 +716,8 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         fun actionName(a: String) = when (a) {
             "answer" -> "参考回答"; "question" -> "提问建议"; "next" -> "下一页"; "prev" -> "上一页"; "back" -> "收起建议"; else -> a
         }
+
+        const val ASR_MISSING = "转文字还不能用：离线模型没下载，或者在线服务没填 Key（「场景助手 › 设置 › 转文字」）"
 
         /** 现场交给大模型的对话最多多少字（最近的）。 */
         const val MAX_LIVE_CHARS = 6000

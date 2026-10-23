@@ -2465,7 +2465,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
     private fun startAssist() {
         val s = service ?: return
         if (s.linkState != LinkState.READY) { toast("先连上眼镜"); return }
-        if (!LocalAsr.ready()) {
+        if (!s.assistAsrReady()) {
             AlertDialog.Builder(this).setTitle("先下载离线转文字模型")
                 .setMessage("场景助手在手机上离线转文字（SenseVoice，中、日、英、韩、粤语），压缩包约 166 MB，建议连 Wi-Fi 下载。下载好后再点「开始」。")
                 .setPositiveButton("下载") { _, _ -> LocalAsr.startDownload(); refreshNow() }
@@ -2698,6 +2698,19 @@ class MainActivity : Activity(), ReaderService.UiListener {
         page.addView(note("普通版只有「面试」一个场景。私人定制版可以用「相亲」等更多场景、自己添加场景，并按你的情况调好。" +
             "把上面的设备码发给作者购买密钥；密钥只在这台手机上有效，换手机、恢复出厂设置后要重新申请。"))
 
+        page.addView(section("转文字"))
+        val asrBox = listBox()
+        val asrSeg = Seg(listOf("手机离线", "在线（中英混说更准）")) { i -> service?.assistSet("asr", if (i == 1) "online" else "local"); refreshNow() }
+        asrBox.addRow(FrameLayout(this).apply { setPadding(dp(14), dp(10), dp(14), dp(10)); addView(asrSeg.root) })
+        val autoToggle = Toggle { service?.let { it.assistSet("asrAuto", if (it.assistGet("asrAuto") == "1") "" else "1") }; refreshNow() }
+        val autoRow = Row("离线时自动识别语言", "中文里夹英文名词时试试：不限定成中文").apply { accessory(autoToggle.root) }
+        asrBox.addRow(autoRow.root)
+        val onlineRow = Row("在线服务", chevron = true) { openSub(Sub.MEMORY_API) }
+        asrBox.addRow(onlineRow.root)
+        page.addView(asrBox)
+        val asrNote = note("")
+        page.addView(asrNote)
+
         page.addView(section("大模型"))
         val llm = listBox()
         val preset = Row("服务", chevron = true) {
@@ -2726,6 +2739,15 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val k = s.assistGet("key"); key.value(if (k.isEmpty()) "未填" else "••••" + k.takeLast(4))
             live.value(s.assistLiveModel()); rev.value(s.assistReviewModel())
             base.value(if (s.assistGet("base").isEmpty()) "默认" else s.assistBase())
+            val online = s.assistAsrOnline
+            asrSeg.select(if (online) 1 else 0)
+            autoToggle.set(s.assistGet("asrAuto") == "1")
+            autoRow.root.visibility = if (online) View.GONE else View.VISIBLE
+            onlineRow.root.visibility = if (online) View.VISIBLE else View.GONE
+            onlineRow.value(if (s.asrLocal) "还没设（现在是手机离线）" else if (s.memGet("asrKey").isEmpty()) "${s.asrPreset.name} · 没填 Key" else "${s.asrPreset.name} · ${s.asrModel()}")
+            asrNote.text = if (online) "用「全天记忆 › 设置 › 转文字」里的在线服务（推荐 Groq 的 whisper-large-v3，有免费额度、海外快）。" +
+                "录音会发给这个服务；场景里写的专业名词会作为提示词一起发过去，转出来就是正确的写法。没设好时自动改用手机离线。"
+                else "手机离线（SenseVoice）不联网、录音不离开手机；中文里夹的英文专业名词常被认成同音的中文，可以打开「自动识别语言」试试，或改用在线。"
             devRow.value(s.deviceCode)
             keyRow.value(when { s.licensed -> "已开通"; s.licenseKey.isEmpty() -> "未开通"; else -> "密钥不对" })
             presetNote.text = p.note
@@ -2767,6 +2789,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         refresh()
         val goal = field("场景说明和目的（对方是谁、我想达成什么）", multi = true).apply { setText(old?.goal ?: "") }
         val about = field("关于我（经历、期望、在意的事；面试写应聘的职位和期望条件）", multi = true).apply { setText(old?.aboutMe ?: ""); minLines = 3 }
+        val terms = field("会说到的专业名词，用逗号隔开（比如：AWS, Kubernetes, Airflow, PoC, UAT）", multi = true).apply { setText(old?.terms ?: "") }
         // 普通版：「面试」的名称和种类不能改（只改语言、说明和「关于我」）
         val free = !s.licensed
         val box = vbox().apply {
@@ -2776,12 +2799,15 @@ class MainActivity : Activity(), ReaderService.UiListener {
             addView(hint("建议用什么语言写（转文字也按这个语言）"), lp(top = 12)); addView(langSeg.root, lp(top = 4))
             addView(goal, lp(top = 12))
             addView(about, lp(top = 8))
+            addView(terms, lp(top = 8))
+            addView(hint("中文里夹着的英文名词，离线转文字常认成同音的中文：写在这里，大模型会按这些词理解；用在线转文字（Whisper）时转出来就是正确的写法。"), lp(top = 4))
         }
         val d = AlertDialog.Builder(this).setTitle(if (old == null) "添加场景" else "编辑场景")
             .setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("保存") { _, _ ->
                 val n = name.text.toString().trim().ifEmpty { "未命名场景" }
-                val sc = AssistScene(old?.id ?: ("s" + System.currentTimeMillis()), n, kind, lang, goal.text.toString().trim(), about.text.toString().trim())
+                val sc = AssistScene(old?.id ?: ("s" + System.currentTimeMillis()), n, kind, lang, goal.text.toString().trim(), about.text.toString().trim(),
+                    terms.text.toString().trim())
                 val l = s.assistScenes.toMutableList()
                 val i = l.indexOfFirst { it.id == sc.id }
                 if (i >= 0) l[i] = sc else l.add(sc)

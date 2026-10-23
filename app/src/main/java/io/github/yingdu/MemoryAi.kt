@@ -37,14 +37,17 @@ object SpeechToText {
         language != "en" && language != "ja" && (model.contains("whisper", true) || model.contains("transcribe", true))
 
     /** 构造 multipart 请求体（单独拿出来，方便单元测试）。 */
-    fun multipart(boundary: String, model: String, language: String, fileName: String, mime: String, audio: ByteArray): ByteArray {
+    /** prompt：Whisper 一类模型的提示词（场景助手放专业名词）；null 时中文用 ZH_PROMPT。 */
+    fun multipart(boundary: String, model: String, language: String, fileName: String, mime: String, audio: ByteArray,
+                  prompt: String? = null): ByteArray {
         val out = java.io.ByteArrayOutputStream()
         fun field(name: String, value: String) {
             out.write("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n".toByteArray(Charsets.UTF_8))
         }
         field("model", model)
         if (language.isNotBlank()) field("language", language)
-        if (wantsPrompt(model, language)) field("prompt", ZH_PROMPT)
+        if (wantsPrompt(model, language) || (!prompt.isNullOrBlank() && model.contains("whisper", true)))
+            field("prompt", prompt?.takeIf { it.isNotBlank() } ?: ZH_PROMPT)
         field("response_format", "json")
         out.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\nContent-Type: $mime\r\n\r\n".toByteArray(Charsets.UTF_8))
         out.write(audio)
@@ -88,11 +91,12 @@ object SpeechToText {
         return t.replace(Regex("<\\|[^|>]*\\|>"), "").trim()
     }
 
-    fun transcribe(base: String, key: String, model: String, language: String, fileName: String, mime: String, audio: ByteArray): String {
+    fun transcribe(base: String, key: String, model: String, language: String, fileName: String, mime: String, audio: ByteArray,
+                   prompt: String? = null): String {
         if (LocalAsr.isLocal(base)) return LocalAsr.transcribe(WavPcm.read(audio), language)
         if (isChatAsr(model)) return transcribeChat(base, key, model, language, mime, audio)
         val boundary = "yingdu" + System.nanoTime()
-        val body = multipart(boundary, model, language, fileName, mime, audio)
+        val body = multipart(boundary, model, language, fileName, mime, audio, prompt)
         val c = URL(base.trimEnd('/') + "/audio/transcriptions").openConnection() as HttpURLConnection
         c.connectTimeout = 15_000; c.readTimeout = 120_000
         c.requestMethod = "POST"; c.doOutput = true

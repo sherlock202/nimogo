@@ -43,6 +43,17 @@ class AssistTest {
         assertTrue(AssistAi.liveUser("answer", AssistScene.DEFAULTS[0], "我：你好", "").contains("最近没听到对方说话"))
     }
 
+    @Test fun technicalTerms() {
+        val sc = AssistScene.DEFAULTS[0].copy(terms = "AWS, Kubernetes，Airflow\nAWS")
+        assertEquals(listOf("AWS", "Kubernetes", "Airflow"), sc.termList)
+        assertTrue(AssistAi.liveSystem(sc).contains("AWS、Kubernetes、Airflow"))
+        assertTrue(AssistAi.asrPrompt(sc)!!.contains("AWS, Kubernetes, Airflow"))
+        assertNull(AssistAi.asrPrompt(AssistScene.DEFAULTS[0]))
+        assertEquals("AWS, Kubernetes，Airflow\nAWS", AssistScene.fromJson(JSONObject(sc.toJson().toString())).terms)
+        // 没写专业名词也提醒大模型：英文名词常被认成同音的中文
+        assertTrue(AssistAi.liveSystem(AssistScene.DEFAULTS[0]).contains("发音相近的中文"))
+    }
+
     @Test fun requestBodies() {
         val o = AssistAi.body("groq", "openai/gpt-oss-120b", "S", "U", 100)
         assertEquals("low", o.getString("reasoning_effort"))

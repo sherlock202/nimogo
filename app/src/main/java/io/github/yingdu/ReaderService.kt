@@ -269,9 +269,17 @@ class ReaderService : Service(), NimoListener, AppHost {
         // 先记下这句的音量（按最近的音量分「响的一群」和「轻的一群」，响的是我；不记的话一直分不出来）
         override fun isMe(v: Speakers.Voice?): Boolean? { v?.let { speakerModel.observe(it) }; return speakerModel.isMe(v) }
         override fun save(s: AssistSession) { val id = s.id; val j = s.toJson().toString(); io.execute { assistStore.write(id, j) } }
-        override fun asrReady() = LocalAsr.ready()
+        override fun asrReady() = assistAsrReady()
+        override fun onlineAsr() = assistOnlineAsr()
+        override fun asrAutoLang() = assistGet("asrAuto") == "1"
         override fun takeKeys(on: Boolean) { if (on) assistMediaOn() else assistMediaOff() }
     }) }
+
+    /** 转文字用在线服务（全天记忆里设置的那个，比如 Groq 的 Whisper）：中英混说更准，要联网、要 Key。 */
+    val assistAsrOnline get() = assistGet("asr") == "online"
+    fun assistOnlineAsr(): Triple<String, String, String>? =
+        if (assistAsrOnline && !asrLocal && memGet("asrKey").isNotEmpty()) Triple(asrBase(), memGet("asrKey"), asrModel()) else null
+    fun assistAsrReady() = assistOnlineAsr() != null || LocalAsr.ready()
 
     /** 遥控（戒指、耳机、音量键、手机上的按钮）；场景助手没开着时返回 false。 */
     fun assistRemote(action: String): Boolean {
