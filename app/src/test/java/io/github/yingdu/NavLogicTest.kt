@@ -59,6 +59,27 @@ class NavLinksTest {
         assertNull(NavLinks.parseGeo("geo:0,0"))
         assertNull(NavLinks.point("200,10"))
     }
+
+    @Test fun unencodedRedirects() {
+        // 跳转地址里地名没编码（日文、空格）也能解析
+        assertEquals("https://www.google.com/maps/place/%E6%9D%B1%E4%BA%AC%E9%A7%85%20A", NavLinks.safeUrl("https://www.google.com/maps/place/東京駅 A"))
+        NavLinks.parseUrl("https://www.google.com/maps/place/東京駅 丸の内/data=!3d35.6812362!4d139.7671248")!!.let {
+            assertEquals("東京駅 丸の内", it.title); assertEquals(139.7671248, it.lng!!, 1e-9)
+        }
+        // Cookie 同意页：真正的地址在 continue 里
+        NavLinks.parseUrl("https://consent.google.com/ml?continue=https://www.google.com/maps/place/X/data%3D!3d35.5!4d139.6&gl=DE")!!
+            .let { assertEquals(35.5, it.lat!!, 1e-9) }
+    }
+
+    @Test fun fromMapsPage() {
+        val html = """<meta content="上野駅 · 〒110-0005 東京都台東区" property="og:title">""" +
+            """<meta content="https://maps.google.com/maps/api/staticmap?center=35.7141%2C139.7774&amp;zoom=15&amp;markers=35.7138%2C139.7773" property="og:image">""" +
+            """<meta http-equiv="refresh" content="0; url=https://www.google.com/maps/place/a">"""
+        NavLinks.fromPage(html)!!.let { assertEquals("上野駅", it.title); assertEquals(35.7138, it.lat!!, 1e-9) }
+        assertEquals("https://www.google.com/maps/place/a", NavLinks.refreshUrl(html))
+        NavLinks.fromPage("""<meta property="og:title" content="東京タワー · 港区">""")!!.let { assertEquals("東京タワー", it.query) }
+        assertNull(NavLinks.fromPage("<meta property='og:title' content='Google Maps'>"))
+    }
 }
 
 class NavTextTest {

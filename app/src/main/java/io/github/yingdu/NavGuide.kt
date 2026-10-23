@@ -385,23 +385,65 @@ class NavInfoService : Service() {
  * 短链接先跟着跳转拿到完整的 Google Maps 地址，再解析；只有地名时用系统的地理编码（免费，不走 Places API）。
  */
 object NavResolve {
-    fun fromShare(ctx: Context, text: String, subject: String = "", near: NavPoint? = null): NavDest? {
+    /** 最近一次共享的链接展开后的地址（找不到地点时显示出来，方便排查）。 */
+    @Volatile var lastExpanded: String? = null
+
+    fun fromShare(ctx: Context, text: String, subject: String = "", near: NavPoint? = null, apiKey: String = ""): NavDest? {
+        lastExpanded = null
         val title = NavLinks.titleOf(text).ifEmpty { subject.trim() }
         val url = NavLinks.findUrl(text)
-        val dest = when {
-            text.trim().startsWith("geo:", true) -> NavLinks.parseGeo(text.trim())
-            url != null -> NavLinks.parseUrl(if (NavLinks.isShortLink(url)) expand(url) else url, title)
-            title.isNotEmpty() -> NavDest(title, query = title)
-            else -> null
-        } ?: return if (title.isNotEmpty()) geocode(ctx, NavDest(title, query = title), near) else null
-        return if (dest.ready) dest else geocode(ctx, dest, near)
+        if (text.trim().startsWith("geo:", true)) return NavLinks.parseGeo(text.trim())?.let { geocode(ctx, it, near, apiKey) }
+        if (url == null) return if (title.isNotEmpty()) geocode(ctx, NavDest(title, query = title), near, apiKey) else null
+        // 短链接（maps.app.goo.gl）先跟着跳转；跳转失败也不放弃，后面还能读网页
+        var full = if (NavLinks.isShortLink(url)) runCatching { expand(url) }.getOrDefault(url) else url
+        var page: String? = null
+        // 跳到的是一个用 <meta refresh> 再跳转的网页
+        if (NavLinks.isShortLink(full) || NavLinks.parseUrl(full, title) == null) {
+            page = runCatching { fetchPage(full) }.getOrNull()
+            page?.let { NavLinks.refreshUrl(it) }?.let { next ->
+                full = runCatching { java.net.URL(java.net.URL(full), next).toString() }.getOrDefault(next)
+                page = null
+            }
+        }
+        lastExpanded = full
+        val fromUrl = NavLinks.parseUrl(full, title)
+        if (fromUrl?.ready == true) return fromUrl
+        // 链接里只有地名或 ftid / cid：读 Google Maps 网页，预览图里有地点坐标
+        val html = page ?: runCatching { fetchPage(full) }.getOrNull()
+        val fromHtml = html?.let { NavLinks.fromPage(it, fromUrl?.title?.takeUnless { t -> t == "地图上的地点" } ?: title) }
+        if (fromHtml?.ready == true) return fromHtml
+        val q = fromUrl ?: fromHtml ?: (if (title.isNotEmpty()) NavDest(title, query = title) else null) ?: return null
+        return geocode(ctx, q, near, apiKey)
+            ?: fromHtml?.takeIf { it !== q }?.let { geocode(ctx, it, near, apiKey) }
     }
 
-    /** 只有地名 / 地址：交给系统地理编码，按 [NavPick] 的规则取最合适的一个（共享过来的链接用这个；手动输入的用 [search] 让用户选）。 */
-    fun geocode(ctx: Context, d: NavDest, near: NavPoint? = null): NavDest? {
+    /**
+     * 只有地名 / 地址：查一下取最合适的一个（共享过来的链接用这个；手动输入的用 [search] 让用户选）。
+     * 有 API Key 时和手动搜索一样先用 Google 的地点搜索（店名、景点名查得到），没有才用手机系统的地理编码。
+     */
+    fun geocode(ctx: Context, d: NavDest, near: NavPoint? = null, apiKey: String = ""): NavDest? {
         if (d.ready) return d
         val q = d.query?.trim().orEmpty().ifEmpty { d.title }
-        return search(ctx, q).choices.firstOrNull()?.dest?.copy(title = d.title)
+        if (q.isEmpty()) return null
+        return search(ctx, q, apiKey).choices.firstOrNull()?.dest?.let { c -> if (d.title.isNotEmpty() && d.title != "地图上的地点") c.copy(title = d.title) else c }
+    }
+
+    /** 读一个 Google Maps 网页（最多 2 MB），找不到坐标时从里面找。 */
+    fun fetchPage(url: String): String {
+        val c = (URL(url).openConnection() as HttpURLConnection).apply {
+            instanceFollowRedirects = true
+            connectTimeout = 10_000; readTimeout = 10_000
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+            setRequestProperty("Accept-Language", java.util.Locale.getDefault().toLanguageTag() + ",en;q=0.5")
+        }
+        try {
+            c.inputStream.use { ins ->
+                val buf = java.io.ByteArrayOutputStream()
+                val b = ByteArray(16_384)
+                while (buf.size() < 2_000_000) { val n = ins.read(b); if (n < 0) break; buf.write(b, 0, n) }
+                return String(buf.toByteArray(), Charsets.UTF_8)
+            }
+        } finally { c.disconnect() }
     }
 
     /** 当前位置所在的城市、都道府县 / 州、国家。 */
@@ -561,7 +603,8 @@ object NavResolve {
                 val code = c.responseCode
                 val loc = c.getHeaderField("Location")
                 if (code !in 300..399 || loc.isNullOrEmpty()) return cur
-                cur = URL(URL(cur), loc).toString()
+                // Location 里的地名有时没编码（日文、空格）：转成 %XX 再拼，不然 URL 解析会失败
+                cur = URL(URL(cur), NavLinks.safeUrl(loc)).toString()
             } finally { c.disconnect() }
         }
         return cur

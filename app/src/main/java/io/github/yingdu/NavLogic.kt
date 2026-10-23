@@ -54,10 +54,13 @@ object NavLinks {
      * 地点坐标（!3d…!4d…）→ Place ID → 参数里的「纬度,经度」→ 参数或路径里的地名 → 地图中心（/@纬度,经度）。
      */
     fun parseUrl(url: String, fallbackTitle: String = ""): NavDest? {
-        val u = runCatching { URI(url) }.getOrNull() ?: return null
+        // 跳转地址里的地名有时没编码（空格、日文…），直接解析会失败：先把这些字符转成 %XX
+        val u = runCatching { URI(url) }.getOrNull() ?: runCatching { URI(safeUrl(url)) }.getOrNull() ?: return null
         val host = u.host?.lowercase() ?: return null
         if (!host.contains("google.") && !host.startsWith("maps.") && !host.contains("goo.gl")) return null
         val q = query(u.rawQuery)
+        // 欧洲等地先跳到「同意 Cookie」页面，真正的地址在 continue 参数里
+        if (host.startsWith("consent.")) return q["continue"]?.let { parseUrl(it, fallbackTitle) }
         val path = runCatching { URLDecoder.decode(u.rawPath ?: "", "UTF-8") }.getOrDefault(u.path ?: "")
         val placeName = Regex("""/place/([^/]+)""").find(path)?.groupValues?.get(1)?.replace('+', ' ')?.trim().orEmpty()
         val title = fallbackTitle.ifEmpty { placeName }
@@ -89,6 +92,57 @@ object NavLinks {
             return NavDest(title.ifEmpty { "地图上的地点" }, m.groupValues[1].toDouble(), m.groupValues[2].toDouble())
         }
         return null
+    }
+
+    /** 把 URI 里不允许直接出现的字符（空格、中日文、| 等）转成 %XX。 */
+    fun safeUrl(url: String): String {
+        val sb = StringBuilder()
+        var i = 0
+        while (i < url.length) {
+            val cp = url.codePointAt(i)
+            i += Character.charCount(cp)
+            if (cp in 0x21..0x7E && cp.toChar() !in "\"<>\\^`{|}") sb.append(cp.toChar())
+            else for (b in String(Character.toChars(cp)).toByteArray(Charsets.UTF_8)) sb.append('%').append("%02X".format(b.toInt() and 0xFF))
+        }
+        return sb.toString()
+    }
+
+    private val META_TAG = Regex("""<meta\b[^>]*>""", RegexOption.IGNORE_CASE)
+    private val CONTENT_ATTR = Regex("""content\s*=\s*"([^"]*)"|content\s*=\s*'([^']*)'""", RegexOption.IGNORE_CASE)
+    /** 静态地图里先找标记点（markers），没有再用地图中心（center）。 */
+    private val MARKERS = listOf("markers", "center").map { Regex("""(?:^|[?&])$it=(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)""") }
+
+    private fun meta(html: String, name: String): String? {
+        val nameRe = Regex("""(?:property|name|itemprop|http-equiv)\s*=\s*["']${Regex.escape(name)}["']""", RegexOption.IGNORE_CASE)
+        val tag = META_TAG.findAll(html).map { it.value }.firstOrNull { nameRe.containsMatchIn(it) } ?: return null
+        val m = CONTENT_ATTR.find(tag) ?: return null
+        return unescape(m.groupValues[1].ifEmpty { m.groupValues[2] })
+    }
+
+    private fun unescape(s: String) = s.replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'")
+        .replace("&#x27;", "'").replace("&lt;", "<").replace("&gt;", ">")
+
+    /** 页面里的「&lt;meta http-equiv=refresh content="0;url=…"&gt;」跳转地址。 */
+    fun refreshUrl(html: String): String? =
+        meta(html, "refresh")?.let { Regex("""url\s*=\s*['"]?([^'"\s]+)""", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1) }
+
+    /**
+     * 链接本身看不出地点时（只有 ftid / cid、地名对不上……），从 Google Maps 的网页里找：
+     * 预览图（og:image）是以地点为中心的静态地图，带着「markers=纬度,经度」；标题（og:title）是「名称 · 地址」。
+     */
+    fun fromPage(html: String, fallbackTitle: String = ""): NavDest? {
+        val ogTitle = meta(html, "og:title")?.substringBefore(" · ")?.substringBefore(" ⋅ ")?.trim()
+            ?.takeUnless { it.isEmpty() || it.equals("Google Maps", true) || it == "Google マップ" || it == "Google 地图" }
+        val title = fallbackTitle.ifEmpty { ogTitle.orEmpty() }
+        meta(html, "og:image")?.let { img ->
+            val d = runCatching { URLDecoder.decode(img, "UTF-8") }.getOrDefault(img)
+            MARKERS.firstNotNullOfOrNull { it.find(d) }?.let { m ->
+                val lat = m.groupValues[1].toDouble(); val lng = m.groupValues[2].toDouble()
+                if (lat in -90.0..90.0 && lng in -180.0..180.0 && !(lat == 0.0 && lng == 0.0))
+                    return NavDest(title.ifEmpty { "地图上的地点" }, lat, lng)
+            }
+        }
+        return if (title.isNotEmpty()) NavDest(title, query = title) else null
     }
 
     /** geo: 链接（其他 app 用「用地图打开」时发来的）：geo:纬度,经度?q=纬度,经度(名称) 或 geo:0,0?q=地址。 */

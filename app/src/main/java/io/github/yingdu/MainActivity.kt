@@ -1975,11 +1975,19 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val subject = i.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty()
         if (!legalAgreed()) { toast("先同意使用说明，再从 Google Maps 共享一次"); return true }
         toast("正在查找地点…")
+        // 服务可能还没连上（从 Google Maps 共享时 NimoGo 刚被叫起来）：直接读导航设置里的 Key
+        val key = getSharedPreferences("nav", MODE_PRIVATE).getString("apiKey", "").orEmpty().trim()
         Thread {
-            val d = runCatching { NavResolve.fromShare(applicationContext, text, subject, navHere()) }.getOrNull()
+            val r = runCatching { NavResolve.fromShare(applicationContext, text, subject, navHere(), key) }
+            val d = r.getOrNull()
+            val expanded = NavResolve.lastExpanded?.takeIf { it != text.trim() }
             uiHandler.post {
                 if (isFinishing || isDestroyed) return@post
-                if (d == null) message("没找到地点", "没能从共享的内容里找到地点：\n\n$text") else confirmNav(d)
+                if (d == null) message("没找到地点", "没能从共享的内容里找到地点：\n\n$text" +
+                    (expanded?.let { "\n\n展开后的地址：\n$it" } ?: "") +
+                    (r.exceptionOrNull()?.let { "\n\n出错：${it.message ?: it.javaClass.simpleName}" } ?: "") +
+                    (if (key.isEmpty()) "\n\n还没填 Google Maps Platform 的 API Key：只能用手机系统的地址查询，店名、景点名常常查不到。" else ""))
+                else confirmNav(d)
             }
         }.start()
         return true
