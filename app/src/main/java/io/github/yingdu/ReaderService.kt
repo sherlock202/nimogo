@@ -337,7 +337,7 @@ class ReaderService : Service(), NimoListener, AppHost {
                             if (AgentInbox.needsConfirm(cm.body)) c.confirm = cm.body else { c.result = sum; c.confirm = "" }
                             log("$agentName：#$n 回复：$sum")
                             onPhoneNotification("$agentName #$n", if (c.confirm.isNotEmpty()) "等你确认" else "", sum +
-                                if (c.confirm.isNotEmpty()) "（长按左镜腿：右确认 左取消）" else "")
+                                if (c.confirm.isNotEmpty()) "（叫出$agentName：右确认 左取消）" else "")
                         }
                         // 关了、而且回复都提醒过了，才算做完
                         c.open = open || cs.any { it.id > c.lastCommentId }
@@ -363,12 +363,14 @@ class ReaderService : Service(), NimoListener, AppHost {
     fun agentForget(n: Int) { agentCommands.removeAll { it.number == n }; agentSave(); notifyUi() }
 
     /** 长按左镜腿：叫 AI 代理（提词、场景助手开着时不叫，免得打断）。 */
-    override fun onLongPressLeft(): Boolean {
+    override fun onLongPressLeft(): Boolean = callAgent("长按左镜腿")
+
+    private fun callAgent(how: String): Boolean {
         if (!agentEnabled) return false
-        if (prompting || activeApp === assist) { log("提词 / 场景助手开着：长按左镜腿不叫 $agentName"); return true }
+        if (prompting || activeApp === assist) { log("提词 / 场景助手开着：$how 不叫 $agentName"); return true }
         if (activeApp === agent) return true
         if (!agentReady) { log("$agentName：还没填仓库和令牌（「AI 代理」）"); return false }
-        log("长按左镜腿：对 $agentName 说命令")
+        log("$how：对 $agentName 说命令")
         openApp(agent)
         return true
     }
@@ -2631,6 +2633,10 @@ class ReaderService : Service(), NimoListener, AppHost {
             notifyUi()
             return
         }
+        // 眼镜在官方主界面（收起了）：主界面上长按左镜腿不报给手机、单击会报（2026-10-26 日志），所以左单击叫 AI 代理；
+        // 右单击照旧（看板：叫回看板）
+        if (input == GlassesInput.CLICK_LEFT && glassesPaused && activeApp == null && agentEnabled && agentReady &&
+            (appMode != AppMode.DASHBOARD || client.enteredAppId() == null) && callAgent("主界面上左单击")) return
         // 通知正显示着：右单击立即关掉（不翻页、不收起看板）
         if (input == GlassesInput.CLICK_RIGHT && dismissNotification()) return
         activeApp?.let { it.onInput(input); return }

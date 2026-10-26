@@ -2846,7 +2846,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
         val sw = listBox()
         val onToggle = Toggle { service?.let { it.agentEnabled = !it.agentEnabled }; refreshNow() }
-        val onRow = Row("长按左镜腿说命令", "说完停一下，右单击发送、左单击取消").apply { accessory(onToggle.root) }
+        val onRow = Row("左镜腿叫出 AI 代理", "看书、看板时长按左镜腿；官方主界面上单击左镜腿").apply { accessory(onToggle.root) }
         sw.addRow(onRow.root)
         page.addView(sw)
 
@@ -2909,7 +2909,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val t = s.agentGet("token"); tokenRow.value(if (t.isEmpty()) "未填" else "••••" + t.takeLast(4))
             labelRow.value(s.agentLabel)
             state.text = when {
-                !s.agentEnabled -> "没开。打开后，眼镜上长按左镜腿就能对${s.agentName}说命令"
+                !s.agentEnabled -> "没开。打开后，眼镜上长按左镜腿（官方主界面上单击左镜腿）就能对${s.agentName}说命令"
                 !s.agentReady -> "先填仓库和令牌"
                 s.agentError.isNotEmpty() -> "出错：${s.agentError}"
                 else -> "准备好了" + (if (s.agentCheckedAt > 0) "，上次查回复 " + java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date(s.agentCheckedAt)) else "")
