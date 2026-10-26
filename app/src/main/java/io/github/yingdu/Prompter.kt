@@ -3,40 +3,11 @@ package io.github.yingdu
 import android.view.KeyEvent
 
 /**
- * 提词器正文头里的三个数（a、b、c）怎么填：眼镜左上角的进度百分比一直不动（2026-10-26），
- * 猜是眼镜按这几个数自己算的，做成实验开关一个个试。纯逻辑，有单元测试。
- *  - 0 关：都填 0（原来的做法）
- *  - 1 字节位置：a = 这一屏在讲稿里的起点（UTF-8 字节数），b = 讲稿总字节数
- *  - 2 页码：b = 第几页（从 1 开始），c = 总页数
- *  - 3 百分比：b = 百分比（0～100），c = 100
+ * 提词器左上角的进度百分比：眼镜按正文头里的 b、c 自己算（b = 百分比 0～100，c = 100）。
+ * 2026-10-26 实测四种填法，只有这种左上角会跟着变（原来都填 0，一直不动）。纯逻辑，有单元测试。
  */
 object PrompterMeta {
-    val NAMES = listOf("关", "字节位置", "页码", "百分比")
-
-    fun of(mode: Int, startBytes: Long, totalBytes: Long, page: Int, pages: Int, percent: Int): LongArray? = when (mode) {
-        1 -> longArrayOf(startBytes, totalBytes, 0)
-        2 -> longArrayOf(0, page.toLong(), pages.toLong())
-        3 -> longArrayOf(0, percent.toLong(), 100)
-        else -> null
-    }
-
-    /** s 前 n 个字符的 UTF-8 字节数。 */
-    fun utf8Len(s: CharSequence, n: Int): Long {
-        var b = 0L
-        var i = 0
-        val end = n.coerceIn(0, s.length)
-        while (i < end) {
-            val c = s[i]
-            b += when {
-                c.code < 0x80 -> 1
-                c.code < 0x800 -> 2
-                Character.isHighSurrogate(c) && i + 1 < end -> { i++; 4 }
-                else -> 3
-            }
-            i++
-        }
-        return b
-    }
+    fun of(percent: Double): LongArray = longArrayOf(0, percent.toLong().coerceIn(0, 100), 100)
 }
 
 /**

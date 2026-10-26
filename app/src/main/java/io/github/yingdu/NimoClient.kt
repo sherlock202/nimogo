@@ -200,7 +200,7 @@ class NimoClient(private val context: Context, private val listener: NimoListene
     }
 
     /** 在眼镜上显示一整页文字（覆盖上一页）。未就绪时暂存，握手完成后自动发出。 */
-    /** meta：提词器正文头里的 a、b、c（试眼镜左上角的进度用，见 PrompterMeta）；null = 都填 0。 */
+    /** meta：提词器正文头里的 a、b、c（眼镜左上角的进度，见 PrompterMeta）；null = 都填 0。 */
     fun showText(text: String, status: String? = null, meta: LongArray? = null) {
         pending = Content.Text(text.ifEmpty { " " }, status, meta)
         if (state == LinkState.READY) flush()

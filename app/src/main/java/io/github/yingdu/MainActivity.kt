@@ -1977,19 +1977,12 @@ class MainActivity : Activity(), ReaderService.UiListener {
         textPart.addView(t)
         textPart.addView(note("先测宽度、测行数，每行字数比实测少 1。"))
         page.addView(textPart)
-        // 提词器左上角的进度一直不动：试着在正文头里填上位置（实验，2026-10-26）。
-        // 放在「文字显示」外面：阅读设成图片时，语音跟读也用提词器文字（2026-10-26：设成图片时找不到这个开关）
-        page.addView(section("提词器左上角进度（实验）"))
-        val metaSeg = Seg(PrompterMeta.NAMES) { i -> service?.prompterMetaMode = i; refreshNow() }
-        page.addView(FrameLayout(this).apply { setPadding(dp(4), 0, dp(4), dp(6)); addView(metaSeg.root) }, lp(bottom = 4))
-        page.addView(note("眼镜左上角的百分比是眼镜自己算的。用提词器文字显示（或开着语音跟读）时，选一种，翻几页看左上角跟不跟着变；显示乱了就选回「关」。哪一种对了告诉作者。"))
 
         loaders.add { reloadLayout() }
         onUpdate(Sub.READ_SET) { s ->
             seg.select(if (s.readerAsImage) 0 else 1)
             volSeg.select(s.volumeKeys)
             progToggle.set(s.showProgress); fbToggle.set(s.textFallback)
-            metaSeg.select(s.prompterMetaMode)
             textPart.visibility = if (s.readerAsImage) View.GONE else View.VISIBLE
             pageRow.value(if (s.displayPage == DisplayPage.PROMPTER) "提词器页" else "笔记页")
         }

@@ -1813,24 +1813,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         pushPage()
     }
 
-    /** 提词器进度（实验）：正文头里填什么，见 PrompterMeta。 */
-    var prompterMetaMode: Int
-        get() = prefs.getInt("prompterMeta", 0)
-        set(v) { prefs.edit().putInt("prompterMeta", v).apply(); log("提词器进度（实验）：${PrompterMeta.NAMES.getOrElse(v) { "$v" }}"); pushPage(); notifyUi() }
-    private var bookBytes = -1L
-    private var bookBytesOf: Any? = null
-
-    private fun prompterMeta(start: Int): LongArray? {
-        val mode = prompterMetaMode
-        if (mode == 0) return null
-        val b = book ?: return null
-        val p = paginator ?: return null
-        if (bookBytesOf !== b) { bookBytes = PrompterMeta.utf8Len(b.text, b.text.length); bookBytesOf = b }
-        val pages = maxOf(1, (p.lineCount + p.rows - 1) / p.rows)
-        val page = (topLine / p.rows + 1).coerceIn(1, pages)
-        return PrompterMeta.of(mode, PrompterMeta.utf8Len(b.text, start), bookBytes, page, pages, progressPercent().toInt())
-    }
-
     /** 文字显示（提词器）一屏的字数、行数（不管阅读是不是设成了图片）。 */
     fun textCols() = prefs.getInt("charsPerLine$layoutSuffix", if (displayPage == DisplayPage.NOTE) 16 else 27)
     fun textRows() = prefs.getInt("linesPerPage$layoutSuffix", if (displayPage == DisplayPage.NOTE) 3 else 5)
@@ -1872,9 +1854,9 @@ class ReaderService : Service(), NimoListener, AppHost {
             // 提词器有独立的顶部状态行，章节和进度放在那里，不占正文行数；跟读时显示听到的最后几个字
             val ch = currentChapterTitle()
             // 跟读时进度按念到的位置算（原来只显示听到的字，进度一直不动，2026-10-26）
-            val status = if (followOn) "跟读 " + "%.0f%%".format(progressPercent()) + " · " + followHeard.takeLast(12).ifEmpty { "…" }
-                else if (showProgress) listOf(ch, "%.1f%%".format(progressPercent())).filter { it.isNotEmpty() }.joinToString("  ") else ch
-            client.showText(glassesText(page.text), glassesText(status), prompterMeta(page.start))
+            // 进度用眼镜左上角自己的百分比（正文头里填上，见 PrompterMeta）；状态行不再重复显示（2026-10-26）
+            val status = if (followOn) "跟读 · " + followHeard.takeLast(14).ifEmpty { "…" } else ch
+            client.showText(glassesText(page.text), glassesText(status), PrompterMeta.of(progressPercent()))
         } else {
             val text = if (showProgress) page.text + "\n— %.1f%% —".format(progressPercent()) else page.text
             client.showText(glassesText(text))
