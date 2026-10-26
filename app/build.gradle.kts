@@ -74,6 +74,7 @@ dependencies {
     implementation("com.google.android.libraries.navigation:navigation:7.9.0")
     implementation(files("libs/sherpa-onnx-$sherpaVersion.aar"))
     implementation("org.apache.commons:commons-compress:1.27.1")   // 解压识别模型（.tar.bz2），Apache 许可
+    implementation("com.google.mlkit:translate:17.0.3")   // 场景助手的即时翻译：Google ML Kit 离线翻译（语言包第一次用时下载）
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")   // 单元测试里 android.jar 的 org.json 只是空壳

@@ -421,7 +421,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     val assistScene: AssistScene get() = assistScenes.let { l -> l.firstOrNull { it.id == assistSceneId } ?: l.first() }
     private var assistWantsMic = false
 
-    val assist by lazy { AssistApp(this, object : AssistApp.Env {
+    val assist: AssistApp by lazy { AssistApp(this, object : AssistApp.Env {
         override fun scene() = assistScene
         override fun llm() = listOf(assistPreset.id, assistBase(), assistGet("key"), assistLiveModel())
         override fun setMic(on: Boolean) { assistWantsMic = on; glassesMic(on) }
@@ -433,7 +433,57 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun onlineAsr() = assistOnlineAsr()
         override fun asrAutoLang() = assistGet("asrAuto") == "1"
         override fun takeKeys(on: Boolean) { if (on) assistMediaOn() else assistMediaOff() }
+        override fun translateTo(): String? = if (assistTranslateOn(assist.session?.scene?.id ?: assistSceneId)) assistTrTo else null
+        override fun translate(text: String, from: String, to: String, done: (Result<String>) -> Unit) = OfflineTranslate.translate(text, from, to, done)
     }) }
+
+    // ---- 即时翻译（场景助手的加强功能；每个场景单独开关，翻成什么语言是共用的设置） ----
+
+    /** 对方的话翻成什么语言（默认中文）。 */
+    var assistTrTo: String
+        get() = assistGet("trTo", "zh").takeIf { it in OfflineTranslate.CODES } ?: "zh"
+        set(v) { assistSet("trTo", v) }
+
+    /** 这个场景开了即时翻译没有。 */
+    fun assistTranslateOn(sceneId: String) = assistScenes.firstOrNull { it.id == sceneId }?.translate == true
+
+    /** 开 / 关这个场景的即时翻译（开着的一场里也能随时开关）；打开时语言包没下载就开始下载。 */
+    fun assistSetTranslate(sceneId: String, on: Boolean) {
+        assistScenes = assistScenes.map { if (it.id == sceneId) it.copy(translate = on) else it }
+        if (on && !OfflineTranslate.ready(OfflineTranslate.CODES)) OfflineTranslate.download(OfflineTranslate.CODES)
+        log("场景助手：即时翻译${if (on) "打开" else "关掉"}（翻成${OfflineTranslate.name(assistTrTo)}）")
+    }
+
+    /** 正在补翻的几场（手机上「翻译这一场」）。 */
+    val assistTranslating = HashSet<String>()
+    var assistTrError = ""; private set
+
+    /** 补翻一整场里对方说的、还没有译文的句子（一句一句来），翻完存起来。 */
+    fun assistTranslateSession(id: String) {
+        val live = assist.session?.takeIf { it.id == id }
+        val s = live ?: assistStore.load(id) ?: return
+        if (!assistTranslating.add(id)) return
+        assistTrError = ""
+        val to = assistTrTo
+        val todo = s.lines.filter { it.me != true && it.tr.isEmpty() }.mapNotNull { l ->
+            LangGuess.of(l.text, s.scene.lang).takeIf { TranslateRules.wanted(l.text, it, to) }?.let { l to it }
+        }
+        fun finish() {
+            assistTranslating.remove(id)
+            val j = s.toJson().toString(); io.execute { assistStore.write(id, j); main.post { notifyUi() } }
+            notifyUi()
+        }
+        fun step(i: Int) {
+            if (i >= todo.size) { log("场景助手：补翻了 ${todo.size} 句"); finish(); return }
+            val (l, from) = todo[i]
+            OfflineTranslate.translate(l.text, from, to) { r ->
+                r.onSuccess { t -> l.tr = t.trim(); l.trFrom = from; notifyUi(); step(i + 1) }
+                    .onFailure { assistTrError = it.message ?: it.javaClass.simpleName; log("场景助手：补翻出错：$assistTrError"); finish() }
+            }
+        }
+        notifyUi()
+        step(0)
+    }
 
     /** 转文字用在线服务（全天记忆里设置的那个，比如 Groq 的 Whisper）：中英混说更准，要联网、要 Key。 */
     val assistAsrOnline get() = assistGet("asr") == "online"
@@ -486,6 +536,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         l.me = me
         // 改过的例子教给分人的模型（和全天记忆共用），之后分得更准
         if (me != null) l.voice?.let { speakerModel.teach(it, me) }
+        // 即时翻译只翻对方的话：改成「我」就去掉译文；改成对方、正在进行的这一场开着翻译时补翻
+        if (me == true) { l.tr = ""; l.trFrom = "" } else if (live != null) assist.translateLine(live, l)
         val j = s.toJson().toString(); io.execute { assistStore.write(id, j); main.post { notifyUi() } }
         notifyUi()
     }
@@ -1304,6 +1356,9 @@ class ReaderService : Service(), NimoListener, AppHost {
         main.postDelayed({ agentPollSoon() }, 10_000)   // 上次还没做完的命令：接着查回复
         LocalAsr.log = { log(it) }
         LocalAsr.onChanged = { notifyUi(); if (LocalAsr.ready() && asrLocal) memKickTranscribe() }
+        OfflineTranslate.log = { log(it) }
+        OfflineTranslate.onChanged = { notifyUi() }
+        main.postDelayed({ OfflineTranslate.refresh() }, 3_000)
         io.execute { runCatching { FollowModel.cleanupOld(this) } }
         GlassesFonts.init(this)
         steps = StepsProvider(this) { if (appMode == AppMode.DASHBOARD) pushDashboard(force = false); notifyUi() }
@@ -1360,6 +1415,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         instance = null
         activeApp?.onClose()
         assistMediaOff()
+        OfflineTranslate.closeAll()
         if (navCreated) nav.shutdown()
         steps.stop()
         main.removeCallbacks(dashLive); main.removeCallbacks(stockLive)

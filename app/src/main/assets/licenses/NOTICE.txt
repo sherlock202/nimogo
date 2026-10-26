@@ -60,6 +60,11 @@ NimoGo 的语音跟读用它在手机上离线识别。AAR 里带有 ONNX Runtim
 识别模型不随安装包分发，第一次使用时从 sherpa-onnx 的 GitHub 发布页下载，许可见各模型的项目页。
 
 ------------------------------------------------------------------------
+Google ML Kit 离线翻译（com.google.mlkit:translate 17.0.3）
+场景助手的即时翻译用它在手机上离线翻译。使用受 ML Kit 服务条款约束（developers.google.com/ml-kit/terms），
+语言包第一次使用时从 Google 的服务器下载，不随本仓库分发。
+
+------------------------------------------------------------------------
 Apache Commons Compress（org.apache.commons:commons-compress 1.27.1，Apache License 2.0）
 用来解压下载的识别模型（.tar.bz2）。Copyright The Apache Software Foundation。
 

@@ -21,9 +21,11 @@ import java.util.concurrent.Executors
 /** 场景。kind：INTERVIEW 面试、NEGOTIATION 商务谈判、DATE 相亲约会、OTHER 其他（决定复盘看什么）。lang：建议用什么语言写（zh / ja / en / auto）。 */
 data class AssistScene(val id: String, val name: String, val kind: String, val lang: String, val goal: String, val aboutMe: String,
                        /** 会说到的专业名词（英文缩写、产品名……），用逗号或换行隔开：告诉大模型和在线转文字，免得被认成同音的中文。 */
-                       val terms: String = "") {
+                       val terms: String = "",
+                       /** 即时翻译：对方说的话翻成设置里的语言（默认中文），眼镜上原文下面显示译文。 */
+                       val translate: Boolean = false) {
     fun toJson(): JSONObject = JSONObject().put("id", id).put("name", name).put("kind", kind).put("lang", lang)
-        .put("goal", goal).put("aboutMe", aboutMe).put("terms", terms)
+        .put("goal", goal).put("aboutMe", aboutMe).put("terms", terms).put("translate", translate)
 
     /** 专业名词列表（去重、去空）。 */
     val termList: List<String> get() = terms.split(Regex("[,，、;；\\n]+")).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
@@ -40,7 +42,7 @@ data class AssistScene(val id: String, val name: String, val kind: String, val l
         val LANGS = listOf("zh" to "中文", "ja" to "日语", "en" to "英语", "auto" to "自动")
 
         fun fromJson(o: JSONObject) = AssistScene(o.optString("id"), o.optString("name"), o.optString("kind", "OTHER"),
-            o.optString("lang", "zh"), o.optString("goal"), o.optString("aboutMe"), o.optString("terms"))
+            o.optString("lang", "zh"), o.optString("goal"), o.optString("aboutMe"), o.optString("terms"), o.optBoolean("translate", false))
 
         val DEFAULTS = listOf(
             AssistScene("date", "相亲约会", "DATE", "zh",
@@ -59,13 +61,18 @@ data class AssistScene(val id: String, val name: String, val kind: String, val l
     }
 }
 
-/** 一句话：me = true 是我，false 是对方，null 分不出。voice 是这句的声音特征（手机上改「谁说的」时拿来教分人的模型）。 */
+/**
+ * 一句话：me = true 是我，false 是对方，null 分不出。voice 是这句的声音特征（手机上改「谁说的」时拿来教分人的模型）。
+ * tr 是即时翻译的译文（没翻是空的），trFrom 是原文的语言（ja / en …）。
+ */
 class AssistLine(val at: Long, var me: Boolean?, val text: String, val voice: Speakers.Voice? = null) {
+    var tr = ""
+    var trFrom = ""
     fun toJson(): JSONObject = JSONObject().put("t", at).put("m", when (me) { true -> 1; false -> 0; null -> -1 }).put("x", text)
-        .apply { voice?.let { put("v", it.toJson()) } }
+        .apply { voice?.let { put("v", it.toJson()) }; if (tr.isNotEmpty()) { put("tr", tr); put("tf", trFrom) } }
     companion object {
         fun fromJson(o: JSONObject) = AssistLine(o.optLong("t"), when (o.optInt("m", -1)) { 1 -> true; 0 -> false; else -> null }, o.optString("x"),
-            Speakers.Voice.fromJson(o.optJSONArray("v")))
+            Speakers.Voice.fromJson(o.optJSONArray("v"))).apply { tr = o.optString("tr"); trFrom = o.optString("tf") }
         /** 眼镜和手机上标出我说的话。 */
         const val ME_TAG = "【我】"
     }
@@ -147,10 +154,11 @@ object AssistAi {
     fun preset(id: String) = PRESETS.firstOrNull { it.id == id } ?: PRESETS[0]
 
     /** 「我 / 对方 / ？」标好的对话文字；太长时只留最后 maxChars 个字（从整句开始）。 */
-    fun transcript(lines: List<AssistLine>, maxChars: Int = Int.MAX_VALUE, withTime: Boolean = false): String {
+    fun transcript(lines: List<AssistLine>, maxChars: Int = Int.MAX_VALUE, withTime: Boolean = false, withTr: Boolean = false): String {
         val hm = SimpleDateFormat("HH:mm", Locale.US)
         val all = lines.filter { it.text.isNotBlank() }.map { l ->
-            (if (withTime) "[" + hm.format(Date(l.at)) + "] " else "") + when (l.me) { true -> "我："; false -> "对方："; null -> "（分不清）：" } + l.text.trim()
+            (if (withTime) "[" + hm.format(Date(l.at)) + "] " else "") + when (l.me) { true -> "我："; false -> "对方："; null -> "（分不清）：" } + l.text.trim() +
+                (if (withTr && l.tr.isNotBlank()) "\n　（译）" + l.tr.trim() else "")
         }
         val out = ArrayList<String>()
         var n = 0
@@ -361,6 +369,10 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         fun asrAutoLang(): Boolean = false
         /** 接管 / 放开音量键和耳机键（手机息屏也能翻页）。 */
         fun takeKeys(on: Boolean)
+        /** 即时翻译：对方的话翻成哪种语言（zh / ja / en …）；null = 这个场景没开翻译。每句都问一次，开着时也能随时开关。 */
+        fun translateTo(): String? = null
+        /** 离线翻译一句（主线程回调）。 */
+        fun translate(text: String, from: String, to: String, done: (Result<String>) -> Unit) { done(Result.failure(IOException("没有离线翻译"))) }
     }
 
     enum class View { LISTEN, THINKING, SHOW }
@@ -375,6 +387,8 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
     var showText = ""; private set
     var page = 0; private set
     var error = ""; private set
+    /** 翻译出错（只在手机上显示，不占眼镜）。 */
+    var trError = ""; private set
     /** 正在说话（还没说完的那句）。 */
     val hearing get() = seg?.current != null
     val transcribing get() = busy || finals.isNotEmpty()
@@ -406,6 +420,7 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
             override fun dropped(id: Int) {}
         }, SpeechDetector(aboveFloor = 4.0, periodicityMin = 0.45, voteNeed = 9))
         if (!env.asrReady()) error = ASR_MISSING
+        trError = ""
         env.setMic(true)
         env.takeKeys(true)
         lastFrameAt = System.currentTimeMillis()
@@ -487,14 +502,41 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
                 busy = false
                 r.onSuccess { (text, voice) ->
                     if (text.isNotEmpty() && target != null) {
-                        target.lines.add(AssistLine(System.currentTimeMillis(), env.isMe(voice), text, voice))
+                        val line = AssistLine(System.currentTimeMillis(), env.isMe(voice), text, voice)
+                        target.lines.add(line)
                         if (target === ending || target.lines.size % 5 == 0) env.save(target)
+                        if (target === session) translateLine(target, line, localLang.ifEmpty { lang })
                     }
                     if (error.startsWith("转文字")) error = ""
                 }.onFailure { error = "转文字出错：${it.message ?: it}"; host.log("场景助手：$error") }
                 show()
                 pump()
             }
+        }
+    }
+
+    /**
+     * 即时翻译一句（不翻我说的）：猜原文的语言，不是目标语言就离线翻，译文到了再刷新眼镜。
+     * hint 是转文字时限定的语言（只有汉字时用来区分日语和中文）。手机上把一句改成「对方」时也会调这里补翻。
+     */
+    fun translateLine(s: AssistSession, l: AssistLine, hint: String = s.scene.lang) {
+        if (l.me == true || l.tr.isNotEmpty()) return
+        val to = env.translateTo() ?: return
+        val from = LangGuess.of(l.text, hint)
+        if (!TranslateRules.wanted(l.text, from, to)) return
+        val t0 = System.currentTimeMillis()
+        env.translate(l.text, from, to) { r ->
+            r.onSuccess { t ->
+                if (l.me == true) return@onSuccess
+                l.tr = t.trim(); l.trFrom = from; trError = ""
+                if (s !== session) env.save(s)     // 这一场已经结束：补存
+                if (System.currentTimeMillis() - t0 > 3_000) host.log("场景助手：翻译慢（${System.currentTimeMillis() - t0} ms）")
+            }.onFailure {
+                val e = "翻译出错：${it.message ?: it.javaClass.simpleName}"
+                if (e != trError) host.log("场景助手：$e")
+                trError = e
+            }
+            show()
         }
     }
 
@@ -617,7 +659,8 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
      */
     fun liveRow(cols: Int): String {
         val l = session?.lines?.lastOrNull()
-        val t = (if (hearing) "● " else "") + (l?.let { (if (it.me == true) AssistLine.ME_TAG else "") + it.text.trim() } ?: "（还没听到）")
+        val t = (if (hearing) "● " else "") + (l?.let { (if (it.me == true) AssistLine.ME_TAG else "") + it.text.trim() +
+            (if (it.tr.isNotEmpty()) " → " + it.tr.trim() else "") } ?: "（还没听到）")
         val cap = cols.coerceIn(4, 60) * 2
         var w = 0; var i = t.length
         while (i > 0) { val cw = if (t[i - 1].code < 0x80) 1 else 2; if (w + cw > cap) break; w += cw; i-- }
@@ -653,7 +696,9 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
                 // 从最新的一句往前，放满一屏
                 val recent = ArrayList<String>()
                 for (l in ls.asReversed()) {
-                    val w = wrap((if (l.me == true) AssistLine.ME_TAG else "") + l.text, cols)
+                    // 有译文时：原文下面一行「→ 译文」
+                    val w = wrap((if (l.me == true) AssistLine.ME_TAG else "") + l.text, cols) +
+                        (if (l.tr.isNotEmpty()) wrap(TR_TAG + l.tr, cols) else emptyList())
                     recent.addAll(0, w)
                     if (recent.size + rowsOut.size >= rows) break
                 }
@@ -711,6 +756,7 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
                 for ((k, l) in ls.withIndex().reversed()) {
                     val who = if (l.me == true) AssistLine.ME_TAG else ""
                     val c = if (k == ls.size - 1 && msg.isEmpty()) Frame.FULL else Frame.DIM
+                    if (l.tr.isNotEmpty()) for (w in f.font.wrap(TR_TAG + l.tr, f.w - 12).asReversed()) rows.add(w to c)
                     for (w in f.font.wrap(who + l.text, f.w - 12).asReversed()) rows.add(w to c)
                     if (rows.size * lineH > bottom - top) break
                 }
@@ -743,6 +789,9 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         fun actionName(a: String) = when (a) {
             "answer" -> "参考回答"; "question" -> "提问建议"; "next" -> "下一页"; "prev" -> "上一页"; "back" -> "收起建议"; else -> a
         }
+
+        /** 眼镜上译文那一行的开头。 */
+        const val TR_TAG = "→ "
 
         const val ASR_MISSING = "转文字还不能用：离线模型没下载，或者在线服务没填 Key（「场景助手 › 设置 › 转文字」）"
 

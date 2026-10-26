@@ -5,7 +5,7 @@ package io.github.yingdu
  * 内容有实质改动时把 VERSION 加一，用户下次打开会再看到一次。
  */
 object Legal {
-    const val VERSION = 12
+    const val VERSION = 13
 
     const val DISCLAIMER =
         "1. NimoGo 是个人开发的非官方第三方 app，与 Nimo 眼镜的厂商没有任何关系，也没有得到厂商的授权或认可。" +
@@ -30,7 +30,8 @@ object Legal {
         "· AI 代理：长按左镜腿说的命令在手机上离线转文字，你确认发送后，文字写进你自己填的 GitHub 私有仓库（Issue 和评论），用你自己的令牌；" +
         "有命令在处理时每分钟去读那个仓库的评论。\n" +
         "· 场景助手：录音在手机上离线转文字，不发出去；按键要建议时，最近一段对话的文字和场景设置发给你选的大模型（Groq、Google Gemini、Claude、OpenAI、DeepSeek，或你填的 OpenAI 兼容接口），" +
-        "复盘时发整场对话的文字，用你自己的 API Key。对话和复盘只存在手机上。\n" +
+        "复盘时发整场对话的文字，用你自己的 API Key。对话和复盘只存在手机上。" +
+        "即时翻译在手机上离线做（Google ML Kit），对话不发出去；只有第一次下载语言包时连 Google 的服务器。\n" +
         "· 导航：导航期间的精确位置、目的地和路线由 Google Navigation SDK 发给 Google，用你自己的 API Key；" +
         "从 Google Maps 共享过来的短链接会访问 Google 的服务器展开；在 NimoGo 里输入地名时，地名和当前位置发给 Google 地点搜索（Places API，用你自己的 API Key；用不了时改用手机系统的地理编码）。\n" +
         "· 景点介绍：精确位置发给你选的地图服务（高德或 Google），景点名称发给百度百科、维基百科。\n" +

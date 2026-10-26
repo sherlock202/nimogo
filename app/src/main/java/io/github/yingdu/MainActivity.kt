@@ -2500,6 +2500,17 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val sceneInfo = note("")
         page.addView(sceneInfo)
 
+        // 即时翻译（这个场景）：对方说外语时，眼镜上原文下面显示译文
+        val trBox = listBox()
+        val trToggle = Toggle {
+            val s = service ?: return@Toggle
+            val id = s.assist.session?.scene?.id ?: s.assistSceneId
+            s.assistSetTranslate(id, !s.assistTranslateOn(id)); refreshNow()
+        }
+        val trRow = Row("即时翻译", "").apply { accessory(trToggle.root) }
+        trBox.addRow(trRow.root)
+        page.addView(trBox, lp(bottom = 8))
+
         val askRow = pillRow(
             pill("参考回答", dark = false, small = true) { if (service?.assistRemote("answer") != true) toast("先点下面的「开始」") },
             pill("提问建议", dark = false, small = true) { if (service?.assistRemote("question") != true) toast("先点下面的「开始」") },
@@ -2544,6 +2555,16 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(6) })
                 if (!s.licensed) chips.addView(chip("＋ 更多场景", false) { moreScenes() })
             }
+            val trOn = s.assistTranslateOn(scene.id)
+            trToggle.set(trOn)
+            val to = OfflineTranslate.name(s.assistTrTo)
+            trRow.desc(when {
+                OfflineTranslate.downloading.isNotEmpty() -> "正在下载${OfflineTranslate.name(OfflineTranslate.downloading)}语言包…"
+                trOn && a.trError.isNotEmpty() -> a.trError
+                OfflineTranslate.lastError.isNotEmpty() && trOn -> OfflineTranslate.lastError
+                !OfflineTranslate.ready(OfflineTranslate.CODES) -> "对方说的外语翻成$to · 打开时下载离线语言包（每种约 30 MB）"
+                else -> "对方说的外语翻成$to，眼镜上原文下面显示译文（离线）"
+            })
             sceneInfo.text = scene.kindName + " · 建议用" + scene.langName + (if (scene.goal.isNotBlank()) " · " + scene.goal else "") +
                 (if (scene.aboutMe.isBlank()) "\n还没写「关于我」：在「编辑场景」里写上，建议和复盘会更贴合你。" else "")
             val (body, status) = a.glassesText(s.textCols(), s.textRows())
@@ -2555,7 +2576,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             }
             val sess = a.session
             val ls = sess?.lines.orEmpty()
-            val sig = (sess?.id ?: "") + ls.size + ls.joinToString("") { (it.me?.toString() ?: "n") }
+            val sig = (sess?.id ?: "") + ls.size + ls.joinToString("") { (it.me?.toString() ?: "n") + it.tr.length }
             if (sig != liveSig) {
                 liveSig = sig
                 live.removeAllViews()
@@ -2588,6 +2609,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val who = when (l.me) { true -> AssistLine.ME_TAG; false -> "对方"; null -> "分不清" }
         addView(text(hms.format(java.util.Date(l.at)) + " · " + who, 11f, if (l.me == true) TAN else SUB))
         addView(text(l.text, 14.5f, INK).apply { setLineSpacing(0f, 1.35f) }, lp(top = 3))
+        if (l.tr.isNotEmpty()) addView(text(AssistApp.TR_TAG + l.tr, 13.5f, SUB).apply { setLineSpacing(0f, 1.3f) }, lp(top = 2))
         setOnClickListener { onClick() }
     }
 
@@ -2610,9 +2632,15 @@ class MainActivity : Activity(), ReaderService.UiListener {
             if (s.assistGet("key").isEmpty()) { toast("先在「场景助手 › 设置」里填大模型的 Key"); openSub(Sub.ASSIST_SET); return@pill }
             s.assistReview(assistSessionId); refreshNow()
         }
-        page.addView(pillRow(reviewBtn,
+        val trBtn = pill("翻译这一场", dark = false, small = true) {
+            val s = service ?: return@pill
+            s.assistTranslateSession(assistSessionId)
+            if (!OfflineTranslate.ready(OfflineTranslate.CODES)) toast("第一次要下载离线语言包，下好后接着翻")
+            refreshNow()
+        }
+        page.addView(pillRow(reviewBtn, trBtn,
             pill("复制对话", dark = false, small = true) {
-                service?.assistStore?.load(assistSessionId)?.let { copyText("对话", AssistAi.transcript(it.lines, withTime = true)) }
+                service?.assistStore?.load(assistSessionId)?.let { copyText("对话", AssistAi.transcript(it.lines, withTime = true, withTr = true)) }
             },
             pill("删除", dark = false, small = true) {
                 AlertDialog.Builder(this).setTitle("删除这一场？").setMessage("对话和复盘都会删掉，不能恢复。")
@@ -2640,6 +2668,11 @@ class MainActivity : Activity(), ReaderService.UiListener {
             info.text = "${x.scene.kindName} · 约 $mins 分钟 · ${x.lines.size} 句 · 建议 ${x.asks.size} 次" +
                 (if (x.reviewModel.isNotEmpty()) " · 复盘用 ${x.reviewModel}" else "")
             reviewBtn.text = when { reviewing -> "复盘中…"; x.review.isNotEmpty() -> "重新复盘"; else -> "复盘" }
+            trBtn.text = when {
+                x.id in s.assistTranslating -> "翻译中…"
+                s.assistTrError.isNotEmpty() -> "翻译出错，重试"
+                else -> "翻成" + OfflineTranslate.name(s.assistTrTo)
+            }
             review.text = when {
                 reviewing -> "正在复盘（用「${s.assistReviewModel()}」，长的对话要一两分钟）…"
                 x.review.isNotEmpty() -> x.review
@@ -2650,7 +2683,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
                     else -> "整理要点、对方的意图、需要再确认的地方。"
                 }
             }
-            val ns = x.id + x.lines.size + x.lines.joinToString("") { it.me?.toString() ?: "n" } + x.asks.size
+            val ns = x.id + x.lines.size + x.lines.joinToString("") { (it.me?.toString() ?: "n") + it.tr.length } + x.asks.size
             if (ns == sig) return@onUpdate
             sig = ns
             lines.removeAllViews()
@@ -2719,6 +2752,29 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val asrNote = note("")
         page.addView(asrNote)
 
+        page.addView(section("即时翻译"))
+        val trBox = listBox()
+        val trToRow = Row("翻成", chevron = true) {
+            choose("对方的话翻成", OfflineTranslate.LANGS.map { it.second }) { i -> service?.assistTrTo = OfflineTranslate.LANGS[i].first; refreshNow() }
+        }
+        val trPackRow = Row("离线语言包", chevron = true) {
+            val s = service ?: return@Row
+            val names = OfflineTranslate.LANGS.joinToString("、") { it.second }
+            val d = AlertDialog.Builder(this).setTitle("离线语言包（$names）")
+                .setMessage("用 Google ML Kit 离线翻译：第一次联网下载语言包（每种约 30 MB），之后不联网，一句几十毫秒。" +
+                    "\n现在：" + OfflineTranslate.LANGS.joinToString("，") { (c, n) -> n + if (c in OfflineTranslate.downloaded) "已下载" else "未下载" })
+            if (!OfflineTranslate.ready(OfflineTranslate.CODES)) d.setPositiveButton("下载") { _, _ -> OfflineTranslate.download(OfflineTranslate.CODES); refreshNow() }
+            else d.setPositiveButton("好", null)
+            d.setNeutralButton("删除") { _, _ -> OfflineTranslate.delete(OfflineTranslate.CODES); refreshNow() }
+            d.setNegativeButton("取消", null).show()
+            s.log("离线翻译：语言包 " + OfflineTranslate.downloaded.joinToString())
+        }
+        trBox.addRow(trToRow.root); trBox.addRow(trPackRow.root)
+        page.addView(trBox)
+        page.addView(note("每个场景单独开关（场景助手页上的「即时翻译」，或编辑场景）。只翻对方的话：对方说的不是上面选的语言（比如日语、英语），" +
+            "眼镜上原文下面一行「→ 译文」，手机上的记录里也有。翻译在手机上离线做，对话不发出去；能懂大意，专业名词可能翻得不准。" +
+            "对方可能说英语也可能说日语时，场景的语言选「自动」，转文字更准。"))
+
         page.addView(section("大模型"))
         val llm = listBox()
         val preset = Row("服务", chevron = true) {
@@ -2756,6 +2812,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
             asrNote.text = if (online) "用「全天记忆 › 设置 › 转文字」里的在线服务（推荐 Groq 的 whisper-large-v3，有免费额度、海外快）。" +
                 "录音会发给这个服务；场景里写的专业名词会作为提示词一起发过去，转出来就是正确的写法。没设好时自动改用手机离线。"
                 else "手机离线（SenseVoice）不联网、录音不离开手机；中文里夹的英文专业名词常被认成同音的中文，可以打开「自动识别语言」试试，或改用在线。"
+            trToRow.value(OfflineTranslate.name(s.assistTrTo))
+            trPackRow.value(when {
+                OfflineTranslate.downloading.isNotEmpty() -> "下载${OfflineTranslate.name(OfflineTranslate.downloading)}中…"
+                OfflineTranslate.ready(OfflineTranslate.CODES) -> "已下载"
+                OfflineTranslate.lastError.isNotEmpty() -> "下载失败"
+                else -> "未下载"
+            })
             devRow.value(s.deviceCode)
             keyRow.value(when { s.licensed -> "已开通"; s.licenseKey.isEmpty() -> "未开通"; else -> "密钥不对" })
             presetNote.text = p.note
@@ -2801,6 +2864,11 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val goal = field("场景说明和目的（对方是谁、我想达成什么）", multi = true).apply { setText(old?.goal ?: "") }
         val about = field("关于我（经历、期望、在意的事；面试写应聘的职位和期望条件）", multi = true).apply { setText(old?.aboutMe ?: ""); minLines = 3 }
         val terms = field("会说到的专业名词，用逗号隔开（比如：AWS, Kubernetes, Airflow, PoC, UAT）", multi = true).apply { setText(old?.terms ?: "") }
+        var translate = old?.translate ?: false
+        lateinit var trT: Toggle
+        trT = Toggle { translate = !translate; trT.set(translate) }
+        trT.set(translate)
+        val trRow = Row("即时翻译", "对方说的外语翻成${OfflineTranslate.name(s.assistTrTo)}（离线）").apply { accessory(trT.root) }
         // 普通版：「面试」的名称和种类不能改（只改语言、说明和「关于我」）
         val free = !s.licensed
         val box = vbox().apply {
@@ -2812,18 +2880,20 @@ class MainActivity : Activity(), ReaderService.UiListener {
             addView(about, lp(top = 8))
             addView(terms, lp(top = 8))
             addView(hint("中文里夹着的英文名词，离线转文字常认成同音的中文：写在这里，大模型会按这些词理解；用在线转文字（Whisper）时转出来就是正确的写法。"), lp(top = 4))
+            addView(trRow.root, lp(top = 8))
         }
         val d = AlertDialog.Builder(this).setTitle(if (old == null) "添加场景" else "编辑场景")
             .setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("保存") { _, _ ->
                 val n = name.text.toString().trim().ifEmpty { "未命名场景" }
                 val sc = AssistScene(old?.id ?: ("s" + System.currentTimeMillis()), n, kind, lang, goal.text.toString().trim(), about.text.toString().trim(),
-                    terms.text.toString().trim())
+                    terms.text.toString().trim(), translate)
                 val l = s.assistScenes.toMutableList()
                 val i = l.indexOfFirst { it.id == sc.id }
                 if (i >= 0) l[i] = sc else l.add(sc)
                 s.assistScenes = l
                 if (old == null) s.assistSceneId = sc.id
+                if (translate && !OfflineTranslate.ready(OfflineTranslate.CODES)) OfflineTranslate.download(OfflineTranslate.CODES)
                 refreshNow()
             }
             .setNegativeButton("取消", null)
@@ -3675,7 +3745,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             "眼镜点阵字体基于 GNU Unifont 和 Fusion Pixel Font（SIL OFL 1.1）。许可全文见「开源许可」。\n" +
             "数据来源：行情 雅虎财经、腾讯证券、Robinhood、微牛；天气 Open-Meteo（CC BY 4.0）；反向地理编码 BigDataCloud；" +
             "景点 高德地图、Google 地图；景点介绍 百度百科、维基百科（CC BY-SA 4.0）。\n" +
-            "导航 Google Navigation SDK（受 Google Maps Platform 服务条款约束）。"))
+            "导航 Google Navigation SDK（受 Google Maps Platform 服务条款约束）。场景助手的即时翻译用 Google ML Kit 离线翻译（受 ML Kit 服务条款约束）。"))
         onUpdate(Sub.ABOUT) {
             v.text = "NimoGo " + versionName().let { if (it.isEmpty()) "" else "v$it" }
             autoToggle.set(autoUpdateCheck)
