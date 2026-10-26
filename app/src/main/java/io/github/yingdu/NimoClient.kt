@@ -28,6 +28,8 @@ interface NimoListener {
     fun onPrompterRefused() {}
     /** 提词器里长按右镜腿时要不要留在提词器（不退出）。true：撤掉眼镜的「正在退出」，之后调 onPrompterRestore 重新显示。 */
     fun keepPrompterOnLongPress(): Boolean = false
+    /** 长按左镜腿：返回 true 表示用掉了（叫 AI 代理），不再按原来的长按处理。 */
+    fun onLongPressLeft(): Boolean = false
     /** 提词器已经重新打开（长按右镜腿没让它退出）：把当前这一页再发一次。 */
     fun onPrompterRestore() {}
     /** 眼镜现在的亮度档位（0..16，连接时读到的）。 */
@@ -942,6 +944,7 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             lastGestureAt = System.currentTimeMillis()
             cancelSynth()
         }
+        if (code == NimoProtocol.INPUT_LONG_PRESS_LEFT && listener.onLongPressLeft()) return
         if (input == GlassesInput.LONG_PRESS && enteredApp == NimoProtocol.APP_ID_NAV) {
             // 导航页里长按右镜腿是眼镜自己的"退出"，不当作我们的操作
             onUserExited("长按镜腿")

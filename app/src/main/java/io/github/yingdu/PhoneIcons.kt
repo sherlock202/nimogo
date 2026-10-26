@@ -169,6 +169,18 @@ object PhoneIcons {
         "........#.....",
     ), mapOf('#' to c(0xFF5A9E6F), '*' to c(0xFFE0A33A)))
 
+    /** AI 代理（NimoGo）：小机器人头。 */
+    val AGENT = PixelIcon(listOf(
+        "......#.......",
+        "......#.......",
+        "..##########..",
+        ".#..........#.",
+        ".#..oo..oo..#.",
+        ".#..........#.",
+        ".#...####...#.",
+        "..##########..",
+    ), mapOf('#' to c(0xFF6A7FD0), 'o' to c(0xFFE0A33A)))
+
     /** 实时字幕：一块屏幕，下面两行字。 */
     val CAPTIONS = PixelIcon(listOf(
         "##############",

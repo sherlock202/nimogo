@@ -83,7 +83,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
     private enum class Sub {
         READ, STOCKS, AGENDA, NOTIFY, GAMES, GAME, CLOCK, POMO, POMO_SET, PARTY,
         DASH_SET, FONT, READ_SET, OFFICIAL, LOG, ABOUT, LICENSES, MEMORY, MEMORY_SET, MEMORY_LISTEN, MEMORY_API, CAPTIONS, SIGHTS, MANUAL, MANUAL_TOPIC,
-        NAV, NAV_SET, ASSIST, ASSIST_SET, ASSIST_SESSION
+        NAV, NAV_SET, ASSIST, ASSIST_SET, ASSIST_SESSION, AGENT
     }
 
     private var service: ReaderService? = null
@@ -757,6 +757,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         subPages[Sub.ASSIST] = buildAssist()
         subPages[Sub.ASSIST_SET] = buildAssistSettings()
         subPages[Sub.ASSIST_SESSION] = buildAssistSession()
+        subPages[Sub.AGENT] = buildAgent()
         subPages[Sub.ABOUT] = buildAbout()
         subPages[Sub.MANUAL] = buildManual()
         subPages[Sub.MANUAL_TOPIC] = buildManualTopic()
@@ -984,6 +985,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.MANUAL -> "使用手册"; Sub.MANUAL_TOPIC -> manualTopic.title
         Sub.NAV -> "导航"; Sub.NAV_SET -> "导航设置"
         Sub.ASSIST -> "场景助手"; Sub.ASSIST_SET -> "场景助手设置"; Sub.ASSIST_SESSION -> "记录和复盘"
+        Sub.AGENT -> "AI 代理"
     }
 
     /** 子页面右上角的文字按钮。 */
@@ -994,6 +996,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.NAV -> "⚙ 设置" to { openSub(Sub.NAV_SET) }
         Sub.ASSIST -> "⚙ 设置" to { openSub(Sub.ASSIST_SET) }
         Sub.ASSIST_SET -> "说明" to { openManual("assist") }
+        Sub.AGENT -> "说明" to { openManual("agent") }
         Sub.GAME -> "说明" to { (service?.activeApp as? GameApp)?.let { message(it.title, it.help) }; Unit }
         // 设置页只留一行字，详细说明在使用手册里：右上角「说明」直接跳到对应的一页
         Sub.NOTIFY -> "说明" to { openManual("notify") }
@@ -1220,6 +1223,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             app(px(PhoneIcons.MEMORY), "全天记忆") { openSub(Sub.MEMORY) },
             app(px(PhoneIcons.CAPTIONS), "实时字幕") { openSub(Sub.CAPTIONS) },
             app(px(PhoneIcons.ASSIST), "场景助手") { openSub(Sub.ASSIST) },
+            app(px(PhoneIcons.AGENT), "AI 代理") { openSub(Sub.AGENT) },
             app(px(PhoneIcons.SIGHTS), "景点介绍") { openSub(Sub.SIGHTS) }, app(px(PhoneIcons.MANUAL), "使用手册") { openSub(Sub.MANUAL) })
         apps.chunked(4).forEach { r -> grid.addView(hbox().apply {
             (r + List(4 - r.size) { View(this@MainActivity) }).forEach { addView(it, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)) }
@@ -1282,6 +1286,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
                             a === s.party -> openSub(Sub.PARTY)
                             a === s.captions -> openSub(Sub.CAPTIONS)
                             a === s.assist -> openSub(Sub.ASSIST)
+                            a === s.agent -> openSub(Sub.AGENT)
                             a === s.nav -> openSub(Sub.NAV)
                         }
                     }
@@ -2827,6 +2832,118 @@ class MainActivity : Activity(), ReaderService.UiListener {
             if (s.assistSceneId == old.id) s.assistSceneId = s.assistScenes.first().id
             refreshNow()
         }
+        d.show()
+    }
+
+    // =====================================================================
+    // AI 代理收件箱（NimoGo）
+    // =====================================================================
+
+    private fun buildAgent(): View {
+        val page = vbox()
+        val state = hint("")
+        page.addView(state, lp(bottom = 8))
+
+        val sw = listBox()
+        val onToggle = Toggle { service?.let { it.agentEnabled = !it.agentEnabled }; refreshNow() }
+        val onRow = Row("长按左镜腿说命令", "说完停一下，右单击发送、左单击取消").apply { accessory(onToggle.root) }
+        sw.addRow(onRow.root)
+        page.addView(sw)
+
+        // 眼镜上正在说命令时：手机上也能发送 / 取消
+        val liveBox = card()
+        val liveText = text("", 14f).apply { setLineSpacing(0f, 1.4f) }
+        liveBox.addView(liveText)
+        liveBox.addView(pillRow(
+            pill("发送", small = true) { service?.agent?.phoneSend(); refreshNow() },
+            pill("取消", dark = false, small = true) { service?.agent?.phoneCancel(); refreshNow() }), lp(top = 10))
+        page.addView(liveBox)
+
+        page.addView(section("收件箱（GitHub 私有仓库）"))
+        val box = listBox()
+        fun edit(title: String, key: String, secret: Boolean, hintText: String) {
+            val s = service ?: return
+            val f = field(hintText).apply {
+                setText(s.agentGet(key)); if (secret) inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            }
+            AlertDialog.Builder(this).setTitle(title).setView(vbox().apply { setPadding(dp(20), dp(8), dp(20), 0); addView(f) })
+                .setPositiveButton("保存") { _, _ -> s.agentSet(key, f.text.toString()); refreshNow() }.setNegativeButton("取消", null).show()
+        }
+        val nameRow = Row("代理的名字", chevron = true) { edit("代理的名字（眼镜上显示）", "name", false, "Muse") }
+        val repoRow = Row("仓库", chevron = true) { edit("仓库（用户名/仓库名）", "repo", false, "yourname/muse-inbox") }
+        val tokenRow = Row("令牌", "只给这个仓库 Issues 读写权限的 Fine-grained token", chevron = true) { edit("令牌", "token", true, "github_pat_…") }
+        val labelRow = Row("标签", chevron = true) { edit("命令的标签", "label", false, "nimogo") }
+        listOf(nameRow, repoRow, tokenRow, labelRow).forEach { box.addRow(it.root) }
+        page.addView(box)
+        page.addView(pillRow(
+            pill("测试连接", dark = false, small = true) {
+                val s = service ?: return@pill
+                toast("连接中…")
+                s.agentTest { r -> message("测试连接", r) }
+            },
+            pill("从手机发一条", dark = false, small = true) {
+                val s = service ?: return@pill
+                val f = field("要让${s.agentName}做什么", multi = true)
+                AlertDialog.Builder(this).setTitle("发给 ${s.agentName}").setView(vbox().apply { setPadding(dp(20), dp(8), dp(20), 0); addView(f) })
+                    .setPositiveButton("发送") { _, _ ->
+                        val t = f.text.toString().trim()
+                        if (t.isNotEmpty()) s.agentSend(t, null) { err, n -> toast(err ?: "已发送 #$n") }
+                    }.setNegativeButton("取消", null).show()
+            },
+            pill("复制给代理的说明", dark = false, small = true) {
+                val s = service ?: return@pill
+                copyText("给代理的说明", AgentInbox.guide(s.agentGet("repo"), s.agentLabel, s.agentName))
+            }), lp(bottom = 10))
+
+        page.addView(section("最近的命令", "刷新" to { service?.agentPollNow(); toast("查一下有没有新回复") }))
+        val list = listBox()
+        page.addView(list)
+        page.addView(note("每条命令是收件箱仓库里的一个 Issue，代理做完写评论、关闭 Issue。有命令在处理时每分钟查一次回复，" +
+            "提词、场景助手开着时先不提醒。仓库名和令牌只存在这台手机上。"))
+
+        var sig = ""
+        onUpdate(Sub.AGENT) { s ->
+            onToggle.set(s.agentEnabled)
+            nameRow.value(s.agentName)
+            repoRow.value(s.agentGet("repo").ifEmpty { "未填" })
+            val t = s.agentGet("token"); tokenRow.value(if (t.isEmpty()) "未填" else "••••" + t.takeLast(4))
+            labelRow.value(s.agentLabel)
+            state.text = when {
+                !s.agentEnabled -> "没开。打开后，眼镜上长按左镜腿就能对${s.agentName}说命令"
+                !s.agentReady -> "先填仓库和令牌"
+                s.agentError.isNotEmpty() -> "出错：${s.agentError}"
+                else -> "准备好了" + (if (s.agentCheckedAt > 0) "，上次查回复 " + java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date(s.agentCheckedAt)) else "")
+            }
+            val a = s.agent
+            liveBox.visibility = if (a.running) View.VISIBLE else View.GONE
+            if (a.running) liveText.text = a.status() + (if (a.text.isNotEmpty()) "\n" + a.text else "") + (if (a.note.isNotEmpty()) "\n" + a.note else "")
+            val ns = s.agentCommands.joinToString { "${it.number}${it.status}${it.log.size}" }
+            if (ns == sig) return@onUpdate
+            sig = ns
+            list.removeAllViews()
+            if (s.agentCommands.isEmpty()) list.addRow(Row("还没有命令").root)
+            s.agentCommands.forEach { c ->
+                list.addRow(Row("#${c.number} " + c.text.take(30), c.result.ifEmpty { null }, chevron = true) { agentDetail(c.number) }
+                    .apply { value(c.status) }.root)
+            }
+        }
+        return page
+    }
+
+    /** 一条命令的来往；代理在等确认时可以在这里确认 / 取消。 */
+    private fun agentDetail(n: Int) {
+        val s = service ?: return
+        val c = s.agentCommands.firstOrNull { it.number == n } ?: return
+        val d = AlertDialog.Builder(this).setTitle("#$n · ${c.status}")
+            .setMessage(c.log.joinToString("\n\n").ifEmpty { c.text })
+        if (c.confirm.isNotEmpty()) {
+            d.setPositiveButton("确认") { _, _ -> s.agentSend("确认", n) { err, _ -> toast(err ?: "已回复「确认」") } }
+            d.setNegativeButton("取消") { _, _ -> s.agentSend("取消", n) { err, _ -> toast(err ?: "已回复「取消」") } }
+        } else {
+            d.setPositiveButton("关闭", null)
+            d.setNegativeButton("不再跟踪") { _, _ -> s.agentForget(n) }
+        }
+        d.setNeutralButton("复制") { _, _ -> copyText("命令", c.log.joinToString("\n\n")) }
         d.show()
     }
 

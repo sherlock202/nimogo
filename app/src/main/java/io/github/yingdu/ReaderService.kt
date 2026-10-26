@@ -50,6 +50,9 @@ class ReaderService : Service(), NimoListener, AppHost {
         const val PENDING_KEEP_MS = 24 * 3600_000L
         const val HIDE_HOME = 2
         /** 萤读自己退回主界面后，这么久内眼镜报的「主界面被点亮」不算用户点亮。 */
+        /** AI 代理：有命令在处理时多久查一次回复；命令最多跟多久。 */
+        const val AGENT_POLL_MS = 60_000L
+        const val AGENT_KEEP_MS = 3 * 24 * 3600_000L
         const val QUIT_HOME_IGNORE_MS = 3_000L
         /** 通知监听服务通过它把手机通知、导航信息交给我们。 */
         var instance: ReaderService? = null
@@ -246,6 +249,129 @@ class ReaderService : Service(), NimoListener, AppHost {
     private var licensedCache: Boolean? = null
     /** 开通了私人定制（密钥是给这台手机签的）。 */
     val licensed: Boolean get() = licensedCache ?: License.verify(licenseKey, deviceCode).also { licensedCache = it }
+
+    // ---------- AI 代理收件箱（NimoGo）：长按左镜腿说命令 → GitHub 私有仓库的 Issue → 代理做完写评论 → 眼镜上提醒，见 AgentInbox ----------
+
+    private val agentPrefs by lazy { getSharedPreferences("agent", MODE_PRIVATE) }
+    fun agentGet(k: String, def: String = ""): String = agentPrefs.getString(k, def) ?: def
+    fun agentSet(k: String, v: String) { agentPrefs.edit().putString(k, v.trim()).apply(); notifyUi(); if (k == "repo" || k == "token") agentPollSoon() }
+    var agentEnabled: Boolean
+        get() = agentPrefs.getBoolean("enabled", false)
+        set(v) { agentPrefs.edit().putBoolean("enabled", v).apply(); notifyUi(); if (v) agentPollSoon() }
+    val agentName: String get() = agentGet("name", "Muse").ifEmpty { "Muse" }
+    val agentLabel: String get() = agentGet("label", "nimogo")
+    val agentReady: Boolean get() = AgentInbox.validRepo(agentGet("repo")) && agentGet("token").isNotEmpty()
+    val agentCommands: MutableList<AgentCommand> by lazy { AgentCommand.listFromJson(agentPrefs.getString("cmds", null)) }
+    private fun agentSave() { agentPrefs.edit().putString("cmds", AgentCommand.listToJson(agentCommands.take(30))).apply() }
+    private var agentWantsMic = false
+    var agentError = ""; private set
+    var agentCheckedAt = 0L; private set
+
+    val agent by lazy { AgentApp(this, object : AgentApp.Env {
+        override fun name() = agentName
+        override fun setMic(on: Boolean) { agentWantsMic = on; glassesMic(on) }
+        override fun asrReady() = LocalAsr.ready()
+        override fun language() = memGet("asrLang", "zh").let { if (it == "auto") "" else it }
+        override fun waiting() = agentCommands.firstOrNull { it.confirm.isNotEmpty() }
+        override fun send(text: String, replyTo: Int?, done: (String?, Int?) -> Unit) = agentSend(text, replyTo, done)
+    }).also { a -> a.closeSelf = { if (activeApp === a) closeApp() } } }
+
+    /** 发命令（replyTo 不为 null 时回复那条命令）。done 在主线程：错误信息（成功为 null）、Issue 编号。 */
+    fun agentSend(text: String, replyTo: Int?, done: (String?, Int?) -> Unit) {
+        if (!agentReady) { done("先在「AI 代理」里填仓库和令牌", null); return }
+        val repo = agentGet("repo"); val token = agentGet("token"); val label = agentLabel
+        val now = System.currentTimeMillis()
+        val at = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US).format(java.util.Date(now))
+        io.execute {
+            val r = runCatching {
+                if (replyTo != null) { AgentInbox.comment(repo, token, replyTo, AgentInbox.replyBody(text)); replyTo }
+                else AgentInbox.create(repo, token, label, AgentInbox.title(text), AgentInbox.issueBody("c$now", at, text))
+            }
+            main.post {
+                r.onSuccess { n ->
+                    if (replyTo != null) agentCommands.firstOrNull { it.number == n }?.let { it.confirm = ""; it.open = true; it.log.add("我：$text") }
+                    else agentCommands.add(0, AgentCommand(n, text, now).apply { log.add("我：$text") })
+                    agentSave()
+                    log("$agentName：" + (if (replyTo != null) "回复 #$n" else "新命令 #$n") + "：${text.take(30)}")
+                    agentPollSoon(60_000)
+                    done(null, n)
+                }.onFailure {
+                    val e = it.message ?: it.javaClass.simpleName
+                    log("$agentName：发送失败：$e"); done(e, null)
+                }
+                notifyUi()
+            }
+        }
+    }
+
+    /** 提词（演讲模式、语音跟读）、场景助手开着时不打扰：代理的回复先不显示、也不算看过，结束后再提醒。 */
+    private val agentQuiet get() = quietWhileReading && (prompting || assistOnGlasses)
+    private var agentPolling = false
+    private val agentPoll = Runnable { agentPollNow() }
+    fun agentPollSoon(delayMs: Long = 3_000) { main.removeCallbacks(agentPoll); main.postDelayed(agentPoll, delayMs) }
+
+    /** 查还开着的命令有没有新评论（有开着的命令时每分钟一次）。 */
+    fun agentPollNow() {
+        main.removeCallbacks(agentPoll)
+        if (!agentEnabled || !agentReady || agentPolling) return
+        val now = System.currentTimeMillis()
+        val todo = agentCommands.filter { it.open && now - it.at < AGENT_KEEP_MS }.map { it.number }
+        if (todo.isEmpty()) return
+        agentPolling = true
+        val repo = agentGet("repo"); val token = agentGet("token")
+        io.execute {
+            val got = todo.map { n -> n to runCatching { AgentInbox.comments(repo, token, n) to AgentInbox.isOpen(repo, token, n) } }
+            main.post {
+                agentPolling = false
+                agentCheckedAt = System.currentTimeMillis()
+                for ((n, r) in got) {
+                    val c = agentCommands.firstOrNull { it.number == n } ?: continue
+                    r.onSuccess { (cs, open) ->
+                        agentError = ""
+                        val fresh = cs.filter { it.id > c.lastCommentId }.sortedBy { it.id }
+                        for (cm in fresh) {
+                            if (agentQuiet) { log("$agentName：#$n 有新回复，提词 / 场景助手结束后再提醒"); break }
+                            c.lastCommentId = cm.id
+                            c.log.add("$agentName：" + cm.body.trim())
+                            val sum = AgentInbox.summary(cm.body)
+                            if (AgentInbox.needsConfirm(cm.body)) c.confirm = cm.body else { c.result = sum; c.confirm = "" }
+                            log("$agentName：#$n 回复：$sum")
+                            onPhoneNotification("$agentName #$n", if (c.confirm.isNotEmpty()) "等你确认" else "", sum +
+                                if (c.confirm.isNotEmpty()) "（长按左镜腿：右确认 左取消）" else "")
+                        }
+                        // 关了、而且回复都提醒过了，才算做完
+                        c.open = open || cs.any { it.id > c.lastCommentId }
+                    }.onFailure { agentError = it.message ?: it.javaClass.simpleName; log("$agentName：查回复失败：$agentError") }
+                }
+                agentSave(); notifyUi()
+                if (agentCommands.any { it.open && System.currentTimeMillis() - it.at < AGENT_KEEP_MS }) main.postDelayed(agentPoll, AGENT_POLL_MS)
+            }
+        }
+    }
+
+    /** 测试连接（后台），结果在主线程回调。 */
+    fun agentTest(done: (String) -> Unit) {
+        val repo = agentGet("repo"); val token = agentGet("token")
+        if (!AgentInbox.validRepo(repo)) { done("仓库要写成「用户名/仓库名」"); return }
+        if (token.isEmpty()) { done("还没填令牌"); return }
+        io.execute {
+            val r = runCatching { AgentInbox.test(repo, token) }
+            main.post { done(r.fold({ "连上了：$it" }, { "连不上：${it.message}" })) }
+        }
+    }
+
+    fun agentForget(n: Int) { agentCommands.removeAll { it.number == n }; agentSave(); notifyUi() }
+
+    /** 长按左镜腿：叫 AI 代理（提词、场景助手开着时不叫，免得打断）。 */
+    override fun onLongPressLeft(): Boolean {
+        if (!agentEnabled) return false
+        if (prompting || activeApp === assist) { log("提词 / 场景助手开着：长按左镜腿不叫 $agentName"); return true }
+        if (activeApp === agent) return true
+        if (!agentReady) { log("$agentName：还没填仓库和令牌（「AI 代理」）"); return false }
+        log("长按左镜腿：对 $agentName 说命令")
+        openApp(agent)
+        return true
+    }
 
     // ---------- 场景助手（NimoGo） ----------
 
@@ -1173,6 +1299,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         CrashLog.install(this)
         instance = this
         LocalAsr.appCtx = applicationContext
+        main.postDelayed({ agentPollSoon() }, 10_000)   // 上次还没做完的命令：接着查回复
         LocalAsr.log = { log(it) }
         LocalAsr.onChanged = { notifyUi(); if (LocalAsr.ready() && asrLocal) memKickTranscribe() }
         io.execute { runCatching { FollowModel.cleanupOld(this) } }
@@ -2624,7 +2751,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private var captionsWantMic = false
     private fun glassesMic(on: Boolean) {
         if (on) client.micStart()
-        else if (!memWantsMic && !captionsWantMic && !followWantsMic && !assistWantsMic) client.micStop()
+        else if (!memWantsMic && !captionsWantMic && !followWantsMic && !assistWantsMic && !agentWantsMic) client.micStop()
     }
 
     override fun onMicFrames(frames: List<NimoMic.Frame>) {
@@ -2632,6 +2759,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (memEngine.running) { memEngine.onGlassesFrames(frames); memUi() }
         if (captions.running) captions.onFrames(frames)
         if (assist.running) assist.onFrames(frames)
+        if (agent.running) agent.onFrames(frames)
     }
 
     val micAvailable get() = ::client.isInitialized && client.micAvailable
