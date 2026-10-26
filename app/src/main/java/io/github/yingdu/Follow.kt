@@ -144,12 +144,14 @@ class FollowAligner {
      * hyp：这一句到目前为止识别出的音节（编号和讲稿用同一个 dict）；script：讲稿窗口的音节；
      * cur：script 里「下一个要念的」音节下标（offset 在窗口里的位置）。
      */
-    fun update(hyp: IntArray, script: FollowTokens, cur: Int): Result {
+    fun update(hyp: IntArray, script: FollowTokens, cur: Int, minIdx: Int = 0, maxIdx: Int = Int.MAX_VALUE): Result {
         val from = offset
         if (hyp.isEmpty() || script.size == 0) return Result(false, from, from, 0, 0, script.size, "没有内容")
         val h = if (hyp.size > TAIL) hyp.copyOfRange(hyp.size - TAIL, hyp.size) else hyp
-        val lo = (cur - if (locked) BACK else BACK_UNLOCKED).coerceAtLeast(0)
-        val hi = (cur + if (locked) AHEAD else AHEAD_UNLOCKED).coerceAtMost(script.size)
+        // minIdx / maxIdx：只在这段里找（正在念的行开头 → 往后 3 行，见 FollowLimits）
+        val lo = maxOf((cur - if (locked) BACK else BACK_UNLOCKED).coerceAtLeast(0), minIdx.coerceAtLeast(0))
+        val hi = minOf((cur + if (locked) AHEAD else AHEAD_UNLOCKED).coerceAtMost(script.size), maxIdx)
+        if (hi <= lo) return Result(false, from, from, 0, 0, 0, "范围里没有字")
         val m = hi - lo
         val n = h.size
         // Smith-Waterman 局部对齐：d[i][j] = 以 h[i-1]、script[lo+j-1] 结尾的最高分
@@ -196,6 +198,36 @@ class FollowAligner {
                 Result(true, from, to, bestScore, d, m, if (!wasLocked) "找到位置" else if (d > NEAR) "跳过" else if (d < 0) "往回" else "前进")
             }
         }
+    }
+}
+
+/**
+ * 跟读的找词范围（2026-10-26）：随意发挥时碰巧说中讲稿里别处的词，一下子跳到别的地方去了。
+ * 只在「正在念的那一行的开头」到「往后 AHEAD_LINES 行」之间找（手动翻页后、还没跟上时，至少到这一屏的最后一行）。
+ * 很短的行（不到 SHORT_LINE 个字，含标点，常常是段落最后一两个字）很难被识别触发：念到上一行末尾就当念过了。
+ */
+object FollowLimits {
+    const val AHEAD_LINES = 3
+    const val SHORT_LINE = 5
+
+    /** 找词范围的行号 [第一行, 最后一行]。 */
+    fun lines(readLine: Int, topLine: Int, rows: Int, lineCount: Int, locked: Boolean): Pair<Int, Int> {
+        val last = maxOf(readLine + AHEAD_LINES, if (locked) 0 else topLine + rows - 1).coerceAtMost(lineCount - 1)
+        return readLine to last
+    }
+
+    /**
+     * 念到 offset 以后，跳过紧接着的短行：返回新的 offset（短行的结尾）；不用跳就原样返回。
+     * lineStart / lineEnd 是第几行的开头、结尾；lineOf 是某个位置在第几行。
+     */
+    fun skipShort(offset: Int, lineCount: Int, lineOf: (Int) -> Int, lineStart: (Int) -> Int, lineEnd: (Int) -> Int): Int {
+        var off = offset
+        var line = lineOf((off - 1).coerceAtLeast(0))
+        while (line + 1 < lineCount && lineEnd(line) - off <= 2 && lineEnd(line + 1) - lineStart(line + 1) < SHORT_LINE) {
+            line++
+            off = lineEnd(line)
+        }
+        return off
     }
 }
 

@@ -518,7 +518,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         glassesPaused = true
         headHidden = false
         if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
-        client.quitCurrent()
+        // 收起时眼镜有时一直挂着「正在退出」，要关一下屏再开才好（2026-10-26）：退出后自己关屏、再开屏一次（息屏模式开着时不动）
+        client.quitCurrent(flash = displayOff != true)
         client.lightHome()
         log("已收起眼镜上的显示")
         updateNotification()
@@ -1609,11 +1610,19 @@ class ReaderService : Service(), NimoListener, AppHost {
         val script = FollowText.tokenize(b.text, from, to, pinyin, followDict)
         var cur = 0
         while (cur < script.size && script.starts[cur] < off) cur++
+        // 只在「正在念的行开头 → 往后 3 行」里找，随意发挥时不会跳到别处去（2026-10-26）
+        val readLine = p.lineIndexForOffset((off - 1).coerceAtLeast(0))
+        val (l0, l1) = FollowLimits.lines(readLine, topLine, p.rows, p.lineCount, followAligner.locked)
+        val loChar = p.lineStartOf(l0); val hiChar = p.lineEndOf(l1)
+        var minIdx = 0
+        while (minIdx < script.size && script.starts[minIdx] < loChar) minIdx++
+        var maxIdx = minIdx
+        while (maxIdx < script.size && script.starts[maxIdx] < hiChar) maxIdx++
         val hyp = FollowText.tokenize(text, 0, text.length, pinyin, followDict)
-        val r = followAligner.update(hyp.ids, script, cur)
+        val r = followAligner.update(hyp.ids, script, cur, minIdx, maxIdx)
         val us = (System.nanoTime() - t0) / 1000
         val ctx = b.text.substring(r.to.coerceIn(0, b.text.length).let { maxOf(0, it - 10) }, r.to.coerceIn(0, b.text.length)).replace('\n', '⏎')
-        followLog.d("对齐", "${r.reason}：第 ${r.from} → ${r.to} 字（${r.distance} 个音节，得分 ${r.score}，窗口 ${r.window}，用了 $us µs）…「$ctx」")
+        followLog.d("对齐", "${r.reason}：第 ${r.from} → ${r.to} 字（${r.distance} 个音节，得分 ${r.score}，窗口 ${r.window}（第 $l0～$l1 行），用了 $us µs）…「$ctx」")
         if (r.moved) {
             followMoves++
             followLastMoveAt = now
@@ -1630,8 +1639,11 @@ class ReaderService : Service(), NimoListener, AppHost {
     private val followStatusPush = Runnable { if (followOn) pushPage() }
 
     /** 念到了 offset：需要换行就滚过去（正在念的行放在倒数第几行），不用换行就只重画下划线。 */
-    private fun followApply(offset: Int, why: String) {
+    private fun followApply(offset0: Int, why: String) {
         val p = paginator ?: return
+        // 念到行尾、下一行很短（不到 5 个字，常是段落最后一两个字）：当作念过了，再往下提一行（2026-10-26）
+        val offset = FollowLimits.skipShort(offset0, p.lineCount, { p.lineIndexForOffset(it) }, { p.lineStartOf(it) }, { p.lineEndOf(it) })
+        if (offset != offset0) { followAligner.offset = offset; followLog.d("对齐", "下一行太短，当作念过了：第 $offset0 → $offset 字") }
         val line = p.lineIndexForOffset((offset - 1).coerceAtLeast(0))
         val from = followFromBottom
         val top = if (from == 0) (line - (p.rows - 1) / 2).coerceIn(0, p.maxTop) else FollowView.topFor(line, p.rows, from, p.maxTop)
@@ -1801,6 +1813,24 @@ class ReaderService : Service(), NimoListener, AppHost {
         pushPage()
     }
 
+    /** 提词器进度（实验）：正文头里填什么，见 PrompterMeta。 */
+    var prompterMetaMode: Int
+        get() = prefs.getInt("prompterMeta", 0)
+        set(v) { prefs.edit().putInt("prompterMeta", v).apply(); log("提词器进度（实验）：${PrompterMeta.NAMES.getOrElse(v) { "$v" }}"); pushPage(); notifyUi() }
+    private var bookBytes = -1L
+    private var bookBytesOf: Any? = null
+
+    private fun prompterMeta(start: Int): LongArray? {
+        val mode = prompterMetaMode
+        if (mode == 0) return null
+        val b = book ?: return null
+        val p = paginator ?: return null
+        if (bookBytesOf !== b) { bookBytes = PrompterMeta.utf8Len(b.text, b.text.length); bookBytesOf = b }
+        val pages = maxOf(1, (p.lineCount + p.rows - 1) / p.rows)
+        val page = (topLine / p.rows + 1).coerceIn(1, pages)
+        return PrompterMeta.of(mode, PrompterMeta.utf8Len(b.text, start), bookBytes, page, pages, progressPercent().toInt())
+    }
+
     /** 文字显示（提词器）一屏的字数、行数（不管阅读是不是设成了图片）。 */
     fun textCols() = prefs.getInt("charsPerLine$layoutSuffix", if (displayPage == DisplayPage.NOTE) 16 else 27)
     fun textRows() = prefs.getInt("linesPerPage$layoutSuffix", if (displayPage == DisplayPage.NOTE) 3 else 5)
@@ -1841,9 +1871,10 @@ class ReaderService : Service(), NimoListener, AppHost {
         } else if (displayPage == DisplayPage.PROMPTER) {
             // 提词器有独立的顶部状态行，章节和进度放在那里，不占正文行数；跟读时显示听到的最后几个字
             val ch = currentChapterTitle()
-            val status = if (followOn) "跟读 · " + followHeard.takeLast(14).ifEmpty { "…" }
+            // 跟读时进度按念到的位置算（原来只显示听到的字，进度一直不动，2026-10-26）
+            val status = if (followOn) "跟读 " + "%.0f%%".format(progressPercent()) + " · " + followHeard.takeLast(12).ifEmpty { "…" }
                 else if (showProgress) listOf(ch, "%.1f%%".format(progressPercent())).filter { it.isNotEmpty() }.joinToString("  ") else ch
-            client.showText(glassesText(page.text), glassesText(status))
+            client.showText(glassesText(page.text), glassesText(status), prompterMeta(page.start))
         } else {
             val text = if (showProgress) page.text + "\n— %.1f%% —".format(progressPercent()) else page.text
             client.showText(glassesText(text))
@@ -1874,12 +1905,18 @@ class ReaderService : Service(), NimoListener, AppHost {
         get() = prefs.getBoolean("quietReading", true)
         set(v) { prefs.edit().putBoolean("quietReading", v).apply(); notifyUi() }
     private val readingOnGlasses get() = appMode == AppMode.READER && !glassesPaused && activeApp == null && linkState == LinkState.READY
+    /** 手机在演讲模式（黑屏）里：界面告诉服务。 */
+    var speechModeOn = false
+    /**
+     * 正在提词：眼镜上在显示阅读，而且开着演讲模式或语音跟读。只是在眼镜上看书时照常弹通知（2026-10-26：原来阅读开着就不弹）。
+     */
+    private val prompting get() = readingOnGlasses && (speechModeOn || followOn)
     /** 场景助手开着（和提词一样不打扰）。 */
     private val assistOnGlasses get() = activeApp === assist && !glassesPaused && linkState == LinkState.READY
 
     fun onPhoneNotification(app: String, title: String, text: String, litMs0: Long = -1, fit: Boolean = false, pkg: String? = null) {
         val litMs = if (litMs0 > 0) litMs0 else notifySeconds * 1000L
-        if (quietWhileReading && (readingOnGlasses || assistOnGlasses)) { log((if (readingOnGlasses) "提词中" else "场景助手开着") + "，不弹通知：$app" + if (title.isNotEmpty() && title != app) " · $title" else ""); return }
+        if (quietWhileReading && (prompting || assistOnGlasses)) { log((if (prompting) "提词中" else "场景助手开着") + "，不弹通知：$app" + if (title.isNotEmpty() && title != app) " · $title" else ""); return }
         if (linkState != LinkState.READY) {
             // 眼镜重连期间来的通知先存着，连上后再弹（只留最近 5 条、2 分钟内的）
             if (!fit) {

@@ -200,16 +200,18 @@ object NimoFrameCodec {
 
     /**
      * 提词器正文内容：13 字节头 + UTF-8 文本 + 结尾 0。
-     * 头部：u32 0, u16 文本字节数, u32 滚动相关参数(静态页填 0), u16 同上, u8 0。
+     * 头部：u32 a, u16 文本字节数, u32 b, u16 c, u8 0（都是小端）。
+     * a、b、c 原来都填 0（静态页）。眼镜左上角的进度百分比一直不动，猜是按这几个数算的，
+     * 「阅读显示 › 提词器进度（实验）」里可以试着填上位置（见 PrompterMeta，2026-10-26）。
      */
-    fun prompterTextContent(text: String): ByteArray {
+    fun prompterTextContent(text: String, a: Long = 0, b: Long = 0, c: Int = 0): ByteArray {
         val bytes = text.toByteArray(Charsets.UTF_8)
         val len = bytes.size
         val header = byteArrayOf(
-            0, 0, 0, 0,
+            (a and 0xFF).toByte(), ((a shr 8) and 0xFF).toByte(), ((a shr 16) and 0xFF).toByte(), ((a shr 24) and 0xFF).toByte(),
             (len and 0xFF).toByte(), ((len shr 8) and 0xFF).toByte(),
-            0, 0, 0, 0,
-            0, 0,
+            (b and 0xFF).toByte(), ((b shr 8) and 0xFF).toByte(), ((b shr 16) and 0xFF).toByte(), ((b shr 24) and 0xFF).toByte(),
+            (c and 0xFF).toByte(), ((c shr 8) and 0xFF).toByte(),
             0
         )
         return header + bytes + byteArrayOf(0)

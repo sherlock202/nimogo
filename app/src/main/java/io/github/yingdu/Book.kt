@@ -152,6 +152,8 @@ class Paginator(private val book: Book, charsPerLine: Int, linesPerPage: Int) {
     val pageCount: Int get() = (lineCount + rows - 1) / rows
 
     fun lineStartOf(line: Int): Int = lineStart[line.coerceIn(0, lineCount - 1)]
+    /** 这一行的结尾（不含换行符）。 */
+    fun lineEndOf(line: Int): Int = lineEnd[line.coerceIn(0, lineCount - 1)]
 
     /** 包含该字符偏移的那一行。 */
     fun lineIndexForOffset(offset: Int): Int {

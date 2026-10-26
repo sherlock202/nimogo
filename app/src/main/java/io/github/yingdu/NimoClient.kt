@@ -145,7 +145,7 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     /** 待发送的内容：一页文字（可带提词器状态行）或一张图片。只保留最新的一份。 */
     private sealed class Content {
-        class Text(val text: String, val status: String?) : Content()
+        class Text(val text: String, val status: String?, val meta: LongArray? = null) : Content()
         class Image(val packed2bpp: ByteArray, val width: Int, val height: Int) : Content()
     }
     private var pending: Content? = null
@@ -200,8 +200,9 @@ class NimoClient(private val context: Context, private val listener: NimoListene
     }
 
     /** 在眼镜上显示一整页文字（覆盖上一页）。未就绪时暂存，握手完成后自动发出。 */
-    fun showText(text: String, status: String? = null) {
-        pending = Content.Text(text.ifEmpty { " " }, status)
+    /** meta：提词器正文头里的 a、b、c（试眼镜左上角的进度用，见 PrompterMeta）；null = 都填 0。 */
+    fun showText(text: String, status: String? = null, meta: LongArray? = null) {
+        pending = Content.Text(text.ifEmpty { " " }, status, meta)
         if (state == LinkState.READY) flush()
     }
 
@@ -256,11 +257,26 @@ class NimoClient(private val context: Context, private val listener: NimoListene
     }
 
     /** 退出我们打开的眼镜页面，眼镜回到官方主界面（"收起显示"）。 */
-    fun quitCurrent() {
+    fun quitCurrent(flash: Boolean = false) {
         pending = null
         val app = enteredApp ?: return
         sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_CONTROL_INSTRUCTION, NimoProtocol.CTRL_QUIT_APP, byteArrayOf(app.toByte())))
         enteredApp = null
+        if (flash && !blanked && !darkHome) flashScreen()
+    }
+
+    /**
+     * 关屏再开屏一次：退出提词器、导航页后眼镜有时一直挂着「正在退出」，在手机上关一次屏再开就好了（2026-10-26），
+     * 所以退出时自动做一次。关屏 0.6 秒，开屏时如果已经又打开了别的页面、或者又被关了屏（看板收起等），就不动。
+     */
+    private fun flashScreen() {
+        if (state != LinkState.READY) return
+        log("退出后关一下屏再开（清掉眼镜上的「正在退出」）")
+        sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_SET_PARAMETER, NimoProtocol.SET_DISPLAY_OFF, byteArrayOf(1)))
+        main.postDelayed({
+            if (state != LinkState.READY || blanked || darkHome || enteringApp != null) return@postDelayed
+            sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_SET_PARAMETER, NimoProtocol.SET_DISPLAY_OFF, byteArrayOf(0)))
+        }, 600)
     }
 
     /**
@@ -708,7 +724,8 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         if (page == DisplayPage.PROMPTER) {
             NimoFrameCodec.updateContentFrames(
                 NimoProtocol.APP_ID_PROMPTER, 0, NimoProtocol.PROMPTER_RES_TEXT,
-                NimoProtocol.WIDGET_TEXT_PROMPTER, NimoFrameCodec.prompterTextContent(PROMPTER_TOP_PADDING + c.text)
+                NimoProtocol.WIDGET_TEXT_PROMPTER, c.meta?.let { m -> NimoFrameCodec.prompterTextContent(PROMPTER_TOP_PADDING + c.text, m[0], m[1], m[2].toInt()) }
+                    ?: NimoFrameCodec.prompterTextContent(PROMPTER_TOP_PADDING + c.text)
             ).forEach { sendFrame(it) }
             c.status?.let { st ->
                 NimoFrameCodec.updateContentFrames(

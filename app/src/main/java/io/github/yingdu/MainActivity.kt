@@ -362,6 +362,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         }
         (window.decorView as ViewGroup).addView(v, ViewGroup.LayoutParams(-1, -1))
         speech = v; speechLabel = label; speechHint = hint
+        s.speechModeOn = true
         window.attributes = window.attributes.apply { screenBrightness = 0.01f }
         @Suppress("DEPRECATION")
         run {
@@ -376,6 +377,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val v = speech ?: return
         (window.decorView as ViewGroup).removeView(v)
         speech = null; speechLabel = null; speechHint = null
+        service?.speechModeOn = false
         uiHandler.removeCallbacks(speechFade)
         window.attributes = window.attributes.apply { screenBrightness = android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE }
         @Suppress("DEPRECATION")
@@ -1974,6 +1976,11 @@ class MainActivity : Activity(), ReaderService.UiListener {
         })
         textPart.addView(t)
         textPart.addView(note("先测宽度、测行数，每行字数比实测少 1。"))
+        // 提词器左上角的进度一直不动：试着在正文头里填上位置（实验，2026-10-26）
+        textPart.addView(section("提词器左上角进度（实验）"))
+        val metaSeg = Seg(PrompterMeta.NAMES) { i -> service?.prompterMetaMode = i; refreshNow() }
+        textPart.addView(FrameLayout(this).apply { setPadding(dp(4), 0, dp(4), dp(6)); addView(metaSeg.root) }, lp(bottom = 4))
+        textPart.addView(note("眼镜左上角的百分比是眼镜自己算的。选一种，翻几页看左上角跟不跟着变；显示乱了就选回「关」。哪一种对了告诉作者。"))
         page.addView(textPart)
 
         loaders.add { reloadLayout() }
@@ -1981,6 +1988,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             seg.select(if (s.readerAsImage) 0 else 1)
             volSeg.select(s.volumeKeys)
             progToggle.set(s.showProgress); fbToggle.set(s.textFallback)
+            metaSeg.select(s.prompterMetaMode)
             textPart.visibility = if (s.readerAsImage) View.GONE else View.VISIBLE
             pageRow.value(if (s.displayPage == DisplayPage.PROMPTER) "提词器页" else "笔记页")
         }
@@ -3997,7 +4005,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val callToggle = Toggle { NotifyPrefs.setCallAlert(this, !NotifyPrefs.callAlert(this)); refreshNow() }
         top.addRow(Row("来电提醒", "电话、微信等来电时弹出来电人").apply { accessory(callToggle.root) }.root)
         val quietToggle = Toggle { service?.let { it.quietWhileReading = !it.quietWhileReading }; refreshNow() }
-        top.addRow(Row("提词时不打扰", "眼镜上在显示阅读（提词器）时，通知、来电、景点介绍都不弹").apply { accessory(quietToggle.root) }.root)
+        top.addRow(Row("提词时不打扰", "演讲模式、语音跟读、场景助手开着时，通知、来电、景点介绍都不弹（只看书时照常弹）").apply { accessory(quietToggle.root) }.root)
         val secChoices = listOf(5, 10, 20, 30)
         val notifySeg = Seg(secChoices.map { "$it 秒" }) { i -> service?.notifySeconds = secChoices[i]; refreshNow() }
         top.addRow(vbox().apply {
