@@ -226,6 +226,12 @@ object Manual {
                 "2. Settings › Developer settings › Personal access tokens › Fine-grained tokens 生成令牌：只选这一个仓库，" +
                 "权限只开 Issues：Read and write。令牌只填在 NimoGo 里，不要发给别人。\n" +
                 "3. 在「AI 代理」页点「复制给代理的说明」，发给你的代理（比如 Muse），让它按说明每隔几分钟检查一次。"),
+            ManualItem("代理改发手机通知（免审批）",
+                "有的代理（比如 Muse）每次写 GitHub 评论都要你在手机上审批。可以让它只读不写：结果改成发一条消息给你，开头写「NimoGo #4：」，" +
+                "手机收到通知后，NimoGo 替它把结果写成 #4 的评论（第一行 <!-- muse -->），不是「需要确认」的就关闭 Issue，再显示到眼镜上。" +
+                "你在眼镜上的回复除了写评论，也追加到 Issue 正文末尾，代理只读地列 Issue 就能看到。\n" +
+                "要给 NimoGo「通知使用权」。「AI 代理」页里打开「收代理的通知」、填代理 app 的包名（Muse from Meta 是 com.facebook.aura）；" +
+                "「最近收到的通知」里能看到代理的通知从哪个 app 来、正文有多长、有没有认出来。代理的 app 开在前台时可能不发通知。"),
             ManualItem("不打扰",
                 "提词（演讲模式、语音跟读）、场景助手开着时，长按左镜腿不会叫代理，代理的回复也先不弹，结束后再提醒。"),
             ManualItem("隐私",

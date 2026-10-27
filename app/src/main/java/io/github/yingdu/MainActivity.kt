@@ -2971,8 +2971,47 @@ class MainActivity : Activity(), ReaderService.UiListener {
         page.addView(note("每条命令是收件箱仓库里的一个 Issue，代理做完写评论、关闭 Issue。有命令在处理时每分钟查一次回复，" +
             "提词、场景助手开着时先不提醒。仓库名和令牌只存在这台手机上。"))
 
+        // 代理不写 GitHub、改发手机通知（「NimoGo #4：……」）：NimoGo 替它写回去
+        page.addView(section("代理的手机通知"))
+        val relayBox = listBox()
+        val relayToggle = Toggle { service?.let { it.agentRelayOn = !it.agentRelayOn }; refreshNow() }
+        val relayRow = Row("收代理的通知", "「NimoGo #编号：」开头的消息，替它写回 GitHub").apply { accessory(relayToggle.root) }
+        val pkgRow = Row("代理 app 的包名", chevron = true) { edit("代理 app 的包名（Muse from Meta：com.facebook.aura）", "relayPkg", false, "com.facebook.aura") }
+        relayBox.addRow(relayRow.root); relayBox.addRow(pkgRow.root)
+        page.addView(relayBox)
+        val relayNote = note("")
+        page.addView(relayNote)
+
+        page.addView(section("最近收到的通知（排查用）"))
+        val seenList = listBox()
+        page.addView(seenList)
+        page.addView(note("只记在内存里，最近 20 条：哪个 app、包名、正文多长、有没有认成代理的结果。代理发测试消息后，在这里看它从哪个 app 来、正文有没有被截断。"))
+
         var sig = ""
+        var seenSig = ""
         onUpdate(Sub.AGENT) { s ->
+            relayToggle.set(s.agentRelayOn)
+            pkgRow.value(s.agentRelayPkg)
+            relayNote.text = (if (!PhoneNotificationService.isEnabled(this)) "要先在系统里给 NimoGo「通知使用权」（「通知」页里有入口），才收得到代理的通知。\n" else "") +
+                "代理写评论每次都要你审批时用：让它把结果发成消息（开头写「NimoGo #4：」），手机收到后 NimoGo 替它写成 #4 的评论" +
+                "（不是「需要确认」的就关闭 Issue），再显示到眼镜上。你的回复也会追加到 Issue 正文，代理只读地列 Issue 就能看到。"
+            val seen = s.notifySeen.toList()
+            val ss = seen.joinToString { "${it.at}${it.verdict}" }
+            if (ss != seenSig) {
+                seenSig = ss
+                seenList.removeAllViews()
+                if (seen.isEmpty()) seenList.addRow(Row("还没收到", if (PhoneNotificationService.isEnabled(this)) "收到通知后显示在这里" else "没有通知使用权").root)
+                val hms = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                seen.forEach { x ->
+                    seenList.addRow(vbox().apply {
+                        setPadding(dp(14), dp(9), dp(14), dp(9))
+                        addView(text(hms.format(java.util.Date(x.at)) + " · " + x.label + " · " + x.len + " 字", 11f, if (x.pkg == s.agentRelayPkg) TAN else SUB))
+                        addView(text(x.pkg, 11f, SUB).apply { setTextIsSelectable(true) }, lp(top = 2))
+                        addView(text((if (x.title.isNotEmpty()) x.title + "：" else "") + x.preview, 13f, INK), lp(top = 2))
+                        if (x.verdict.isNotEmpty()) addView(text(x.verdict, 11.5f, TAN), lp(top = 2))
+                    })
+                }
+            }
             onToggle.set(s.agentEnabled)
             nameRow.value(s.agentName)
             repoRow.value(s.agentGet("repo").ifEmpty { "未填" })

@@ -284,7 +284,13 @@ class ReaderService : Service(), NimoListener, AppHost {
         val at = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US).format(java.util.Date(now))
         io.execute {
             val r = runCatching {
-                if (replyTo != null) { AgentInbox.comment(repo, token, replyTo, AgentInbox.replyBody(text)); replyTo }
+                if (replyTo != null) {
+                    AgentInbox.comment(repo, token, replyTo, AgentInbox.replyBody(text))
+                    // 回复也追加到 Issue 正文：代理只读地列 Issue 就能看到（Muse 读评论每次都要审批）
+                    runCatching { AgentInbox.appendReply(repo, token, replyTo, at, text) }
+                        .onFailure { e -> main.post { log("$agentName：回复追加到 #$replyTo 正文失败：${e.message}") } }
+                    replyTo
+                }
                 else AgentInbox.create(repo, token, label, AgentInbox.title(text), AgentInbox.issueBody("c$now", at, text))
             }
             main.post {
@@ -302,6 +308,63 @@ class ReaderService : Service(), NimoListener, AppHost {
                 notifyUi()
             }
         }
+    }
+
+    // ---- 代理改发手机通知（「NimoGo #4：……」）：NimoGo 替它写回 GitHub，代理就只读不写、不用每次审批 ----
+
+    /** 收代理的手机通知（默认开）。 */
+    var agentRelayOn: Boolean
+        get() = agentPrefs.getBoolean("relay", true)
+        set(v) { agentPrefs.edit().putBoolean("relay", v).apply(); notifyUi() }
+    /** 代理 app 的包名（Muse from Meta：com.facebook.aura）。 */
+    val agentRelayPkg: String get() = agentGet("relayPkg", "com.facebook.aura").ifEmpty { "com.facebook.aura" }
+
+    /**
+     * 一条手机通知：是代理发来的「NimoGo #编号：……」就替它写成那条命令的评论（不是「需要确认」的顺便关掉 Issue），
+     * 再马上查一次评论，照常显示到眼镜上（提词、场景助手开着时照样先不打扰）。
+     * 返回 (这条通知不用再按普通通知转发, 给「最近收到的通知」看的说明)。
+     */
+    fun agentRelay(pkg: String, texts: List<String?>): Pair<Boolean, String> {
+        if (pkg != agentRelayPkg.trim()) return false to ""
+        if (!agentEnabled || !agentRelayOn) return false to "是$agentName，但没开「收$agentName 的通知」"
+        val (n, body) = AgentInbox.parseRelay(*texts.toTypedArray()) ?: return false to "是$agentName，不是「NimoGo #编号：」开头，按普通通知处理"
+        val c = agentCommands.firstOrNull { it.number == n } ?: return false to "#$n 不是这台手机发的命令，按普通通知处理"
+        if (!agentReady) return false to "#$n：还没填仓库和令牌，写不回去"
+        val key = AgentInbox.relayKey(n, body)
+        if (key in c.museKeys) return true to "#$n 已经写回过（通知刷新或重发），跳过"
+        c.museKeys.add(key); while (c.museKeys.size > 10) c.museKeys.removeAt(0)
+        c.open = true
+        agentSave()
+        val confirm = AgentInbox.needsConfirm(body)
+        val repo = agentGet("repo"); val token = agentGet("token")
+        log("$agentName：收到 #$n 的消息（${body.length} 字），写回 GitHub" + if (confirm) "（等你确认）" else "并关闭")
+        io.execute {
+            val r = runCatching {
+                AgentInbox.comment(repo, token, n, AgentInbox.relayBody(body))
+                if (!confirm) AgentInbox.close(repo, token, n)
+            }
+            main.post {
+                r.onSuccess { agentPollSoon(500) }
+                    .onFailure { e ->
+                        // 写不回去（没网之类）：先直接显示；去掉记录，代理重发时再写
+                        c.museKeys.remove(key); agentSave()
+                        agentError = "替$agentName 写回 #$n 失败：${e.message}"
+                        log("$agentName：$agentError")
+                        onPhoneNotification("$agentName #$n", if (confirm) "等你确认" else "", AgentInbox.summary(body))
+                    }
+                notifyUi()
+            }
+        }
+        return true to "#$n：替$agentName 写回 GitHub" + if (confirm) "（等你确认）" else "并关闭"
+    }
+
+    /** 最近收到的手机通知（只在内存里，排查用：看代理的通知从哪个 app 来、正文有多长、认没认出来）。 */
+    class SeenNotice(val at: Long, val pkg: String, val label: String, val title: String, val len: Int, val preview: String, val verdict: String)
+    val notifySeen = ArrayDeque<SeenNotice>()
+    fun noteSeen(pkg: String, label: String, title: String, text: String, verdict: String) {
+        notifySeen.addFirst(SeenNotice(System.currentTimeMillis(), pkg, label, title.take(30), text.length, text.take(40), verdict))
+        while (notifySeen.size > 20) notifySeen.removeLast()
+        if (pkg == agentRelayPkg.trim()) { log("通知：$label（$pkg）${text.length} 字" + if (verdict.isNotEmpty()) " · $verdict" else ""); notifyUi() }
     }
 
     /** 提词（演讲模式、语音跟读）、场景助手开着时不打扰：代理的回复先不显示、也不算看过，结束后再提醒。 */

@@ -85,13 +85,18 @@ class PhoneNotificationService : NotificationListenerService() {
             m.getCharSequence("sender")?.toString()
                 ?: if (android.os.Build.VERSION.SDK_INT >= 28) runCatching { m.getParcelable<android.app.Person>("sender_person")?.name?.toString() }.getOrNull() else null
         }?.trim()
-        val text = NotifyText.pick(
-            ex.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim() ?: "",
-            ex.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim() ?: "",
-            lastText, lastSender, NotifyText.cleanTitle(title))
+        val rawText = ex.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim() ?: ""
+        val bigText = ex.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim() ?: ""
+        val text = NotifyText.pick(rawText, bigText, lastText, lastSender, NotifyText.cleanTitle(title))
         val msgTime = lastMsg?.getLong("time") ?: 0L
         val svc = ReaderService.instance ?: return
         NotifyPrefs.rememberApp(this, pkg)
+
+        // AI 代理（Muse）发来的「NimoGo #4：……」：交给 AI 代理处理（替它写回 GitHub、显示到眼镜），不再当普通通知转发
+        val appLabel = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
+        val (relayed, verdict) = runCatching { svc.agentRelay(pkg, listOf(bigText, lastText, rawText, title)) }.getOrDefault(false to "")
+        svc.noteSeen(pkg, appLabel, title, listOf(bigText, lastText ?: "", rawText).maxByOrNull { it.length } ?: "", verdict)
+        if (relayed) return
 
         // 来电（电话、微信语音/视频）：通话通知是"进行中"的，下面会被当成音乐之类跳过，这里单独处理
         if (n.category == Notification.CATEGORY_CALL) {
