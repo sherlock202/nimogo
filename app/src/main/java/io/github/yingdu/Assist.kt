@@ -187,8 +187,10 @@ object AssistAi {
     /** 在线转文字（Whisper）的提示词：放专业名词，转出来就是正确的写法。 */
     fun asrPrompt(scene: AssistScene): String? {
         val t = scene.termList
-        if (t.isEmpty()) return null
         val words = t.joinToString(", ").take(160)
+        // 语言选「自动」时也要给提示词：不给的话，Whisper 不指定语言时会套上默认的中文提示词，日语常被直接写成中文
+        if (scene.lang == "auto") return "会話（日本語 / English / 中文）。" + if (t.isEmpty()) "" else "Terms: $words."
+        if (t.isEmpty()) return null
         return when (scene.lang) {
             "ja" -> "日本語の会話です。専門用語：$words。"
             "en" -> "Conversation with technical terms: $words."
@@ -309,6 +311,23 @@ object AssistAi {
                 .put(JSONObject().put("role", "user").put("content", user)))
             .apply { if (model.contains("gpt-oss")) put("reasoning_effort", "low") }   // Groq 上的 gpt-oss：少想一点，出字快
 
+    /** 即时翻译用大模型时的提示词：只要译文。 */
+    fun trSystem(fromName: String, toName: String, terms: List<String>) =
+        "你是同声传译。用户发来的是一句${fromName}口语（语音识别的结果，可能有错字或同音字，请按意思理解），把它翻成自然、简洁的${toName}。" +
+        "只输出译文本身，不要解释，不要加引号、前缀或注音。英文的专业名词、缩写、产品名保留原文。" +
+        (if (terms.isNotEmpty()) "对话里会说到的专业名词：" + terms.joinToString("、") + "。" else "")
+
+    /** 大模型输出的译文：去掉偶尔加上的引号、「译文：」之类的前缀。 */
+    fun cleanTr(s: String): String {
+        var t = plain(s).trim()
+        t = t.replace(Regex("""^(译文|翻译|中文|日本語訳|Translation)\s*[：:]\s*""", RegexOption.IGNORE_CASE), "")
+        for ((a, b) in listOf("「" to "」", "“" to "”", "\"" to "\"", "『" to "』")) if (t.length > 2 && t.startsWith(a) && t.endsWith(b)) {
+            val inner = t.substring(1, t.length - 1)
+            if (!inner.contains(a) && !inner.contains(b)) t = inner     // 「A」和「B」这种中间还有引号的不去
+        }
+        return t.trim()
+    }
+
     /** 去掉模型偶尔还是会加的 Markdown 记号。 */
     fun plain(s: String): String = s.lines().joinToString("\n") { l ->
         l.replace(Regex("""^\s*#{1,6}\s*"""), "").replace("**", "").replace("__", "")
@@ -363,8 +382,8 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         fun save(s: AssistSession)
         /** 转文字能用了（离线模型下好了，或者设了在线服务）。 */
         fun asrReady(): Boolean
-        /** 在线转文字：(接口地址, Key, 模型)；null = 手机离线。 */
-        fun onlineAsr(): Triple<String, String, String>? = null
+        /** 这个场景用在线转文字：(接口地址, Key, 模型)；null = 手机离线（设置里可以选「外语用在线」：日语、英语场景走在线）。 */
+        fun onlineAsr(scene: AssistScene): Triple<String, String, String>? = null
         /** 离线转文字不指定语言、自动识别（中英混说时试试）。 */
         fun asrAutoLang(): Boolean = false
         /** 接管 / 放开音量键和耳机键（手机息屏也能翻页）。 */
@@ -483,7 +502,7 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         busy = true
         val target = session ?: ending
         val lang = target?.scene?.lang ?: "auto"
-        val online = env.onlineAsr()
+        val online = target?.scene?.let { env.onlineAsr(it) }
         val prompt = target?.scene?.let { AssistAi.asrPrompt(it) }
         val localLang = if (lang == "auto" || env.asrAutoLang()) "" else lang
         asrExec.execute {
@@ -491,11 +510,18 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
                 // 分人用原始音量（我近、对方远）；转文字前把音量拉齐，轻声的句子也认得出
                 val voice = Speakers.voiceOf(Speakers.frames(p), 0, p.size / 160)
                 val loud = AudioClean.process(p, AudioClean.Mode.NONE, floor = 0.2f, boost = true)
-                val text = if (online != null)
-                    // 在线（比如 Groq 的 Whisper）：中英混说更准，场景里的专业名词放进提示词
-                    SpeechToText.transcribe(online.first, online.second, online.third, if (lang == "auto") "" else lang,
-                        "assist.wav", "audio/wav", OggOpus.wav(loud), prompt)
-                else LocalAsr.transcribe(loud, localLang)
+                val text = if (online != null) {
+                    // 在线（比如 Groq 的 Whisper）：日语、远处的说话、中英混说都准得多，场景里的专业名词放进提示词
+                    try {
+                        SpeechToText.transcribe(online.first, online.second, online.third, if (lang == "auto") "" else lang,
+                            "assist.wav", "audio/wav", OggOpus.wav(loud), prompt)
+                    } catch (e: Exception) {
+                        // 没网、额度用完之类：这句改用手机离线，不让对话断掉
+                        if (!LocalAsr.ready()) throw e
+                        host.main.post { host.log("场景助手：在线转文字失败（${e.message?.take(80)}），这句改用离线") }
+                        LocalAsr.transcribe(loud, localLang)
+                    }
+                } else LocalAsr.transcribe(loud, localLang)
                 text.trim() to voice
             }
             host.main.post {

@@ -3,6 +3,7 @@ package io.github.yingdu
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -62,6 +63,25 @@ class TranslateTest {
         // 老数据没有这个字段：默认不翻
         val old = sc.toJson().apply { remove("translate") }
         assertFalse(AssistScene.fromJson(old).translate)
+    }
+
+    @Test fun cleansLlmTranslation() {
+        assertEquals("有经验吗？", AssistAi.cleanTr("「有经验吗？」"))
+        assertEquals("有经验吗？", AssistAi.cleanTr("译文：有经验吗？\n"))
+        assertEquals("用 Kubernetes 做过 PoC 吗", AssistAi.cleanTr("**用 Kubernetes 做过 PoC 吗**"))
+        assertEquals("「A」和「B」", AssistAi.cleanTr("「A」和「B」"))   // 中间还有引号：不是整句加的，不去
+    }
+
+    @Test fun autoLanguageAsrPrompt() {
+        // 自动语言：要有提示词（不然 Whisper 会套上默认的中文提示词，把日语写成中文）
+        assertTrue(AssistAi.asrPrompt(AssistScene.DEFAULTS[1].copy(lang = "auto"))!!.contains("日本語"))
+        assertNull(AssistAi.asrPrompt(AssistScene.DEFAULTS[1].copy(lang = "ja", terms = "")))
+    }
+
+    @Test fun llmTranslationPrompt() {
+        val p = AssistAi.trSystem("日语", "中文", listOf("PoC", "UAT"))
+        assertTrue(p.contains("日语") && p.contains("中文") && p.contains("PoC、UAT"))
+        assertFalse(AssistAi.trSystem("英语", "中文", emptyList()).contains("专业名词："))
     }
 
     @Test fun transcriptWithTranslation() {

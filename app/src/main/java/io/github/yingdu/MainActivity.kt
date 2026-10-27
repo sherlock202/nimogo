@@ -2474,7 +2474,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         if (s.linkState != LinkState.READY) { toast("先连上眼镜"); return }
         if (!s.assistAsrReady()) {
             AlertDialog.Builder(this).setTitle("先下载离线转文字模型")
-                .setMessage("场景助手在手机上离线转文字（SenseVoice，中、日、英、韩、粤语），压缩包约 166 MB，建议连 Wi-Fi 下载。下载好后再点「开始」。")
+                .setMessage("场景助手在手机上离线转文字（SenseVoice，中、日、英、韩、粤语），压缩包约 166 MB，建议连 Wi-Fi 下载。下载好后再点「开始」。" +
+                    "\n日语、英语场景也可以只用在线转文字：在「场景助手 › 设置 › 转文字」里填在线服务的 Key（大模型用 Groq 时会自动用同一个 Key）。")
                 .setPositiveButton("下载") { _, _ -> LocalAsr.startDownload(); refreshNow() }
                 .setNegativeButton("取消", null).show()
             return
@@ -2539,7 +2540,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val on = a.running
             val scene = a.session?.scene ?: s.assistScene
             state.text = when {
-                !on -> if (!LocalAsr.ready()) "离线转文字模型还没下载（点「开始」会提示下载）" else "没开。选好场景，点下面的「开始」"
+                !on -> if (!s.assistAsrReady()) "离线转文字模型还没下载、也没设在线转文字（点「开始」会提示）" else "没开。选好场景，点下面的「开始」"
                 a.error.isNotEmpty() -> a.error
                 a.view == AssistApp.View.THINKING -> "正在想${if (a.showKind == "question") "提问建议" else "参考回答"}…"
                 a.hearing -> "● 有人在说话"
@@ -2741,13 +2742,19 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
         page.addView(section("转文字"))
         val asrBox = listBox()
-        val asrSeg = Seg(listOf("手机离线", "在线（中英混说更准）")) { i -> service?.assistSet("asr", if (i == 1) "online" else "local"); refreshNow() }
+        val asrModes = listOf("local", "foreign", "online")
+        val asrSeg = Seg(listOf("手机离线", "外语用在线", "全部在线")) { i -> service?.assistSet("asr", asrModes[i]); refreshNow() }
         asrBox.addRow(FrameLayout(this).apply { setPadding(dp(14), dp(10), dp(14), dp(10)); addView(asrSeg.root) })
         val autoToggle = Toggle { service?.let { it.assistSet("asrAuto", if (it.assistGet("asrAuto") == "1") "" else "1") }; refreshNow() }
         val autoRow = Row("离线时自动识别语言", "中文里夹英文名词时试试：不限定成中文").apply { accessory(autoToggle.root) }
         asrBox.addRow(autoRow.root)
-        val onlineRow = Row("在线服务", chevron = true) { openSub(Sub.MEMORY_API) }
-        asrBox.addRow(onlineRow.root)
+        val onlineRow = Row("在线服务", chevron = true) {
+            val s = service ?: return@Row
+            val ps = s.assistAsrPresets
+            choose("在线转文字服务", ps.map { it.name + " · " + it.model }) { i -> s.assistSet("asrPreset", ps[i].id); refreshNow() }
+        }
+        val asrKeyRow = Row("在线转文字的 Key", chevron = true) { edit("在线转文字的 Key（不填时：大模型也用 Groq 就用同一个 Key）", "asrKey", true, "Key") }
+        asrBox.addRow(onlineRow.root); asrBox.addRow(asrKeyRow.root)
         page.addView(asrBox)
         val asrNote = note("")
         page.addView(asrNote)
@@ -2769,10 +2776,17 @@ class MainActivity : Activity(), ReaderService.UiListener {
             d.setNegativeButton("取消", null).show()
             s.log("离线翻译：语言包 " + OfflineTranslate.downloaded.joinToString())
         }
-        trBox.addRow(trToRow.root); trBox.addRow(trPackRow.root)
+        val trEngineRow = Row("用什么翻", chevron = true) {
+            choose("即时翻译用什么翻", listOf("手机离线（Google ML Kit，快、不联网）", "大模型（更准，要联网，用下面「大模型」里的服务和 Key）")) { i ->
+                service?.assistSet("trEngine", if (i == 1) "llm" else "mlkit"); refreshNow()
+            }
+        }
+        val trModelRow = Row("翻译用的型号", "不填就用「现场用的型号」", chevron = true) { edit("翻译用的型号", "trModel", false, service?.assistLiveModel() ?: "") }
+        trBox.addRow(trToRow.root); trBox.addRow(trEngineRow.root); trBox.addRow(trModelRow.root); trBox.addRow(trPackRow.root)
         page.addView(trBox)
         page.addView(note("每个场景单独开关（场景助手页上的「即时翻译」，或编辑场景）。只翻对方的话：对方说的不是上面选的语言（比如日语、英语），" +
-            "眼镜上原文下面一行「→ 译文」，手机上的记录里也有。翻译在手机上离线做，对话不发出去；能懂大意，专业名词可能翻得不准。" +
+            "眼镜上原文下面一行「→ 译文」，手机上的记录里也有。手机离线翻译不联网、对话不发出去，能懂大意；用大模型翻更通顺、专业名词更准，" +
+            "每句对方的话会发给大模型（约 1 秒），没网或出错时这句自动改用离线。" +
             "对方可能说英语也可能说日语时，场景的语言选「自动」，转文字更准。"))
 
         page.addView(section("大模型"))
@@ -2794,8 +2808,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         page.addView(scenes)
         page.addView(note("每个场景写清楚「场景说明和目的」「关于我」（经历、期望、在意的事），参考回答和复盘才会贴合你；" +
             "面试时「关于我」写上应聘的职位、你的经历和期望的条件，复盘才能判断这个职位适不适合你。"))
-        page.addView(note("转文字用手机离线的 SenseVoice（和「全天记忆」的「手机离线」共用一个模型），录音不离开手机。" +
-            "只有按键要建议、或者复盘时，才把对话的文字发给上面选的大模型。"))
+        page.addView(note("手机离线转文字用 SenseVoice（和「全天记忆」的「手机离线」共用一个模型）；选了在线时，录音发给上面「转文字」里的在线服务。" +
+            "按键要建议、复盘时（以及即时翻译选了大模型时）把对话的文字发给上面选的大模型。"))
         var sig = ""
         onUpdate(Sub.ASSIST_SET) { s ->
             val p = s.assistPreset
@@ -2803,15 +2817,28 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val k = s.assistGet("key"); key.value(if (k.isEmpty()) "未填" else "••••" + k.takeLast(4))
             live.value(s.assistLiveModel()); rev.value(s.assistReviewModel())
             base.value(if (s.assistGet("base").isEmpty()) "默认" else s.assistBase())
-            val online = s.assistAsrOnline
-            asrSeg.select(if (online) 1 else 0)
+            val mode = s.assistAsrMode
+            asrSeg.select(asrModes.indexOf(mode).coerceAtLeast(0))
             autoToggle.set(s.assistGet("asrAuto") == "1")
-            autoRow.root.visibility = if (online) View.GONE else View.VISIBLE
-            onlineRow.root.visibility = if (online) View.VISIBLE else View.GONE
-            onlineRow.value(if (s.asrLocal) "还没设（现在是手机离线）" else if (s.memGet("asrKey").isEmpty()) "${s.asrPreset.name} · 没填 Key" else "${s.asrPreset.name} · ${s.asrModel()}")
-            asrNote.text = if (online) "用「全天记忆 › 设置 › 转文字」里的在线服务（推荐 Groq 的 whisper-large-v3，有免费额度、海外快）。" +
-                "录音会发给这个服务；场景里写的专业名词会作为提示词一起发过去，转出来就是正确的写法。没设好时自动改用手机离线。"
-                else "手机离线（SenseVoice）不联网、录音不离开手机；中文里夹的英文专业名词常被认成同音的中文，可以打开「自动识别语言」试试，或改用在线。"
+            autoRow.root.visibility = if (mode == "online") View.GONE else View.VISIBLE
+            onlineRow.root.visibility = if (mode == "local") View.GONE else View.VISIBLE
+            asrKeyRow.root.visibility = onlineRow.root.visibility
+            onlineRow.value(s.assistAsrPreset.name.substringBefore("（") + " · " + s.assistAsrPreset.model)
+            val ak = s.assistAsrKey()
+            asrKeyRow.value(when {
+                s.assistGet("asrKey").isNotEmpty() -> "••••" + ak.takeLast(4)
+                ak.isNotEmpty() -> "用大模型 / 全天记忆的同一个 Key"
+                else -> "未填（现在只能离线）"
+            })
+            asrNote.text = when (mode) {
+                "local" -> "全部用手机离线（SenseVoice）：不联网、录音不离开手机；但离得远的对方说日语、英语时认得很差。"
+                "foreign" -> "推荐。场景语言是日语、英语、自动时，用在线服务转文字（Groq 的 whisper-large-v3 有免费额度、海外快，日语和远处的说话都准得多）；" +
+                    "中文场景照样手机离线。录音会发给在线服务；没网、额度用完时这句自动改用离线。"
+                else -> "全部用在线服务转文字：中英混说也准。录音会发给在线服务；没网、额度用完时这句自动改用离线。"
+            } + "场景里写的专业名词会作为提示词一起发过去。"
+            trEngineRow.value(if (s.assistTrEngine == "llm") "大模型" else "手机离线")
+            trModelRow.root.visibility = if (s.assistTrEngine == "llm") View.VISIBLE else View.GONE
+            trModelRow.value(s.assistTrModel())
             trToRow.value(OfflineTranslate.name(s.assistTrTo))
             trPackRow.value(when {
                 OfflineTranslate.downloading.isNotEmpty() -> "下载${OfflineTranslate.name(OfflineTranslate.downloading)}中…"

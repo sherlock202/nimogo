@@ -51,6 +51,9 @@ class ReaderService : Service(), NimoListener, AppHost {
         const val HIDE_HOME = 2
         /** 萤读自己退回主界面后，这么久内眼镜报的「主界面被点亮」不算用户点亮。 */
         /** AI 代理：有命令在处理时多久查一次回复；命令最多跟多久。 */
+        /** 即时翻译用大模型：一句的上限（gpt-oss 这类会先想一下，留够余量）和超时。 */
+        const val TR_MAX_TOKENS = 1000
+        const val TR_TIMEOUT_MS = 10_000
         const val AGENT_POLL_MS = 60_000L
         const val AGENT_KEEP_MS = 3 * 24 * 3600_000L
         const val QUIT_HOME_IGNORE_MS = 3_000L
@@ -493,11 +496,11 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun isMe(v: Speakers.Voice?): Boolean? { v?.let { speakerModel.observe(it) }; return speakerModel.isMe(v) }
         override fun save(s: AssistSession) { val id = s.id; val j = s.toJson().toString(); io.execute { assistStore.write(id, j) } }
         override fun asrReady() = assistAsrReady()
-        override fun onlineAsr() = assistOnlineAsr()
+        override fun onlineAsr(scene: AssistScene) = assistOnlineAsr(scene)
         override fun asrAutoLang() = assistGet("asrAuto") == "1"
         override fun takeKeys(on: Boolean) { if (on) assistMediaOn() else assistMediaOff() }
         override fun translateTo(): String? = if (assistTranslateOn(assist.session?.scene?.id ?: assistSceneId)) assistTrTo else null
-        override fun translate(text: String, from: String, to: String, done: (Result<String>) -> Unit) = OfflineTranslate.translate(text, from, to, done)
+        override fun translate(text: String, from: String, to: String, done: (Result<String>) -> Unit) = assistTranslate(text, from, to, done)
     }) }
 
     // ---- 即时翻译（场景助手的加强功能；每个场景单独开关，翻成什么语言是共用的设置） ----
@@ -539,7 +542,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         fun step(i: Int) {
             if (i >= todo.size) { log("场景助手：补翻了 ${todo.size} 句"); finish(); return }
             val (l, from) = todo[i]
-            OfflineTranslate.translate(l.text, from, to) { r ->
+            assistTranslate(l.text, from, to) { r ->
                 r.onSuccess { t -> l.tr = t.trim(); l.trFrom = from; notifyUi(); step(i + 1) }
                     .onFailure { assistTrError = it.message ?: it.javaClass.simpleName; log("场景助手：补翻出错：$assistTrError"); finish() }
             }
@@ -548,11 +551,60 @@ class ReaderService : Service(), NimoListener, AppHost {
         step(0)
     }
 
-    /** 转文字用在线服务（全天记忆里设置的那个，比如 Groq 的 Whisper）：中英混说更准，要联网、要 Key。 */
-    val assistAsrOnline get() = assistGet("asr") == "online"
-    fun assistOnlineAsr(): Triple<String, String, String>? =
-        if (assistAsrOnline && !asrLocal && memGet("asrKey").isNotEmpty()) Triple(asrBase(), memGet("asrKey"), asrModel()) else null
-    fun assistAsrReady() = assistOnlineAsr() != null || LocalAsr.ready()
+    /**
+     * 转文字：local 全部手机离线；foreign 外语用在线（场景语言是日语、英语、自动时走在线，中文走离线）；online 全部在线。
+     * 默认 foreign（2026-10-27：离线的 SenseVoice 认远处对方说的日语很差，日常会话都用不上）。在线失败时这句自动改用离线。
+     */
+    val assistAsrMode: String get() = assistGet("asr").ifEmpty { "foreign" }
+    /** 场景助手能选的在线转文字服务（不含手机离线和自定义）。 */
+    val assistAsrPresets get() = SpeechToText.PRESETS.filter { it.id != "local" && it.id != "custom" }
+    /** 在线转文字服务：默认 Groq whisper-large-v3（以前用全天记忆里设的在线服务的，接着用那一家）。 */
+    val assistAsrPreset: SpeechToText.Preset get() {
+        val id = assistGet("asrPreset").ifEmpty { if (!asrLocal && memGet("asrKey").isNotEmpty()) asrPreset.id else "groq" }
+        return assistAsrPresets.firstOrNull { it.id == id } ?: assistAsrPresets.first { it.id == "groq" }
+    }
+    /** 在线转文字的 Key：自己填的；没填时，大模型也用 Groq 就用同一个 Key；全天记忆用的是同一家就用那边的 Key。 */
+    fun assistAsrKey(): String = assistGet("asrKey").ifEmpty {
+        val p = assistAsrPreset.id
+        when {
+            p.startsWith("groq") && assistPreset.id == "groq" && assistGet("key").isNotEmpty() -> assistGet("key")
+            !asrLocal && (asrPreset.id == p || (p.startsWith("groq") && asrPreset.id.startsWith("groq"))) -> memGet("asrKey")
+            else -> ""
+        }
+    }
+    /** 这个场景走在线转文字时：(接口地址, Key, 模型)；走离线（或没有 Key）返回 null。 */
+    fun assistOnlineAsr(scene: AssistScene?): Triple<String, String, String>? {
+        val want = when (assistAsrMode) { "online" -> true; "foreign" -> (scene?.lang ?: "zh") != "zh"; else -> false }
+        if (!want) return null
+        val key = assistAsrKey().ifEmpty { return null }
+        val p = assistAsrPreset
+        return Triple(p.base, key, p.model)
+    }
+    fun assistAsrReady() = LocalAsr.ready() || assistOnlineAsr(assist.session?.scene ?: assistScene) != null
+
+    /** 即时翻译用什么翻：mlkit 手机离线；llm 用场景助手的大模型（更准，要联网，失败时这句改用离线）。 */
+    val assistTrEngine: String get() = assistGet("trEngine").ifEmpty { "mlkit" }
+    fun assistTrModel() = assistGet("trModel").ifEmpty { assistLiveModel() }
+    private val trExec = Executors.newSingleThreadExecutor()
+
+    fun assistTranslate(text: String, from: String, to: String, done: (Result<String>) -> Unit) {
+        val key = assistGet("key")
+        if (assistTrEngine != "llm" || key.isEmpty()) { OfflineTranslate.translate(text, from, to, done); return }
+        val provider = assistPreset.id; val base = assistBase(); val model = assistTrModel()
+        val terms = (assist.session?.scene ?: assistScene).termList
+        val system = AssistAi.trSystem(OfflineTranslate.name(from), OfflineTranslate.name(to), terms)
+        trExec.execute {
+            val r = runCatching { AssistAi.cleanTr(AssistAi.chat(provider, base, key, model, system, text, TR_MAX_TOKENS, TR_TIMEOUT_MS)) }
+            main.post {
+                val t = r.getOrNull()
+                if (!t.isNullOrBlank()) done(Result.success(t))
+                else {
+                    log("场景助手：大模型翻译失败（${r.exceptionOrNull()?.message?.take(80) ?: "空的"}），这句改用离线翻译")
+                    OfflineTranslate.translate(text, from, to, done)
+                }
+            }
+        }
+    }
 
     /** 遥控（戒指、耳机、音量键、手机上的按钮）；场景助手没开着时返回 false。 */
     fun assistRemote(action: String): Boolean {
