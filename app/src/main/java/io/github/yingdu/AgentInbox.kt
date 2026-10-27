@@ -113,6 +113,11 @@ object AgentInbox {
         .firstOrNull { it.isNotEmpty() && !it.startsWith("<!--") }
         ?.replace(Regex("""^#{1,6}\s*"""), "")?.replace("**", "")?.replace("`", "")?.trim() ?: ""
 
+    /** 眼镜上显示的全文：去掉 <!-- --> 标记行和 Markdown 记号、空行。 */
+    fun display(body: String): String = body.lines().map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("<!--") }
+        .joinToString("\n") { it.replace(Regex("""^#{1,6}\s*"""), "").replace("**", "").replace("`", "") }
+
     fun needsConfirm(body: String) = summary(body).let { it.startsWith("需要确认") || it.startsWith("要确认") }
 
     private fun call(method: String, url: String, token: String, body: JSONObject? = null): String {
@@ -384,5 +389,93 @@ class AgentApp(private val host: AppHost, private val env: Env) : GlassesApp {
             }
             return out
         }
+    }
+}
+
+/**
+ * 代理的消息（2026-10-27）：眼镜上一直显示，不自动消失；右单击关掉（还有下一条就显示下一条），
+ * 等你确认的消息左单击直接回复（叫出「对 AI 代理说话」），其他消息左单击往前翻；双击翻页。
+ */
+class AgentMessageApp(private val host: AppHost, private val env: Env) : GlassesApp {
+    interface Env {
+        fun name(): String
+        /** 左单击回复那条等确认的命令。 */
+        fun reply(number: Int)
+    }
+
+    class Msg(val number: Int, val text: String, val confirm: Boolean)
+
+    override val title = "代理的消息"
+    val queue = ArrayList<Msg>()
+    var page = 0; private set
+    /** 服务给的「关掉自己」（回到原来的画面）。 */
+    var closeSelf: (() -> Unit)? = null
+    private var cols = 27
+    private var rows = 5
+
+    val pending get() = queue.isNotEmpty()
+
+    /** 来了一条（同一条重复来不重复排队）。 */
+    fun add(number: Int, text: String, confirm: Boolean) {
+        if (queue.any { it.number == number && it.text == text }) return
+        queue.add(Msg(number, text, confirm))
+        show()
+    }
+
+    override fun onOpen() { page = 0; show() }
+
+    override fun onInput(input: GlassesInput) {
+        val m = queue.firstOrNull() ?: run { closeSelf?.invoke(); return }
+        when (input) {
+            GlassesInput.CLICK_RIGHT -> dismiss()
+            GlassesInput.CLICK_LEFT -> if (m.confirm) { queue.removeAt(0); page = 0; env.reply(m.number) } else flip(-1)
+            GlassesInput.DOUBLE_RIGHT -> flip(1)
+            GlassesInput.DOUBLE_LEFT -> flip(-1)
+            else -> {}
+        }
+    }
+
+    /** 关掉这一条：还有就显示下一条，没有就回到原来的画面。手机上也能点。 */
+    fun dismiss() {
+        if (queue.isNotEmpty()) queue.removeAt(0)
+        page = 0
+        if (queue.isEmpty()) closeSelf?.invoke() else show()
+    }
+
+    private fun flip(d: Int) {
+        val n = pages(cols, rows).size
+        val p = (page + d).coerceIn(0, maxOf(0, n - 1))
+        if (p != page) { page = p; show() }
+    }
+
+    /** 正文分页（每屏第一行留给按键提示）。 */
+    fun pages(cols: Int, rows: Int): List<List<String>> {
+        val m = queue.firstOrNull() ?: return listOf(emptyList())
+        val ls = AgentApp.wrapCols(m.text, cols)
+        return if (ls.isEmpty()) listOf(emptyList()) else ls.chunked(maxOf(1, rows - 1))
+    }
+
+    private fun show() { host.redraw(this); host.changed() }
+
+    override fun status() = queue.firstOrNull()?.let { "${env.name()} #${it.number}" + if (queue.size > 1) " · 还有 ${queue.size - 1} 条" else "" } ?: title
+
+    override fun render(fontPx: Int): ByteArray {
+        val f = Frame(fontPx)
+        val (body, st) = glassesText(27, 5)
+        val top = f.header(st)
+        var y = top + 2
+        for (l in body.lines()) { f.text(l, 6, y); y += f.font.height + 5 }
+        return f.done()
+    }
+
+    override fun glassesText(cols: Int, rows: Int): Pair<String, String> {
+        this.cols = cols; this.rows = rows
+        val m = queue.firstOrNull() ?: return "" to title
+        val ps = pages(cols, rows)
+        val p = page.coerceIn(0, ps.size - 1)
+        val hint = "右：关掉" + (if (m.confirm) "　左：回复" else "") + (if (ps.size > 1) "　双击翻页" else "")
+        val st = "${env.name()} #${m.number}" + (if (m.confirm) " · 等你确认" else "") + (if (ps.size > 1) " ${p + 1}/${ps.size}" else "") +
+            (if (queue.size > 1) " · 还有 ${queue.size - 1} 条" else "")
+        return (listOf(hint) + ps[p]).take(rows).joinToString("\n") to st
     }
 }

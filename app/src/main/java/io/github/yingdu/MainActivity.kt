@@ -2945,6 +2945,14 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val onToggle = Toggle { service?.let { it.agentEnabled = !it.agentEnabled }; refreshNow() }
         val onRow = Row("左镜腿叫出 AI 代理", "看书、看板时长按左镜腿；官方主界面上单击左镜腿").apply { accessory(onToggle.root) }
         sw.addRow(onRow.root)
+        val stickyToggle = Toggle { service?.let { it.agentSticky = !it.agentSticky }; refreshNow() }
+        val stickyRow = Row("代理的消息一直显示", "不自动消失，按右镜腿才关；等确认的左单击直接回复").apply { accessory(stickyToggle.root) }
+        sw.addRow(stickyRow.root)
+        val msgRow = Row("眼镜上的消息", "点一下关掉正在显示的这一条") {
+            val s = service ?: return@Row
+            if (s.agentMsg.pending) { s.agentMsg.dismiss(); refreshNow() } else toast("眼镜上没有代理的消息")
+        }
+        sw.addRow(msgRow.root)
         page.addView(sw)
 
         // 眼镜上正在说命令时：手机上也能发送 / 取消
@@ -3017,6 +3025,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         var sig = ""
         var seenSig = ""
         onUpdate(Sub.AGENT) { s ->
+            stickyToggle.set(s.agentSticky)
+            msgRow.value(if (s.agentMsg.pending) "${s.agentMsg.queue.size} 条" else "没有")
             relayToggle.set(s.agentRelayOn)
             pkgRow.value(s.agentRelayPkg)
             relayNote.text = (if (!PhoneNotificationService.isEnabled(this)) "要先在系统里给 NimoGo「通知使用权」（「通知」页里有入口），才收得到代理的通知。\n" else "") +

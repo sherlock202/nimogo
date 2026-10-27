@@ -49,4 +49,8 @@ class AgentRelayTest {
         assertEquals(listOf("4:abc"), AgentCommand.fromJson(JSONObject(c.toJson().toString())).museKeys)
         assertTrue(AgentCommand.fromJson(JSONObject("{\"n\":1}")).museKeys.isEmpty())
     }
+
+    @Test fun displayDropsMarkersAndMarkdown() {
+        assertEquals("需要确认：每周五检查？\n详细：KD 指标", AgentInbox.display("<!-- muse -->\n## **需要确认：每周五检查？**\n\n详细：`KD` 指标\n"))
+    }
 }

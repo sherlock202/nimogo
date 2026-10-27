@@ -127,7 +127,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     /** 眼镜一直拒绝打开提词器页面：阅读改用图片显示（和看板同一个页面，不受提词器影响）。 */
     override fun onPrompterRefused() {
         // 场景助手只能用提词器：过一会儿再开（不改阅读的显示方式）
-        if (activeApp === assist) { log("场景助手：眼镜暂时不让打开提词器页面，2 秒后再试"); main.postDelayed(restoreCheck, 2_000); return }
+        if (holdsPrompter) { log("${activeApp?.title}：眼镜暂时不让打开提词器页面，2 秒后再试"); main.postDelayed(restoreCheck, 2_000); return }
         log("眼镜不让打开提词器页面（设备忙），阅读改用图片显示。重启眼镜后可以在「阅读显示」里改回提词器文字")
         if (!readerAsImage) toggleReaderImage()
         if (appMode == AppMode.READER) pushPage()
@@ -135,10 +135,13 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     /** 提词器文字显示阅读时，长按右镜腿不退出（只用镜腿翻页；退出在手机上点「收起显示」）。 */
-    override fun keepPrompterOnLongPress(): Boolean = !glassesPaused && ((appMode == AppMode.READER && activeApp == null) || activeApp === assist)
+    override fun keepPrompterOnLongPress(): Boolean = !glassesPaused && ((appMode == AppMode.READER && activeApp == null) || holdsPrompter)
+
+    /** 只能用镜腿单击操作、长按也不退出的全屏功能：场景助手、代理的消息（只有按右镜腿才关）。 */
+    private val holdsPrompter get() = activeApp.let { it != null && (it === assist || it === agentMsg) }
 
     override fun onPrompterRestore() {
-        if (!glassesPaused && (appMode == AppMode.READER || activeApp === assist)) {
+        if (!glassesPaused && (appMode == AppMode.READER || holdsPrompter)) {
             restoreTries = 0
             pushPage()
             main.removeCallbacks(restoreCheck); main.postDelayed(restoreCheck, 3_000)
@@ -151,7 +154,7 @@ class ReaderService : Service(), NimoListener, AppHost {
      */
     private var restoreTries = 0
     private val restoreCheck: Runnable = Runnable {
-        if (glassesPaused || linkState != LinkState.READY || !(appMode == AppMode.READER && activeApp == null || activeApp === assist)) return@Runnable
+        if (glassesPaused || linkState != LinkState.READY || !(appMode == AppMode.READER && activeApp == null || holdsPrompter)) return@Runnable
         if (client.enteredAppId() == NimoProtocol.APP_ID_PROMPTER || (appMode == AppMode.READER && readerAsImage && !followOn)) return@Runnable
         if (++restoreTries > 3) { log("长按后重新打开提词器失败 3 次：在手机上点「恢复显示」或重新开始"); return@Runnable }
         log("长按后提词器没打开：再开一次（第 $restoreTries 次）")
@@ -353,12 +356,55 @@ class ReaderService : Service(), NimoListener, AppHost {
                         c.museKeys.remove(key); agentSave()
                         agentError = "替$agentName 写回 #$n 失败：${e.message}"
                         log("$agentName：$agentError")
-                        onPhoneNotification("$agentName #$n", if (confirm) "等你确认" else "", AgentInbox.summary(body))
+                        agentShow(n, body, confirm)
                     }
                 notifyUi()
             }
         }
         return true to "#$n：替$agentName 写回 GitHub" + if (confirm) "（等你确认）" else "并关闭"
+    }
+
+    /** 代理的消息在眼镜上一直显示、按右镜腿才关（默认开）；关掉时和普通通知一样几秒后消失。 */
+    var agentSticky: Boolean
+        get() = agentPrefs.getBoolean("sticky", true)
+        set(v) { agentPrefs.edit().putBoolean("sticky", v).apply(); notifyUi() }
+
+    val agentMsg: AgentMessageApp by lazy {
+        AgentMessageApp(this, object : AgentMessageApp.Env {
+            override fun name() = agentName
+            // 左单击回复等确认的那条：直接叫出「对 AI 代理说话」（它会先显示要确认的事）
+            override fun reply(number: Int) { if (agentEnabled && agentReady) openApp(agent) else closeApp() }
+        }).also { m -> m.closeSelf = { if (activeApp === m) closeApp() } }
+    }
+
+    /**
+     * 把代理的一条回复显示到眼镜上（2026-10-27：不要自动消失，按右镜腿才关）。
+     * 别的全屏功能（导航、AI 代理说话中……）开着时先照常弹一下，那个功能关掉后再一直显示；眼镜没连着时连上后再显示。
+     */
+    private fun agentShow(n: Int, body: String, confirm: Boolean) {
+        val sum = AgentInbox.summary(body)
+        if (!agentSticky) {
+            onPhoneNotification("$agentName #$n", if (confirm) "等你确认" else "", sum + if (confirm) "（叫出$agentName：右确认 左取消）" else "")
+            return
+        }
+        agentMsg.add(n, AgentInbox.display(body).ifEmpty { sum }, confirm)
+        val cur = activeApp
+        when {
+            cur === agentMsg -> {}
+            linkState != LinkState.READY -> log("$agentName：#$n 的消息等眼镜连上后显示")
+            cur != null -> {
+                log("$agentName：#$n 的消息先弹一下，「${cur.title}」关掉后再一直显示")
+                onPhoneNotification("$agentName #$n", if (confirm) "等你确认" else "", sum)
+            }
+            else -> openApp(agentMsg)
+        }
+    }
+
+    /** 还有没看的代理消息、眼镜空着：显示出来（别的功能关掉后、眼镜重新连上后）。 */
+    private fun agentShowPending(): Boolean {
+        if (!agentSticky || !agentMsg.pending || activeApp != null || linkState != LinkState.READY || agentQuiet) return false
+        openApp(agentMsg)
+        return true
     }
 
     /** 最近收到的手机通知（只在内存里，排查用：看代理的通知从哪个 app 来、正文有多长、认没认出来）。 */
@@ -402,8 +448,7 @@ class ReaderService : Service(), NimoListener, AppHost {
                             val sum = AgentInbox.summary(cm.body)
                             if (AgentInbox.needsConfirm(cm.body)) c.confirm = cm.body else { c.result = sum; c.confirm = "" }
                             log("$agentName：#$n 回复：$sum")
-                            onPhoneNotification("$agentName #$n", if (c.confirm.isNotEmpty()) "等你确认" else "", sum +
-                                if (c.confirm.isNotEmpty()) "（叫出$agentName：右确认 左取消）" else "")
+                            agentShow(n, cm.body, c.confirm.isNotEmpty())
                         }
                         // 关了、而且回复都提醒过了，才算做完
                         c.open = open || cs.any { it.id > c.lastCommentId }
@@ -726,6 +771,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         activeApp = null
         app.onClose()
         lastPushedDash = ""
+        // 还有没看的代理消息：接着显示（不先回到阅读 / 看板）
+        if (app !== agentMsg && agentShowPending()) return
         // 原来在阅读：关掉功能后眼镜回到官方主界面，不再自己跳出提词的内容（2026-10-23）；要接着读在手机上点「恢复显示」
         if (baseMode == AppMode.READER) { log("关掉「${app.title}」：眼镜回到主界面"); pauseGlasses(); return }
         if (baseMode == AppMode.DASHBOARD) { dashPage = 0; refreshDashboard() }
@@ -2724,7 +2771,7 @@ class ReaderService : Service(), NimoListener, AppHost {
                 if (toDash && appMode != AppMode.DASHBOARD) switchAppMode(AppMode.DASHBOARD) else { lastPushedDash = ""; pushPage() }
             }, 1200)
             main.postDelayed({ if (linkState == LinkState.READY && !notifyLit) restoreHeadUp() }, 2500)
-            main.postDelayed({ if (linkState == LinkState.READY) replayOffline() }, 4500)
+            main.postDelayed({ if (linkState == LinkState.READY) { replayOffline(); agentShowPending() } }, 4500)
             main.postDelayed(standbyRefresh, 5000)
             main.postDelayed({
                 if (linkState != LinkState.READY || glassesPaused) return@postDelayed
