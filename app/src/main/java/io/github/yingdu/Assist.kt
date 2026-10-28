@@ -78,6 +78,21 @@ class AssistLine(val at: Long, var me: Boolean?, val text: String, val voice: Sp
     }
 }
 
+/** 转出来的一句要不要丢：Whisper 对着噪音编的句子；和上一句一字不差、又隔得很近的（噪音反复触发同一句）。 */
+object AssistTranscript {
+    const val REPEAT_MS = 20_000L
+
+    fun junk(text: String, lines: List<AssistLine>, now: Long): Boolean {
+        if (SpeechToText.isHallucination(text)) return true
+        val n = norm(text)
+        if (n.isEmpty()) return true
+        val last = lines.lastOrNull() ?: return false
+        return now - last.at < REPEAT_MS && norm(last.text) == n
+    }
+
+    private fun norm(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
+}
+
 /** 现场给过的建议（复盘时一起看）。kind：answer / question。 */
 class AssistAsk(val at: Long, val kind: String, val text: String) {
     fun toJson(): JSONObject = JSONObject().put("t", at).put("k", kind).put("x", text)
@@ -504,7 +519,9 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         val lang = target?.scene?.lang ?: "auto"
         val online = target?.scene?.let { env.onlineAsr(it) }
         val prompt = target?.scene?.let { AssistAi.asrPrompt(it) }
-        val localLang = if (lang == "auto" || env.asrAutoLang()) "" else lang
+        // 「离线时自动识别语言」只用在中文场景（为了中文里夹的英文名词）；日语、英语场景一定按场景语言认，
+        // 不然 SenseVoice 自己判断语言时常把日语当成中文（2026-10-28）
+        val localLang = if (lang == "auto" || (env.asrAutoLang() && lang == "zh")) "" else lang
         asrExec.execute {
             val r = runCatching {
                 // 分人用原始音量（我近、对方远）；转文字前把音量拉齐，轻声的句子也认得出
@@ -527,7 +544,9 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
             host.main.post {
                 busy = false
                 r.onSuccess { (text, voice) ->
-                    if (text.isNotEmpty() && target != null) {
+                    val junk = text.isNotEmpty() && target != null && AssistTranscript.junk(text, target.lines, System.currentTimeMillis())
+                    if (junk) host.log("场景助手：丢掉像噪音的一句「${text.take(30)}」")
+                    if (text.isNotEmpty() && target != null && !junk) {
                         val line = AssistLine(System.currentTimeMillis(), env.isMe(voice), text, voice)
                         target.lines.add(line)
                         if (target === ending || target.lines.size % 5 == 0) env.save(target)

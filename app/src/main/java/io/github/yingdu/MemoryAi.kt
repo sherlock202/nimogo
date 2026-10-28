@@ -48,17 +48,49 @@ object SpeechToText {
         if (language.isNotBlank()) field("language", language)
         if (wantsPrompt(model, language) || (!prompt.isNullOrBlank() && model.contains("whisper", true)))
             field("prompt", prompt?.takeIf { it.isNotBlank() } ?: ZH_PROMPT)
-        field("response_format", "json")
+        // Whisper：要 verbose_json，每段带「没人说话的概率」和置信度，用来丢掉它对着噪音编出来的句子（见 parseText）
+        field("response_format", if (model.contains("whisper", true)) "verbose_json" else "json")
         out.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\nContent-Type: $mime\r\n\r\n".toByteArray(Charsets.UTF_8))
         out.write(audio)
         out.write("\r\n--$boundary--\r\n".toByteArray(Charsets.UTF_8))
         return out.toByteArray()
     }
 
-    /** 从返回里取文字；SenseVoice 会带 <|zh|><|NEUTRAL|> 这类标记，去掉。 */
+    /**
+     * 从返回里取文字；SenseVoice 会带 <|zh|><|NEUTRAL|> 这类标记，去掉。
+     * Whisper 的 verbose_json 有分段：「没人说话的概率」高、置信度又低的段（对着噪音编的）丢掉，重复得离谱的段（压缩比高）也丢掉；
+     * 剩下的如果是 Whisper 常编的那几句（「ご視聴ありがとうございました」之类），整句不要。
+     */
     fun parseText(body: String): String {
-        val t = runCatching { JSONObject(body).optString("text") }.getOrDefault("")
-        return t.replace(Regex("<\\|[^|>]*\\|>"), "").trim()
+        val o = runCatching { JSONObject(body) }.getOrNull() ?: return ""
+        val segs = o.optJSONArray("segments")
+        val raw = if (segs != null && segs.length() > 0) {
+            (0 until segs.length()).mapNotNull { segs.optJSONObject(it) }
+                .filter { g -> !isNoise(g.optDouble("no_speech_prob", 0.0), g.optDouble("avg_logprob", 0.0), g.optDouble("compression_ratio", 1.0)) }
+                .joinToString("") { it.optString("text") }
+        } else o.optString("text")
+        val t = raw.replace(Regex("<\\|[^|>]*\\|>"), "").trim()
+        return if (isHallucination(t)) "" else t
+    }
+
+    /** Whisper 的一段像不像噪音（OpenAI 自己的判断标准，稍微放宽一点：没人说话的概率很高时直接丢）。 */
+    fun isNoise(noSpeech: Double, avgLogprob: Double, compression: Double) =
+        noSpeech > 0.8 || (noSpeech > 0.5 && avgLogprob < -0.8) || compression > 2.4
+
+    /** Whisper 用视频字幕训练，对着噪音、音乐、听不清的声音常编出这些句子（片尾的「感谢收看」「订阅」、字幕组署名）。 */
+    private val JUNK_EXACT = setOf(
+        "ご視聴ありがとうございました", "ご視聴ありがとうございます", "ご清聴ありがとうございました", "ご覧いただきありがとうございました",
+        "最後までご視聴いただきありがとうございました", "チャンネル登録お願いします", "チャンネル登録よろしくお願いします",
+        "thankyouforwatching", "thanksforwatching", "thankyouforwatchingpleasesubscribe", "pleasesubscribe", "you",
+        "谢谢观看", "谢谢大家观看", "感谢观看", "謝謝觀看", "谢谢收看", "感谢收看", "多谢收看", "请订阅",
+    )
+    private val JUNK_PART = listOf("明镜与点点", "明鏡與點點", "点赞订阅", "點贊訂閱", "チャンネル登録", "字幕by", "subtitlesby", "amaraorg", "字幕由", "字幕提供")
+
+    /** 整句是不是 Whisper 编的（去掉空格、标点、大小写再比）。 */
+    fun isHallucination(text: String): Boolean {
+        val n = text.lowercase().filter { it.isLetterOrDigit() }
+        if (n.isEmpty()) return false
+        return n in JUNK_EXACT || JUNK_PART.any { n.contains(it.lowercase()) }
     }
 
     /** Qwen3-ASR 这类用对话接口的模型。 */
