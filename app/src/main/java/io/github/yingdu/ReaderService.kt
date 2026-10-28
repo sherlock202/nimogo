@@ -543,6 +543,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun asrReady() = assistAsrReady()
         override fun onlineAsr(scene: AssistScene) = assistOnlineAsr(scene)
         override fun asrAutoLang() = assistGet("asrAuto") == "1"
+        override fun jaOffline() = assistJaOn && JaAsr.ready()
         override fun takeKeys(on: Boolean) { if (on) assistMediaOn() else assistMediaOff() }
         override fun translateTo(): String? = if (assistTranslateOn(assist.session?.scene?.id ?: assistSceneId)) assistTrTo else null
         override fun translate(text: String, from: String, to: String, done: (Result<String>) -> Unit) = assistTranslate(text, from, to, done)
@@ -625,7 +626,13 @@ class ReaderService : Service(), NimoListener, AppHost {
         val p = assistAsrPreset
         return Triple(p.base, key, p.model)
     }
-    fun assistAsrReady() = LocalAsr.ready() || assistOnlineAsr(assist.session?.scene ?: assistScene) != null
+    fun assistAsrReady(): Boolean {
+        val sc = assist.session?.scene ?: assistScene
+        return LocalAsr.ready() || (sc.lang == "ja" && assistJaOn && JaAsr.ready()) || assistOnlineAsr(sc) != null
+    }
+
+    /** 日语场景走离线时用 ReazonSpeech（下载了才有效；可以关掉，和 SenseVoice 对比）。 */
+    val assistJaOn: Boolean get() = assistGet("jaModel") != "off"
 
     /** 即时翻译用什么翻：mlkit 手机离线；llm 用场景助手的大模型（更准，要联网，失败时这句改用离线）。 */
     val assistTrEngine: String get() = assistGet("trEngine").ifEmpty { "mlkit" }
@@ -1518,6 +1525,9 @@ class ReaderService : Service(), NimoListener, AppHost {
         main.postDelayed({ agentPollSoon() }, 10_000)   // 上次还没做完的命令：接着查回复
         LocalAsr.log = { log(it) }
         LocalAsr.onChanged = { notifyUi(); if (LocalAsr.ready() && asrLocal) memKickTranscribe() }
+        JaAsr.appCtx = applicationContext
+        JaAsr.log = { log(it) }
+        JaAsr.onChanged = { notifyUi() }
         OfflineTranslate.log = { log(it) }
         OfflineTranslate.onChanged = { notifyUi() }
         main.postDelayed({ OfflineTranslate.refresh() }, 3_000)

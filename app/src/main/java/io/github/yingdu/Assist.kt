@@ -422,6 +422,8 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         fun onlineAsr(scene: AssistScene): Triple<String, String, String>? = null
         /** 离线转文字不指定语言、自动识别（中英混说时试试）。 */
         fun asrAutoLang(): Boolean = false
+        /** 日语离线用 ReazonSpeech（下载了、没关掉）；否则用 SenseVoice。 */
+        fun jaOffline(): Boolean = false
         /** 接管 / 放开音量键和耳机键（手机息屏也能翻页）。 */
         fun takeKeys(on: Boolean)
         /** 即时翻译：对方的话翻成哪种语言（zh / ja / en …）；null = 这个场景没开翻译。每句都问一次，开着时也能随时开关。 */
@@ -549,11 +551,14 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         // 「离线时自动识别语言」只用在中文场景（为了中文里夹的英文名词）；日语、英语场景一定按场景语言认，
         // 不然 SenseVoice 自己判断语言时常把日语当成中文（2026-10-28）
         val localLang = if (lang == "auto" || (env.asrAutoLang() && lang == "zh")) "" else lang
+        val useJa = localLang == "ja" && env.jaOffline()
         asrExec.execute {
             val r = runCatching {
                 // 分人用原始音量（我近、对方远）；转文字前把音量拉齐，轻声的句子也认得出
                 val voice = Speakers.voiceOf(Speakers.frames(p), 0, p.size / 160)
                 val loud = AudioClean.process(p, AudioClean.Mode.NONE, floor = 0.2f, boost = true)
+                // 手机离线：日语用专门的 ReazonSpeech（SenseVoice 的日语很差），其他用 SenseVoice
+                fun offline() = if (useJa) JaAsr.transcribe(loud) else LocalAsr.transcribe(loud, localLang)
                 // 在线转文字前先确认是不是人在说话（门开着就不用确认）：不是的话这句不发出去
                 val check = if (online != null && !gateOpen && LocalAsr.ready())
                     runCatching { LocalAsr.recognize(if (loud.size > SpeechGate.CHECK_SAMPLES) loud.copyOf(SpeechGate.CHECK_SAMPLES) else loud, localLang) }.getOrNull()
@@ -569,11 +574,11 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
                             "assist.wav", "audio/wav", OggOpus.wav(loud), prompt)
                     } catch (e: Exception) {
                         // 没网、额度用完之类：这句改用手机离线，不让对话断掉
-                        if (!LocalAsr.ready()) throw e
+                        if (!useJa && !LocalAsr.ready()) throw e
                         host.main.post { host.log("场景助手：在线转文字失败（${e.message?.take(80)}），这句改用离线") }
-                        LocalAsr.transcribe(loud, localLang)
+                        offline()
                     }
-                } else LocalAsr.transcribe(loud, localLang)
+                } else offline()
                 text.trim() to voice
             }
             host.main.post {

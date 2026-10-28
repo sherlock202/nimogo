@@ -2755,6 +2755,30 @@ class MainActivity : Activity(), ReaderService.UiListener {
         }
         val asrKeyRow = Row("在线转文字的 Key", chevron = true) { edit("在线转文字的 Key（不填时：大模型也用 Groq 就用同一个 Key）", "asrKey", true, "Key") }
         asrBox.addRow(onlineRow.root); asrBox.addRow(asrKeyRow.root)
+        // 日语离线模型（ReazonSpeech）：日语场景走离线时用它，比 SenseVoice 准得多
+        val jaRow = Row("日语离线模型", "ReazonSpeech：日语场景走离线时用，比默认的准得多", chevron = true) {
+            val s = service ?: return@Row
+            when {
+                JaAsr.downloading -> toast("正在下载：${JaAsr.progress}")
+                !JaAsr.ready() -> AlertDialog.Builder(this).setTitle("下载日语离线模型")
+                    .setMessage("ReazonSpeech（约 3.5 万小时日语训练，只认日语），约 ${JaAsr.MB} MB，建议连 Wi-Fi。" +
+                        "从 Hugging Face 下载；连不上时改从 GitHub 下完整的压缩包（约 700 MB）。\n" +
+                        "下好后，日语场景走手机离线（「手机离线」，或在线失败时）就用它；输出没有标点，日语里的英文词会写成片假名。")
+                    .setPositiveButton("下载") { _, _ -> JaAsr.startDownload(); refreshNow() }
+                    .setNegativeButton("取消", null).show()
+                else -> choose("日语离线模型（已下载 ${JaAsr.sizeMb()} MB）",
+                    listOf("日语场景离线时用它", "不用它（用默认的 SenseVoice，对比用）", "删除模型")) { i ->
+                    when (i) {
+                        0 -> s.assistSet("jaModel", "")
+                        1 -> s.assistSet("jaModel", "off")
+                        2 -> AlertDialog.Builder(this).setTitle("删除日语离线模型？").setPositiveButton("删除") { _, _ -> JaAsr.delete(); refreshNow() }
+                            .setNegativeButton("取消", null).show()
+                    }
+                    refreshNow()
+                }
+            }
+        }
+        asrBox.addRow(jaRow.root)
         page.addView(asrBox)
         val asrNote = note("")
         page.addView(asrNote)
@@ -2836,6 +2860,12 @@ class MainActivity : Activity(), ReaderService.UiListener {
                     "中文场景照样手机离线。录音会发给在线服务；没网、额度用完时这句自动改用离线。"
                 else -> "全部用在线服务转文字：中英混说也准。录音会发给在线服务；没网、额度用完时这句自动改用离线。"
             } + "场景里写的专业名词会作为提示词一起发过去。"
+            jaRow.value(when {
+                JaAsr.downloading -> JaAsr.progress
+                JaAsr.ready() -> if (s.assistJaOn) "用它" else "不用"
+                JaAsr.lastError.isNotEmpty() -> "下载失败"
+                else -> "未下载"
+            })
             trEngineRow.value(if (s.assistTrEngine == "llm") "大模型" else "手机离线")
             trModelRow.root.visibility = if (s.assistTrEngine == "llm") View.VISIBLE else View.GONE
             trModelRow.value(s.assistTrModel())

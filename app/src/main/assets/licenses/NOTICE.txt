@@ -58,6 +58,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 sherpa-onnx（k2-fsa/sherpa-onnx 1.13.8，Apache License 2.0）
 NimoGo 的语音跟读用它在手机上离线识别。AAR 里带有 ONNX Runtime（MIT License，Copyright (c) Microsoft Corporation）。
 识别模型不随安装包分发，第一次使用时从 sherpa-onnx 的 GitHub 发布页下载，许可见各模型的项目页。
+场景助手的日语离线模型 ReazonSpeech（reazon-research/reazonspeech-k2-v2）也不随安装包分发，第一次使用时从 Hugging Face 下载，许可见模型的项目页。
 
 ------------------------------------------------------------------------
 Google ML Kit 离线翻译（com.google.mlkit:translate 17.0.3）
