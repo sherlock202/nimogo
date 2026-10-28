@@ -268,7 +268,12 @@ object LocalAsr {
     }
 
     /** 16 kHz 单声道 PCM → 文字。language：zh、ja、en、""（自动）。阻塞，后台线程调用；同一时间只转一段。 */
-    fun transcribe(pcm: ShortArray, language: String): String {
+    fun transcribe(pcm: ShortArray, language: String): String = recognize(pcm, language).text
+
+    /** 认出来的文字，和 SenseVoice 给这段声音打的标签（Speech 说话、Laughter 笑、Cry 哭、BGM 音乐……，可能为空）。 */
+    class Heard(val text: String, val event: String)
+
+    fun recognize(pcm: ShortArray, language: String): Heard {
         if (!ready()) {
             startDownload()
             throw java.io.IOException(if (downloading) "手机离线转文字的模型正在下载（$progress），下好后自动接着转" else "手机离线转文字的模型还没下载")
@@ -288,7 +293,8 @@ object LocalAsr {
             try {
                 s.acceptWaveform(f, 16_000)
                 r.decode(s)
-                return r.getResult(s).text.replace(Regex("<\\|[^|>]*\\|>"), "").trim()
+                val res = r.getResult(s)
+                return Heard(res.text.replace(Regex("<\\|[^|>]*\\|>"), "").trim(), res.event.replace(Regex("[<|>]"), "").trim())
             } finally {
                 s.release()
                 main.postDelayed(releaseLater, 180_000)

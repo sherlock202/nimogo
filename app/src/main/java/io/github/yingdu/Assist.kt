@@ -78,6 +78,27 @@ class AssistLine(val at: Long, var me: Boolean?, val text: String, val voice: Sp
     }
 }
 
+/**
+ * 在线转文字前，先用手机离线的 SenseVoice 确认一下是不是人在说话（2026-10-28：远处孩子嬉闹，Whisper 一直编出「ご視聴ありがとうございました」）。
+ * 不用句句都确认：确认过一句是人说话后，「门」开着，接下来的句子直接给 Whisper；停了 3 秒以上再来的句子，重新确认。
+ * 确认只用这句开头的 2.5 秒（开头几个字），省时间。
+ */
+object SpeechGate {
+    /** 停了这么久以后，下一句要重新确认。 */
+    const val OPEN_MS = 3_000L
+    /** 确认用开头多少个采样（16 kHz）。 */
+    const val CHECK_SAMPLES = 16_000 * 5 / 2
+
+    /** 这句开始时门还开着：上一句确认是人说话，停顿不到 OPEN_MS。 */
+    fun open(segStart: Long, lastSpeechEnd: Long) = lastSpeechEnd > 0 && segStart - lastSpeechEnd <= OPEN_MS
+
+    /** 离线模型的结果像不像人在说话：标签是说话（或没有标签），而且认出了至少两个字，又不是常见的编造句。 */
+    fun isSpeech(text: String, event: String): Boolean {
+        if (event.isNotEmpty() && !event.equals("Speech", ignoreCase = true)) return false
+        return text.count { it.isLetterOrDigit() } >= 2 && !SpeechToText.isHallucination(text)
+    }
+}
+
 /** 转出来的一句要不要丢：Whisper 对着噪音编的句子；和上一句一字不差、又隔得很近的（噪音反复触发同一句）。 */
 object AssistTranscript {
     const val REPEAT_MS = 20_000L
@@ -433,7 +454,10 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
     private val asrExec = Executors.newSingleThreadExecutor()
     private val llmExec = Executors.newSingleThreadExecutor()
     private var busy = false
-    private val finals = ArrayDeque<ShortArray>()
+    /** 说完的句子：(声音, 说完送来的时间)。 */
+    private val finals = ArrayDeque<Pair<ShortArray, Long>>()
+    /** 上一句确认是人说话的结束时间（在线转文字的「门」，见 SpeechGate）。 */
+    private var lastSpeechEnd = 0L
     private var lastFrameAt = 0L
     /** 按了键、要等最后一句转完再问大模型。 */
     private var waitingKind: String? = null
@@ -446,11 +470,11 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
         if (session == null) session = AssistSession("a" + System.currentTimeMillis(), env.scene(), System.currentTimeMillis())
         view = View.LISTEN; showText = ""; waitingKind = null
         decoder = OpusDecoder(NimoMic.SAMPLE_RATE, 1)
-        busy = false; finals.clear()
+        busy = false; finals.clear(); lastSpeechEnd = 0L
         // 对面的人离麦克风远、声音轻：说话判断放宽一些（比底噪响 4 dB、周期性 0.45、300 ms 里 30% 有声就算），免得漏句
         seg = CaptionSegmenter(object : CaptionSegmenter.Listener {
             override fun partial(id: Int, pcm: ShortArray) {}
-            override fun final(id: Int, pcm: ShortArray) { finals.addLast(pcm); pump() }
+            override fun final(id: Int, pcm: ShortArray) { finals.addLast(pcm to System.currentTimeMillis()); pump() }
             override fun dropped(id: Int) {}
         }, SpeechDetector(aboveFloor = 4.0, periodicityMin = 0.45, voteNeed = 9))
         if (!env.asrReady()) error = ASR_MISSING
@@ -511,8 +535,11 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
 
     private fun pump() {
         if (busy) return
-        val p = finals.removeFirstOrNull()
-        if (p == null) { waitingKind?.let { waitingKind = null; askNow(it) }; return }
+        val (p, arrivedAt) = finals.removeFirstOrNull() ?: run { waitingKind?.let { waitingKind = null; askNow(it) }; return }
+        // 这句大概什么时候开始说、什么时候说完（送来时已经停了约 0.8 秒）
+        val segEnd = arrivedAt - CaptionSegmenter.END_QUIET_FRAMES * 10L
+        val segStart = arrivedAt - p.size / 16
+        val gateOpen = SpeechGate.open(segStart, lastSpeechEnd)
         if (!env.asrReady()) { finals.clear(); error = ASR_MISSING; show(); return }
         busy = true
         val target = session ?: ending
@@ -527,7 +554,15 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
                 // 分人用原始音量（我近、对方远）；转文字前把音量拉齐，轻声的句子也认得出
                 val voice = Speakers.voiceOf(Speakers.frames(p), 0, p.size / 160)
                 val loud = AudioClean.process(p, AudioClean.Mode.NONE, floor = 0.2f, boost = true)
-                val text = if (online != null) {
+                // 在线转文字前先确认是不是人在说话（门开着就不用确认）：不是的话这句不发出去
+                val check = if (online != null && !gateOpen && LocalAsr.ready())
+                    runCatching { LocalAsr.recognize(if (loud.size > SpeechGate.CHECK_SAMPLES) loud.copyOf(SpeechGate.CHECK_SAMPLES) else loud, localLang) }.getOrNull()
+                    else null
+                val notSpeech = check != null && !SpeechGate.isSpeech(check.text, check.event)
+                val text = if (notSpeech) {
+                    host.main.post { host.log("场景助手：手机离线判断不是人在说话（${check?.event?.ifEmpty { "没有标签" }}，「${check?.text?.take(20)}」），这句不发给在线转文字") }
+                    ""
+                } else if (online != null) {
                     // 在线（比如 Groq 的 Whisper）：日语、远处的说话、中英混说都准得多，场景里的专业名词放进提示词
                     try {
                         SpeechToText.transcribe(online.first, online.second, online.third, if (lang == "auto") "" else lang,
@@ -547,6 +582,7 @@ class AssistApp(private val host: AppHost, private val env: Env) : GlassesApp {
                     val junk = text.isNotEmpty() && target != null && AssistTranscript.junk(text, target.lines, System.currentTimeMillis())
                     if (junk) host.log("场景助手：丢掉像噪音的一句「${text.take(30)}」")
                     if (text.isNotEmpty() && target != null && !junk) {
+                        lastSpeechEnd = maxOf(lastSpeechEnd, segEnd)     // 是人说话：门开着，接下来 3 秒内开始的句子直接给在线转文字
                         val line = AssistLine(System.currentTimeMillis(), env.isMe(voice), text, voice)
                         target.lines.add(line)
                         if (target === ending || target.lines.size % 5 == 0) env.save(target)

@@ -45,4 +45,19 @@ class AsrJunkTest {
         assertTrue(AssistTranscript.junk("ご視聴ありがとうございました", emptyList(), 0L))
         assertFalse(AssistTranscript.junk("はい", ls, 2_000L))
     }
+
+    @Test fun speechGate() {
+        // 门：上一句确认是人说话后 3 秒内开始的句子不用再确认
+        assertFalse(SpeechGate.open(10_000L, 0L))            // 还没确认过
+        assertTrue(SpeechGate.open(12_500L, 10_000L))
+        assertTrue(SpeechGate.open(13_000L, 10_000L))
+        assertFalse(SpeechGate.open(13_500L, 10_000L))       // 停了 3 秒以上：重新确认
+        // 离线模型的判断
+        assertTrue(SpeechGate.isSpeech("すみません", "Speech"))
+        assertTrue(SpeechGate.isSpeech("はい", ""))
+        assertFalse(SpeechGate.isSpeech("あはは", "Laughter"))
+        assertFalse(SpeechGate.isSpeech("啊", "Speech"))      // 只有一个字
+        assertFalse(SpeechGate.isSpeech("", "Speech"))
+        assertFalse(SpeechGate.isSpeech("ご視聴ありがとうございました", "Speech"))
+    }
 }
