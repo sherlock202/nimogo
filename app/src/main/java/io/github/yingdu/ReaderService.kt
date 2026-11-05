@@ -192,6 +192,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         set(v) { prefs.edit().putBoolean("textFallback", v).apply(); pushPage() }
     private val glyphFallback by lazy { GlyphFallback(runCatching { assets.open("follow/simplify.txt").bufferedReader().readText() }.getOrDefault("")) }
     private fun glassesText(s: String) = if (textFallback) glyphFallback.apply(s) else s
+    /** 手机通知：眼镜弹窗和画成图的字库都缺一部分繁体，转成简体再显示。 */
+    private val notifySimplify by lazy { GlyphFallback(runCatching { assets.open("follow/t2s.txt").bufferedReader().readText() }.getOrDefault("")) }
 
     var showProgress: Boolean
         get() = prefs.getBoolean("showProgress", false)
@@ -2254,6 +2256,14 @@ class ReaderService : Service(), NimoListener, AppHost {
     private val assistOnGlasses get() = activeApp === assist && !glassesPaused && linkState == LinkState.READY
 
     fun onPhoneNotification(app: String, title: String, text: String, litMs0: Long = -1, fit: Boolean = false, pkg: String? = null) {
+        // 繁体先换成简体再弹。对照是一对一的，换完再进来不会再变
+        val appS = notifySimplify.apply(app)
+        val titleS = notifySimplify.apply(title)
+        val textS = notifySimplify.apply(text)
+        if (appS != app || titleS != title || textS != text) {
+            onPhoneNotification(appS, titleS, textS, litMs0, fit, pkg)
+            return
+        }
         val litMs = if (litMs0 > 0) litMs0 else notifySeconds * 1000L
         if (quietWhileReading && (prompting || assistOnGlasses)) { log((if (prompting) "提词中" else "场景助手开着") + "，不弹通知：$app" + if (title.isNotEmpty() && title != app) " · $title" else ""); return }
         if (linkState != LinkState.READY) {

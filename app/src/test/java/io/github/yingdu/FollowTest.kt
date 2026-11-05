@@ -157,4 +157,15 @@ class FollowTest {
         assertEquals("原唱：櫸坂46 東京驛", g.apply("原唱：欅坂46 東京駅"))
         assertEquals("红绿灯", g.apply("红绿灯"))
     }
+
+    @Test fun notifyTraditionalToSimplified() {
+        val f = java.io.File(listOf("src/main/assets/follow/t2s.txt", "app/src/main/assets/follow/t2s.txt").first { java.io.File(it).isFile })
+        val g = GlyphFallback(f.readText())
+        assertTrue(g.size > 2000)
+        assertEquals("这是一条测试通知，请确认时间", g.apply("這是一條測試通知，請確認時間"))
+        assertEquals("微信：周一开会", g.apply("微信：週一開會"))
+        assertEquals("你好，hello 123", g.apply("你好，hello 123"))
+        // 简体再转一次不变
+        assertEquals("这是一条测试通知", g.apply(g.apply("這是一條測試通知")))
+    }
 }
