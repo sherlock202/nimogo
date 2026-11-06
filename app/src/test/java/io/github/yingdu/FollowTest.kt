@@ -158,6 +158,19 @@ class FollowTest {
         assertEquals("红绿灯", g.apply("红绿灯"))
     }
 
+    @Test fun readingSimplifiesUndisplayableTraditional() {
+        fun load(name: String) = GlyphFallback(java.io.File(listOf("src/main/assets/follow/$name", "app/src/main/assets/follow/$name").first { java.io.File(it).isFile }).readText())
+        val simp = load("read_simp.txt")
+        val base = load("simplify.txt")
+        fun reading(s: String) = base.apply(simp.apply(s))
+        assertTrue(simp.size > 100)
+        // 字库里没有的繁体换成简体；能显示的繁体不动；没有简体的日文汉字仍换成繁体
+        assertEquals("榉坂46 東京驛", reading("欅坂46 東京駅"))
+        assertEquals("这是东京", reading("这是东京"))
+        assertEquals("這是東京", reading("這是東京"))
+        assertEquals("绿线产", reading("緑綫産"))
+    }
+
     @Test fun notifyTraditionalToSimplified() {
         val f = java.io.File(listOf("src/main/assets/follow/t2s.txt", "app/src/main/assets/follow/t2s.txt").first { java.io.File(it).isFile })
         val g = GlyphFallback(f.readText())

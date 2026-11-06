@@ -190,12 +190,16 @@ class ReaderService : Service(), NimoListener, AppHost {
     var scrollLines: Int
         get() = prefs.getInt("scrollLines", 0)
         set(v) { prefs.edit().putInt("scrollLines", v.coerceIn(0, 20)).apply() }
-    /** 文字显示时，把眼镜字库里没有的字（主要是日文新字体，例如欅、駅）换成繁体或简体写法（默认开）。 */
+    /** 文字显示时，把眼镜字库里没有的字换成能显示的写法（默认开）。阅读和讲稿里对不上的繁体优先换成简体。 */
     var textFallback: Boolean
         get() = prefs.getBoolean("textFallback", true)
         set(v) { prefs.edit().putBoolean("textFallback", v).apply(); pushPage() }
     private val glyphFallback by lazy { GlyphFallback(runCatching { assets.open("follow/simplify.txt").bufferedReader().readText() }.getOrDefault("")) }
+    /** 阅读、讲稿：字库（GB2312 + Big5）里没有的繁体换成简体。能显示的繁体不动。 */
+    private val readingSimp by lazy { GlyphFallback(runCatching { assets.open("follow/read_simp.txt").bufferedReader().readText() }.getOrDefault("")) }
     private fun glassesText(s: String) = if (textFallback) glyphFallback.apply(s) else s
+    /** 阅读和讲稿：先把对不上的繁体换成简体，其余缺字再按原来的表换（駅→驛）。 */
+    private fun readingText(s: String) = if (textFallback) glyphFallback.apply(readingSimp.apply(s)) else s
     /** 手机通知：眼镜弹窗和画成图的字库都缺一部分繁体，转成简体再显示。 */
     private val notifySimplify by lazy { GlyphFallback(runCatching { assets.open("follow/t2s.txt").bufferedReader().readText() }.getOrDefault("")) }
 
@@ -2229,7 +2233,7 @@ class ReaderService : Service(), NimoListener, AppHost {
             "文字（眼镜收一次平均 ${client.textIntervalMs() ?: "?"} ms）")
         // 跟读时一律用文字（图片传一张要半秒左右，跟不上念的速度）
         if (readerAsImage && !followOn) {
-            client.showImage(ReaderImage.render(page.text, glassesFontPx, if (showProgress) progressPercent() else null, mark),
+            client.showImage(ReaderImage.render(readingText(page.text), glassesFontPx, if (showProgress) progressPercent() else null, mark),
                 ReaderImage.W, ReaderImage.H)
         } else if (displayPage == DisplayPage.PROMPTER) {
             // 提词器有独立的顶部状态行，章节和进度放在那里，不占正文行数；跟读时显示听到的最后几个字
@@ -2237,10 +2241,10 @@ class ReaderService : Service(), NimoListener, AppHost {
             // 跟读时进度按念到的位置算（原来只显示听到的字，进度一直不动，2026-10-26）
             // 进度用眼镜左上角自己的百分比（正文头里填上，见 PrompterMeta）；状态行不再重复显示（2026-10-26）
             val status = if (followOn) "跟读 · " + followHeard.takeLast(14).ifEmpty { "…" } else ch
-            client.showText(glassesText(page.text), glassesText(status), PrompterMeta.of(progressPercent()))
+            client.showText(readingText(page.text), readingText(status), PrompterMeta.of(progressPercent()))
         } else {
             val text = if (showProgress) page.text + "\n— %.1f%% —".format(progressPercent()) else page.text
-            client.showText(glassesText(text))
+            client.showText(readingText(text))
         }
         restartAutoFlipTimer()
         notifyUi()
