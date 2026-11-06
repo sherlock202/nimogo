@@ -516,11 +516,30 @@ class ReaderService : Service(), NimoListener, AppHost {
     /**
      * 看板显示着时右双击：语音菜单。念功能名就启动（阅读、番茄钟、表盘、字幕、场景助手、小游戏……），不用拿手机。
      */
+    /** 从系统原生看板（官方主界面）打开的：关掉菜单要回到那里，不要改成 NimoGo 的看板。 */
+    private var menuFromHome = false
+
     private fun callVoiceMenu(how: String) {
         if (activeApp === voiceMenu) return
         if (linkState != LinkState.READY) { log("$how：眼镜还没连上，打不开语音菜单"); return }
+        menuFromHome = onOfficialHome()
         log("$how：打开语音菜单")
         openApp(voiceMenu)
+    }
+
+    /** 关掉语音菜单。从系统看板打开的，回到系统看板。 */
+    private fun closeVoiceMenu() {
+        val home = menuFromHome
+        menuFromHome = false
+        if (activeApp !== voiceMenu) return
+        if (home && baseMode == AppMode.DASHBOARD) {
+            activeApp = null
+            voiceMenu.onClose()
+            log("关掉语音菜单：回到系统看板")
+            pauseGlasses()
+            return
+        }
+        closeApp()
     }
 
     /** 导航页长按会让眼镜先退出页面，紧跟着可能再来一次退出。这段时间里把看板叫回来，不把看板收起。 */
@@ -529,6 +548,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private fun closeMenuToDash() {
         log("右镜腿长按：关掉语音菜单，回到看板")
         menuReturnUntil = android.os.SystemClock.uptimeMillis() + 2_000
+        if (menuFromHome) { closeVoiceMenu(); return }
         client.retryNextEnter()
         if (activeApp === voiceMenu) closeApp() else pushDashboard(force = true)
     }
@@ -545,7 +565,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun commands() = VoiceMenu.commands(agentName, games.map { it.title })
         override fun launch(id: String) = launchVoice(id)
         override fun setRing(on: Boolean) { if (on) menuMediaOn() else menuMediaOff() }
-    }).also { a -> a.closeSelf = { if (activeApp === a) closeApp() } } }
+    }).also { a -> a.closeSelf = { if (activeApp === a) closeVoiceMenu() } } }
 
     /** 戒指选菜单：up 上一条，down 下一条，ok 启动。菜单没开时返回 false。 */
     fun menuRemote(action: String): Boolean {
@@ -601,6 +621,7 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     /** 语音菜单选中的功能。返回留在菜单上的提示；null 表示已经切走，或菜单该关掉。 */
     private fun launchVoice(id: String): String? = when (id) {
+        "dash" -> { menuFromHome = false; switchAppMode(AppMode.DASHBOARD); null }
         "read" -> if (book == null) "还没有打开书" else { switchAppMode(AppMode.READER); null }
         "nav" -> { openApp(nav); null }
         "pomo" -> { openApp(pomodoro); if (!pomodoro.state.running) pomodoro.startPause(); null }
@@ -2996,6 +3017,14 @@ class ReaderService : Service(), NimoListener, AppHost {
         inHomeLeftClick = true
         try { onInput(GlassesInput.CLICK_LEFT) } finally { inHomeLeftClick = false }
     }
+    /** 系统看板上右单击先等 400ms：再来一次（或眼镜直接报右双击）打开语音菜单。单击仍按原来的（叫回 NimoGo 看板）。 */
+    private var homeRightWait = false
+    private var inHomeRightClick = false
+    private val homeRightSingle = Runnable {
+        homeRightWait = false
+        inHomeRightClick = true
+        try { onInput(GlassesInput.CLICK_RIGHT) } finally { inHomeRightClick = false }
+    }
 
     override fun onInput(input: GlassesInput) {
         // 排查"抬头不显示看板"：收起状态下抬头时，把当时的状态记下来
@@ -3042,6 +3071,25 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (input == GlassesInput.DOUBLE_LEFT && onOfficialHome()) {
             if (homeLeftWait) { homeLeftWait = false; main.removeCallbacks(homeLeftSingle) }
             callAssist("主界面上左双击")
+            return
+        }
+        // 系统原生看板（官方主界面）不把右双击当「叫回 NimoGo 看板」：右双击打开语音菜单。
+        // 有的固件只报两次单击、不报双击，和左镜腿一样等 400ms。
+        if (!inHomeRightClick && input == GlassesInput.CLICK_RIGHT && onOfficialHome()) {
+            if (homeRightWait) {
+                homeRightWait = false
+                main.removeCallbacks(homeRightSingle)
+                callVoiceMenu("系统看板上右双击")
+                return
+            }
+            if (dismissNotification()) return
+            homeRightWait = true
+            main.postDelayed(homeRightSingle, 400)
+            return
+        }
+        if (input == GlassesInput.DOUBLE_RIGHT && onOfficialHome()) {
+            if (homeRightWait) { homeRightWait = false; main.removeCallbacks(homeRightSingle) }
+            callVoiceMenu("系统看板上右双击")
             return
         }
         // 看书、看板上眼镜会单独报左双击（单击仍翻页 / 上一页）：双击打开场景助手

@@ -250,7 +250,7 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
     private fun activate(cmd: VoiceCommand) {
         host.log("语音菜单：打开 ${cmd.label}")
         if (cmd.id == "games") { page = Page.GAMES; index = 0; note = ""; show(); armIdle(); return }
-        if (cmd.id == "dash") { close(); return }
+        if (cmd.id == "dash") { env.launch("dash"); return }
         val err = env.launch(cmd.id)
         if (!running) return
         if (err != null) { note = err; show(); armIdle() } else close()
