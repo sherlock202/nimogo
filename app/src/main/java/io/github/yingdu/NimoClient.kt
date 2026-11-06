@@ -975,8 +975,11 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         if (held > 700) {
             main.postDelayed({
                 if (System.currentTimeMillis() - lastGestureAt > 600) {
-                    log("（由按下/松开合成）长按")
-                    listener.onInput(GlassesInput.LONG_PRESS)
+                    if (!right && listener.onLongPressLeft()) log("（由按下/松开合成）左长按")
+                    else {
+                        log("（由按下/松开合成）长按")
+                        listener.onInput(GlassesInput.LONG_PRESS)
+                    }
                 }
             }, 400)
             return

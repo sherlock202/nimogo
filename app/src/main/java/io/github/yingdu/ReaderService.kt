@@ -482,8 +482,11 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     fun agentForget(n: Int) { agentCommands.removeAll { it.number == n }; agentSave(); notifyUi() }
 
-    /** 长按左镜腿：叫 AI 代理（提词、场景助手开着时不叫，免得打断）。 */
-    override fun onLongPressLeft(): Boolean = callAgent("长按左镜腿")
+    /** 长按左镜腿：看书、NimoGo 看板上叫 AI 代理。系统看板上打开语音菜单（右镜腿在主界面不上报）。 */
+    override fun onLongPressLeft(): Boolean {
+        if (onOfficialHome()) { callVoiceMenu("系统看板上左长按"); return true }
+        return callAgent("长按左镜腿")
+    }
 
     private fun callAgent(how: String): Boolean {
         if (!agentEnabled) return false
@@ -3009,21 +3012,13 @@ class ReaderService : Service(), NimoListener, AppHost {
     private fun onOfficialHome() = glassesPaused && activeApp == null &&
         (appMode != AppMode.DASHBOARD || client.enteredAppId() == null)
 
-    /** 主界面上左单击先等 400ms：这段里再来一次就是双击，打开场景助手。 */
+    /** 主界面上左单击先等 400ms：这段里再来一次就是双击，打开场景助手。单击打开 AI 代理。长按打开语音菜单。 */
     private var homeLeftWait = false
     private var inHomeLeftClick = false
     private val homeLeftSingle = Runnable {
         homeLeftWait = false
         inHomeLeftClick = true
         try { onInput(GlassesInput.CLICK_LEFT) } finally { inHomeLeftClick = false }
-    }
-    /** 系统看板上右单击先等 400ms：再来一次（或眼镜直接报右双击）打开语音菜单。单击仍按原来的（叫回 NimoGo 看板）。 */
-    private var homeRightWait = false
-    private var inHomeRightClick = false
-    private val homeRightSingle = Runnable {
-        homeRightWait = false
-        inHomeRightClick = true
-        try { onInput(GlassesInput.CLICK_RIGHT) } finally { inHomeRightClick = false }
     }
 
     override fun onInput(input: GlassesInput) {
@@ -3055,8 +3050,8 @@ class ReaderService : Service(), NimoListener, AppHost {
             notifyUi()
             return
         }
-        // 眼镜在官方主界面（收起了）：主界面上长按左镜腿不报给手机、单击会报（2026-10-26 日志），所以左单击叫 AI 代理；
-        // 很快再按一次（或眼镜直接报左双击）打开场景助手。右单击照旧（看板：叫回看板）
+        // 系统看板（官方主界面）：左单击打开 AI 代理，左双击打开场景助手，左长按打开语音菜单。
+        // 右镜腿在主界面上眼镜不上报。
         if (!inHomeLeftClick && input == GlassesInput.CLICK_LEFT && onOfficialHome()) {
             if (homeLeftWait) {
                 homeLeftWait = false
@@ -3071,25 +3066,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (input == GlassesInput.DOUBLE_LEFT && onOfficialHome()) {
             if (homeLeftWait) { homeLeftWait = false; main.removeCallbacks(homeLeftSingle) }
             callAssist("主界面上左双击")
-            return
-        }
-        // 系统原生看板（官方主界面）不把右双击当「叫回 NimoGo 看板」：右双击打开语音菜单。
-        // 有的固件只报两次单击、不报双击，和左镜腿一样等 400ms。
-        if (!inHomeRightClick && input == GlassesInput.CLICK_RIGHT && onOfficialHome()) {
-            if (homeRightWait) {
-                homeRightWait = false
-                main.removeCallbacks(homeRightSingle)
-                callVoiceMenu("系统看板上右双击")
-                return
-            }
-            if (dismissNotification()) return
-            homeRightWait = true
-            main.postDelayed(homeRightSingle, 400)
-            return
-        }
-        if (input == GlassesInput.DOUBLE_RIGHT && onOfficialHome()) {
-            if (homeRightWait) { homeRightWait = false; main.removeCallbacks(homeRightSingle) }
-            callVoiceMenu("系统看板上右双击")
             return
         }
         // 看书、看板上眼镜会单独报左双击（单击仍翻页 / 上一页）：双击打开场景助手
