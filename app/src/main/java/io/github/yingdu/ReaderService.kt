@@ -190,18 +190,16 @@ class ReaderService : Service(), NimoListener, AppHost {
     var scrollLines: Int
         get() = prefs.getInt("scrollLines", 0)
         set(v) { prefs.edit().putInt("scrollLines", v.coerceIn(0, 20)).apply() }
-    /** 文字显示时，把眼镜字库里没有的字换成能显示的写法（默认开）。阅读和讲稿里对不上的繁体优先换成简体。 */
+    /** 文字显示时，把眼镜字库里没有的字换成能显示的写法（默认开）。阅读和讲稿里的繁体换成简体。 */
     var textFallback: Boolean
         get() = prefs.getBoolean("textFallback", true)
         set(v) { prefs.edit().putBoolean("textFallback", v).apply(); pushPage() }
     private val glyphFallback by lazy { GlyphFallback(runCatching { assets.open("follow/simplify.txt").bufferedReader().readText() }.getOrDefault("")) }
-    /** 阅读、讲稿：字库（GB2312 + Big5）里没有的繁体换成简体。能显示的繁体不动。 */
-    private val readingSimp by lazy { GlyphFallback(runCatching { assets.open("follow/read_simp.txt").bufferedReader().readText() }.getOrDefault("")) }
     private fun glassesText(s: String) = if (textFallback) glyphFallback.apply(s) else s
-    /** 阅读和讲稿：先把对不上的繁体换成简体，其余缺字再按原来的表换（駅→驛）。 */
-    private fun readingText(s: String) = if (textFallback) glyphFallback.apply(readingSimp.apply(s)) else s
-    /** 手机通知：眼镜弹窗和画成图的字库都缺一部分繁体，转成简体再显示。 */
+    /** 手机通知、阅读、讲稿：繁体换成简体。眼镜字库有的繁体也不齐（義能显示，惡、從不能），所以阅读和讲稿整段换。 */
     private val notifySimplify by lazy { GlyphFallback(runCatching { assets.open("follow/t2s.txt").bufferedReader().readText() }.getOrDefault("")) }
+    /** 先补日文缺字（駅→驛），再把繁体换成简体（驛→驿、惡→恶、從→从）。 */
+    private fun readingText(s: String) = if (textFallback) notifySimplify.apply(glyphFallback.apply(s)) else s
 
     var showProgress: Boolean
         get() = prefs.getBoolean("showProgress", false)

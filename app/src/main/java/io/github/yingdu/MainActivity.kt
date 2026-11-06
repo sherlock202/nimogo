@@ -1961,7 +1961,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val progToggle = Toggle { service?.let { it.showProgress = !it.showProgress }; refreshNow() }
         l.addRow(Row("显示阅读进度") { service?.let { it.showProgress = !it.showProgress }; refreshNow() }.apply { accessory(progToggle.root) }.root)
         val fbToggle = Toggle { service?.let { it.textFallback = !it.textFallback }; refreshNow() }
-        l.addRow(Row("文字显示：缺的字换个写法", "阅读和讲稿里，眼镜没有的繁体换成简体（例如欅→榉）；没有简体的日文汉字换成繁体（駅→驛）") {
+        l.addRow(Row("文字显示：缺的字换个写法", "阅读和讲稿里的繁体换成简体（例如惡→恶、從→从）；日文缺字也换成能显示的简体（駅→驿）") {
             service?.let { it.textFallback = !it.textFallback }; refreshNow()
         }.apply { accessory(fbToggle.root) }.root)
         page.addView(l)
