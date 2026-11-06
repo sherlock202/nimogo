@@ -30,7 +30,11 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     inner class LocalBinder : Binder() { val service: ReaderService get() = this@ReaderService }
 
-    interface UiListener { fun onReaderChanged() }
+    interface UiListener {
+        fun onReaderChanged()
+        /** 眼镜上双击左镜腿打开了场景助手：手机在前台时进入黑屏模式。 */
+        fun onAssistStartedFromGlasses() {}
+    }
 
     /** 眼镜当前显示什么。APP = 一个全屏功能（小游戏、表盘……），见 activeApp。 */
     enum class AppMode { READER, DASHBOARD, APP }
@@ -485,6 +489,24 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (!agentReady) { log("$agentName：还没填仓库和令牌（「AI 代理」）"); return false }
         log("$how：对 $agentName 说命令")
         openApp(agent)
+        return true
+    }
+
+    /**
+     * 双击左镜腿：打开场景助手（用现在选好的场景）。提词、跟读时不打断，仍按原来的双击（上一章）。
+     * 返回 true 表示这个双击用掉了。
+     */
+    private fun callAssist(how: String): Boolean {
+        if (prompting || activeApp === assist) return false
+        if (linkState != LinkState.READY) { log("$how：眼镜还没连上，打不开场景助手"); return true }
+        if (!assistAsrReady()) {
+            log("$how：场景助手还不能开始（离线模型没下载，也没设在线转文字）")
+            onPhoneNotification("场景助手", "", "还不能开始：先下载离线转文字模型，或设好在线转文字。")
+            return true
+        }
+        log("$how：打开场景助手「${assistScene.name}」")
+        openApp(assist)
+        uiListener?.onAssistStartedFromGlasses()
         return true
     }
 
@@ -2848,6 +2870,19 @@ class ReaderService : Service(), NimoListener, AppHost {
         updateNotification(); notifyUi()
     }
 
+    /** 官方主界面（看板收起且页面已关，或阅读已收起）：单击、双击都报给手机。 */
+    private fun onOfficialHome() = glassesPaused && activeApp == null &&
+        (appMode != AppMode.DASHBOARD || client.enteredAppId() == null)
+
+    /** 主界面上左单击先等 400ms：这段里再来一次就是双击，打开场景助手。 */
+    private var homeLeftWait = false
+    private var inHomeLeftClick = false
+    private val homeLeftSingle = Runnable {
+        homeLeftWait = false
+        inHomeLeftClick = true
+        try { onInput(GlassesInput.CLICK_LEFT) } finally { inHomeLeftClick = false }
+    }
+
     override fun onInput(input: GlassesInput) {
         // 排查"抬头不显示看板"：收起状态下抬头时，把当时的状态记下来
         if (input == GlassesInput.HEAD_UP && glassesPaused)
@@ -2872,7 +2907,25 @@ class ReaderService : Service(), NimoListener, AppHost {
             return
         }
         // 眼镜在官方主界面（收起了）：主界面上长按左镜腿不报给手机、单击会报（2026-10-26 日志），所以左单击叫 AI 代理；
-        // 右单击照旧（看板：叫回看板）
+        // 很快再按一次（或眼镜直接报左双击）打开场景助手。右单击照旧（看板：叫回看板）
+        if (!inHomeLeftClick && input == GlassesInput.CLICK_LEFT && onOfficialHome()) {
+            if (homeLeftWait) {
+                homeLeftWait = false
+                main.removeCallbacks(homeLeftSingle)
+                callAssist("主界面上左双击")
+                return
+            }
+            homeLeftWait = true
+            main.postDelayed(homeLeftSingle, 400)
+            return
+        }
+        if (input == GlassesInput.DOUBLE_LEFT && onOfficialHome()) {
+            if (homeLeftWait) { homeLeftWait = false; main.removeCallbacks(homeLeftSingle) }
+            callAssist("主界面上左双击")
+            return
+        }
+        // 看书、看板上眼镜会单独报左双击（单击仍翻页 / 上一页）：双击打开场景助手
+        if (input == GlassesInput.DOUBLE_LEFT && activeApp == null && callAssist("左双击")) return
         if (input == GlassesInput.CLICK_LEFT && glassesPaused && activeApp == null && agentEnabled && agentReady &&
             (appMode != AppMode.DASHBOARD || client.enteredAppId() == null) && callAgent("主界面上左单击")) return
         // 通知正显示着：右单击立即关掉（不翻页、不收起看板）

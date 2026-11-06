@@ -1078,6 +1078,10 @@ class MainActivity : Activity(), ReaderService.UiListener {
     }
 
     /** 服务通知状态变化：合并成每 150 毫秒最多刷新一次，避免日志频繁更新时界面卡顿。 */
+    override fun onAssistStartedFromGlasses() {
+        if (speech == null) enterSpeech(forAssist = true)
+    }
+
     override fun onReaderChanged() {
         if (refreshQueued) return
         refreshQueued = true
@@ -1454,7 +1458,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             }
             autoToggle.set(s.autoFlip)
             autoHint.text = if (s.readerAsImage) "行数空着就是整页翻。图片显示时镜腿单击不可用，用上面的按钮翻页。"
-                else "行数空着就是整页翻。镜腿：单击翻页 · 双击换章 · 长按开关自动滚动"
+                else "行数空着就是整页翻。镜腿：单击翻页 · 右双击下一章 · 左双击打开场景助手 · 长按开关自动滚动"
         }
         return page
     }
@@ -1701,7 +1705,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             howSeg.select(hows.indexOf(s.dashHideModeSetting).coerceAtLeast(0))
             howSeg.root.visibility = if (s.dashHeadWake) View.VISIBLE else View.GONE
             val home = s.dashHideMode == ReaderService.HIDE_HOME
-            howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时回官方主界面，点一下镜腿叫回看板；显示时右单击收起，左单击翻屏。" +
+            howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时回官方主界面，点一下镜腿叫回看板；显示时右单击收起，左单击翻屏，左双击打开场景助手。" +
                 "官方 app 连着时眼镜的报告会发给官方 app，NimoGo 收不到，要先停止官方 app（「我的 › 和官方 app 切换」）。"
                 else if (home) "回官方主界面；眼镜报告「主界面被点亮」时叫回看板。官方 app 连着时这个报告会发给官方 app，" +
                 "NimoGo 收不到，所以要先停止官方 app（「我的 › 和官方 app 切换」）。"
