@@ -225,6 +225,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         val code = event.keyCode
         if (speech != null && speechKey(event)) return true
+        // 语音菜单开着：戒指上下选，中间键启动（音量键也算上下，播放键算确认）
+        VoiceMenu.keyAction(code)?.let { a ->
+            if ((service?.activeApp as? VoiceMenuApp)?.running == true) {
+                if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) service?.menuRemote(a)
+                return true
+            }
+        }
         // 场景助手页面里（场景助手开着）：戒指、耳机、音量键交给场景助手
         if (sub == Sub.ASSIST && service?.assist?.running == true) {
             AssistApp.keyAction(code)?.let { a ->
@@ -278,6 +285,16 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val code = e.keyCode
         if (code == android.view.KeyEvent.KEYCODE_BACK) { if (e.action == android.view.KeyEvent.ACTION_UP) exitSpeech(); return true }
         if (code == android.view.KeyEvent.KEYCODE_POWER) return false
+        if ((service?.activeApp as? VoiceMenuApp)?.running == true) {
+            val a = VoiceMenu.keyAction(code)
+            if (e.action == android.view.KeyEvent.ACTION_DOWN && e.repeatCount == 0) {
+                if (a != null) {
+                    service?.menuRemote(a)
+                    speechShow(when (a) { "up" -> "上一条"; "down" -> "下一条"; else -> "打开" })
+                } else speechShow("收到 ${android.view.KeyEvent.keyCodeToString(code).removePrefix("KEYCODE_")}（没有用到）")
+            }
+            return true
+        }
         if (speechAssist) {
             val a = AssistApp.keyAction(code)
             if (e.action != android.view.KeyEvent.ACTION_DOWN || e.repeatCount > 0) return true
@@ -1705,7 +1722,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             howSeg.select(hows.indexOf(s.dashHideModeSetting).coerceAtLeast(0))
             howSeg.root.visibility = if (s.dashHeadWake) View.VISIBLE else View.GONE
             val home = s.dashHideMode == ReaderService.HIDE_HOME
-            howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时回官方主界面，点一下镜腿叫回看板；显示时右单击收起，左单击翻屏，左双击打开场景助手。" +
+            howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时回官方主界面，点一下镜腿叫回看板；显示时右单击收起，左单击翻屏，左双击打开场景助手，右双击打开语音菜单。" +
                 "官方 app 连着时眼镜的报告会发给官方 app，NimoGo 收不到，要先停止官方 app（「我的 › 和官方 app 切换」）。"
                 else if (home) "回官方主界面；眼镜报告「主界面被点亮」时叫回看板。官方 app 连着时这个报告会发给官方 app，" +
                 "NimoGo 收不到，所以要先停止官方 app（「我的 › 和官方 app 切换」）。"

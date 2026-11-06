@@ -141,7 +141,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     /** 提词器文字显示阅读时，长按右镜腿不退出（只用镜腿翻页；退出在手机上点「收起显示」）。 */
     override fun keepPrompterOnLongPress(): Boolean = !glassesPaused && ((appMode == AppMode.READER && activeApp == null) || holdsPrompter)
 
-    /** 只能用镜腿单击操作、长按也不退出的全屏功能：场景助手、代理的消息（只有按右镜腿才关）。 */
+    /** 只能用镜腿单击操作、长按也不退出的全屏功能：场景助手、代理的消息（都在提词器上）。语音菜单在看板上，不在这里。 */
     private val holdsPrompter get() = activeApp.let { it != null && (it === assist || it === agentMsg) }
 
     override fun onPrompterRestore() {
@@ -278,6 +278,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     val agentCommands: MutableList<AgentCommand> by lazy { AgentCommand.listFromJson(agentPrefs.getString("cmds", null)) }
     private fun agentSave() { agentPrefs.edit().putString("cmds", AgentCommand.listToJson(agentCommands.take(30))).apply() }
     private var agentWantsMic = false
+    private var menuWantsMic = false
     var agentError = ""; private set
     var agentCheckedAt = 0L; private set
 
@@ -510,6 +511,117 @@ class ReaderService : Service(), NimoListener, AppHost {
         openApp(assist)
         uiListener?.onAssistStartedFromGlasses()
         return true
+    }
+
+    /**
+     * 看板显示着时右双击：语音菜单。念功能名就启动（阅读、番茄钟、表盘、字幕、场景助手、小游戏……），不用拿手机。
+     */
+    private fun callVoiceMenu(how: String) {
+        if (activeApp === voiceMenu) return
+        if (linkState != LinkState.READY) { log("$how：眼镜还没连上，打不开语音菜单"); return }
+        log("$how：打开语音菜单")
+        openApp(voiceMenu)
+    }
+
+    /** 导航页长按会让眼镜先退出页面，紧跟着可能再来一次退出。这段时间里把看板叫回来，不把看板收起。 */
+    private var menuReturnUntil = 0L
+
+    private fun closeMenuToDash() {
+        log("右镜腿长按：关掉语音菜单，回到看板")
+        menuReturnUntil = android.os.SystemClock.uptimeMillis() + 2_000
+        client.retryNextEnter()
+        if (activeApp === voiceMenu) closeApp() else pushDashboard(force = true)
+    }
+
+    private val menuPinyin by lazy {
+        runCatching { PinyinTable(assets.open("follow/pinyin.txt").bufferedReader().readText()) }.getOrNull()
+    }
+
+    val voiceMenu: VoiceMenuApp by lazy { VoiceMenuApp(this, object : VoiceMenuApp.Env {
+        override fun asrReady() = LocalAsr.ready()
+        override fun language() = memGet("asrLang", "zh").let { if (it == "auto") "" else it }
+        override fun setMic(on: Boolean) { menuWantsMic = on; glassesMic(on) }
+        override fun pinyin(c: Char) = menuPinyin?.of(c)
+        override fun commands() = VoiceMenu.commands(agentName, games.map { it.title })
+        override fun launch(id: String) = launchVoice(id)
+        override fun setRing(on: Boolean) { if (on) menuMediaOn() else menuMediaOff() }
+    }).also { a -> a.closeSelf = { if (activeApp === a) closeApp() } } }
+
+    /** 戒指选菜单：up 上一条，down 下一条，ok 启动。菜单没开时返回 false。 */
+    fun menuRemote(action: String): Boolean {
+        val m = activeApp as? VoiceMenuApp ?: return false
+        if (!m.running) return false
+        m.remote(action)
+        return true
+    }
+
+    /** 语音菜单开着时接管音量键和播放键：手机息屏后方向键到不了 app，这两种还能交过来。 */
+    private var menuMedia: android.media.session.MediaSession? = null
+    private fun menuMediaOn() {
+        if (menuMedia != null) return
+        runCatching {
+            val ms = android.media.session.MediaSession(this, "NimoGo-menu")
+            fun act(a: String?, from: String) {
+                log("语音菜单：$from" + (a?.let { " → $it" } ?: "（没有用到）"))
+                if (a != null) main.post { menuRemote(a) }
+            }
+            ms.setCallback(object : android.media.session.MediaSession.Callback() {
+                override fun onMediaButtonEvent(i: Intent): Boolean {
+                    @Suppress("DEPRECATION")
+                    val e = i.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT) ?: return false
+                    if (e.action == android.view.KeyEvent.ACTION_DOWN && e.repeatCount == 0)
+                        act(VoiceMenu.keyAction(e.keyCode), "按键 " + android.view.KeyEvent.keyCodeToString(e.keyCode).removePrefix("KEYCODE_"))
+                    return true
+                }
+                override fun onSkipToNext() = act("down", "下一曲")
+                override fun onSkipToPrevious() = act("up", "上一曲")
+                override fun onPlay() = act("ok", "播放")
+                override fun onPause() = act("ok", "暂停")
+            }, main)
+            ms.setPlaybackToRemote(object : android.media.VolumeProvider(VOLUME_CONTROL_RELATIVE, 100, 50) {
+                override fun onAdjustVolume(direction: Int) {
+                    if (direction > 0) act("up", "音量 +") else if (direction < 0) act("down", "音量 −")
+                }
+            })
+            ms.setPlaybackState(android.media.session.PlaybackState.Builder()
+                .setActions(android.media.session.PlaybackState.ACTION_PLAY or android.media.session.PlaybackState.ACTION_PAUSE or
+                    android.media.session.PlaybackState.ACTION_PLAY_PAUSE or android.media.session.PlaybackState.ACTION_SKIP_TO_NEXT or
+                    android.media.session.PlaybackState.ACTION_SKIP_TO_PREVIOUS)
+                .setState(android.media.session.PlaybackState.STATE_PLAYING, 0, 1f).build())
+            ms.isActive = true
+            menuMedia = ms
+            log("语音菜单：接管音量键和播放键（关掉菜单后恢复）")
+        }.onFailure { log("语音菜单：接管按键失败：$it") }
+    }
+    private fun menuMediaOff() {
+        val ms = menuMedia ?: return
+        menuMedia = null
+        runCatching { ms.isActive = false; ms.release() }
+    }
+
+    /** 语音菜单选中的功能。返回留在菜单上的提示；null 表示已经切走，或菜单该关掉。 */
+    private fun launchVoice(id: String): String? = when (id) {
+        "read" -> if (book == null) "还没有打开书" else { switchAppMode(AppMode.READER); null }
+        "nav" -> { openApp(nav); null }
+        "pomo" -> { openApp(pomodoro); if (!pomodoro.state.running) pomodoro.startPause(); null }
+        "clock" -> { openApp(clock); null }
+        "captions" -> if (linkState != LinkState.READY || !asrReady()) "字幕还不能开：先设好转文字" else { openApp(captions); null }
+        "assist" -> if (linkState != LinkState.READY || !assistAsrReady()) "场景助手还不能开始" else { callAssist("语音菜单"); null }
+        "agent" -> if (!agentEnabled || !agentReady) "先在手机上打开 AI 代理，并填好仓库和令牌" else { callAgent("语音菜单"); null }
+        "memory" -> { memSetEnabled(true); closeApp(); popup("全天记忆", "已开始记"); null }
+        "sights" -> { closeApp(); sightsCheck(manual = true); popup("景点介绍", "正在查附近"); null }
+        "party" -> { openApp(party); null }
+        "party:dice" -> { openApp(party); party.rollDice(); null }
+        "party:lots" -> { openApp(party); party.drawLot(); null }
+        "party:truth" -> { openApp(party); party.truthOrDare(null); null }
+        "follow" -> if (book == null) "跟读要先在手机上打开讲稿" else { switchAppMode(AppMode.READER); startFollow(); null }
+        else -> {
+            if (!id.startsWith("game:")) "没有这个功能"
+            else {
+                val g = games.firstOrNull { it.title == id.removePrefix("game:") }
+                if (g == null) "没有这个游戏" else { openApp(g); null }
+            }
+        }
     }
 
     // ---------- 场景助手（NimoGo） ----------
@@ -2893,6 +3005,12 @@ class ReaderService : Service(), NimoListener, AppHost {
                 "，收起方式 ${if (dashHideMode == HIDE_HOME) "回主界面" else "关屏"}，抬头显示看板 ${if (dashHeadWake) "开" else "关"}，" +
                 "使用看板 ${if (dashEnabled) "开" else "关"}，眼镜页面 ${client.enteredAppId() ?: "主界面"}")
         if (input == GlassesInput.EXITED) {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (activeApp === voiceMenu || now < menuReturnUntil) {
+                if (activeApp === voiceMenu || client.enteredAppId() == null) closeMenuToDash()
+                else log("刚回到看板，忽略紧跟着的退出")
+                return
+            }
             // 眼镜退出了页面（长按右镜腿）：停止自动滚动、语音跟读，暂停显示
             stopAutoFlip()
             if (followOn) stopFollow("眼镜上长按退出了", push = false)
@@ -2932,6 +3050,8 @@ class ReaderService : Service(), NimoListener, AppHost {
             (appMode != AppMode.DASHBOARD || client.enteredAppId() == null) && callAgent("主界面上左单击")) return
         // 通知正显示着：右单击立即关掉（不翻页、不收起看板）
         if (input == GlassesInput.CLICK_RIGHT && dismissNotification()) return
+        // 语音菜单画在看板上（导航页）。这一页长按右镜腿是眼镜自己的退出，先关掉菜单再把看板叫回来
+        if (activeApp === voiceMenu && input == GlassesInput.LONG_PRESS) { closeMenuToDash(); return }
         activeApp?.let { it.onInput(input); return }
         if (appMode == AppMode.DASHBOARD) when (input) {
             GlassesInput.HOME_WAKE -> {
@@ -2988,7 +3108,7 @@ class ReaderService : Service(), NimoListener, AppHost {
             when (input) {
                 // 眼镜「抬头显示」关着时：右单击收起看板（再按一下显示），左单击翻到下一屏
                 GlassesInput.CLICK_RIGHT -> if (!dashHeadWake) hideDashboard("右镜腿：收起看板") else dashFlip(1)
-                GlassesInput.DOUBLE_RIGHT -> dashFlip(1)
+                GlassesInput.DOUBLE_RIGHT -> callVoiceMenu("看板上右双击")
                 GlassesInput.CLICK_LEFT -> dashFlip(if (dashHeadWake) -1 else 1)
                 GlassesInput.DOUBLE_LEFT -> dashFlip(-1)
                 GlassesInput.LONG_PRESS -> { log("手动刷新"); refreshDashboard(forceWeather = true) }
@@ -3050,7 +3170,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private var captionsWantMic = false
     private fun glassesMic(on: Boolean) {
         if (on) client.micStart()
-        else if (!memWantsMic && !captionsWantMic && !followWantsMic && !assistWantsMic && !agentWantsMic) client.micStop()
+        else if (!memWantsMic && !captionsWantMic && !followWantsMic && !assistWantsMic && !agentWantsMic && !menuWantsMic) client.micStop()
     }
 
     override fun onMicFrames(frames: List<NimoMic.Frame>) {
@@ -3059,6 +3179,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (captions.running) captions.onFrames(frames)
         if (assist.running) assist.onFrames(frames)
         if (agent.running) agent.onFrames(frames)
+        if (voiceMenu.running) voiceMenu.onFrames(frames)
     }
 
     val micAvailable get() = ::client.isInitialized && client.micAvailable
