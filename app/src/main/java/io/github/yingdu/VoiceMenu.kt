@@ -287,7 +287,7 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
         val labels = items().map { it.label }
         val itemRows = if (note.isNotEmpty()) (rows - 1).coerceAtLeast(1) else rows
         val lines = ArrayList<String>()
-        if (note.isNotEmpty()) lines += AgentInbox.wrapCols(note, cols).take(1)
+        if (note.isNotEmpty()) lines += AgentApp.wrapCols(note, cols).take(1)
         if (labels.isNotEmpty()) lines += VoiceMenu.window(labels, index.coerceIn(0, labels.lastIndex), itemRows)
         val st = if (hearing) "语音菜单 · 在听" else "上下选　中键打开"
         return lines.take(rows).joinToString("\n") to st
