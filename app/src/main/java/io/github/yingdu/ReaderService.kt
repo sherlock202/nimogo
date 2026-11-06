@@ -482,7 +482,7 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     fun agentForget(n: Int) { agentCommands.removeAll { it.number == n }; agentSave(); notifyUi() }
 
-    /** 长按左镜腿：看书、NimoGo 看板上叫 AI 代理。系统看板上打开语音菜单（右镜腿在主界面不上报）。 */
+    /** 长按左镜腿：看书、NimoGo 看板上叫 AI 代理。系统看板上若眼镜真的报了左长按，也打开语音菜单（实测主界面通常不报）。 */
     override fun onLongPressLeft(): Boolean {
         if (onOfficialHome()) { callVoiceMenu("系统看板上左长按"); return true }
         return callAgent("长按左镜腿")
@@ -3012,13 +3012,23 @@ class ReaderService : Service(), NimoListener, AppHost {
     private fun onOfficialHome() = glassesPaused && activeApp == null &&
         (appMode != AppMode.DASHBOARD || client.enteredAppId() == null)
 
-    /** 主界面上左单击先等 400ms：这段里再来一次就是双击，打开场景助手。单击打开 AI 代理。长按打开语音菜单。 */
-    private var homeLeftWait = false
+    /**
+     * 主界面上左镜腿只报单击和双击，不报长按。点一下等 400ms：没有后续就是单击（AI 代理）；
+     * 再点一次再等 400ms，没有第三次就是双击（场景助手）；400ms 内第三下打开语音菜单。
+     */
+    private var homeLeftClicks = 0
     private var inHomeLeftClick = false
-    private val homeLeftSingle = Runnable {
-        homeLeftWait = false
-        inHomeLeftClick = true
-        try { onInput(GlassesInput.CLICK_LEFT) } finally { inHomeLeftClick = false }
+    private val homeLeftFire = Runnable {
+        val n = homeLeftClicks
+        homeLeftClicks = 0
+        when {
+            n >= 3 -> callVoiceMenu("主界面上左三击")
+            n == 2 -> callAssist("主界面上左双击")
+            n == 1 -> {
+                inHomeLeftClick = true
+                try { onInput(GlassesInput.CLICK_LEFT) } finally { inHomeLeftClick = false }
+            }
+        }
     }
 
     override fun onInput(input: GlassesInput) {
@@ -3050,22 +3060,16 @@ class ReaderService : Service(), NimoListener, AppHost {
             notifyUi()
             return
         }
-        // 系统看板（官方主界面）：左单击打开 AI 代理，左双击打开场景助手，左长按打开语音菜单。
-        // 右镜腿在主界面上眼镜不上报。
-        if (!inHomeLeftClick && input == GlassesInput.CLICK_LEFT && onOfficialHome()) {
-            if (homeLeftWait) {
-                homeLeftWait = false
-                main.removeCallbacks(homeLeftSingle)
-                callAssist("主界面上左双击")
-                return
-            }
-            homeLeftWait = true
-            main.postDelayed(homeLeftSingle, 400)
-            return
-        }
-        if (input == GlassesInput.DOUBLE_LEFT && onOfficialHome()) {
-            if (homeLeftWait) { homeLeftWait = false; main.removeCallbacks(homeLeftSingle) }
-            callAssist("主界面上左双击")
+        // 系统看板（官方主界面）：左单击打开 AI 代理，左双击打开场景助手，左三击打开语音菜单。
+        // 左长按和右镜腿在主界面上眼镜不上报。
+        if (!inHomeLeftClick && onOfficialHome() &&
+            (input == GlassesInput.CLICK_LEFT || input == GlassesInput.DOUBLE_LEFT)) {
+            homeLeftClicks = if (input == GlassesInput.DOUBLE_LEFT) maxOf(homeLeftClicks, 2) else homeLeftClicks + 1
+            main.removeCallbacks(homeLeftFire)
+            if (homeLeftClicks >= 3) {
+                homeLeftClicks = 0
+                callVoiceMenu("主界面上左三击")
+            } else main.postDelayed(homeLeftFire, 400)
             return
         }
         // 看书、看板上眼镜会单独报左双击（单击仍翻页 / 上一页）：双击打开场景助手

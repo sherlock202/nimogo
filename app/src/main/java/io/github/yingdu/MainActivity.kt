@@ -2994,7 +2994,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
         val sw = listBox()
         val onToggle = Toggle { service?.let { it.agentEnabled = !it.agentEnabled }; refreshNow() }
-        val onRow = Row("左镜腿叫出 AI 代理", "看书、NimoGo 看板上长按左镜腿；系统看板上单击左镜腿（长按是语音菜单）").apply { accessory(onToggle.root) }
+        val onRow = Row("左镜腿叫出 AI 代理", "看书、NimoGo 看板上长按左镜腿；系统看板上单击左镜腿（连点三次是语音菜单）").apply { accessory(onToggle.root) }
         sw.addRow(onRow.root)
         val stickyToggle = Toggle { service?.let { it.agentSticky = !it.agentSticky }; refreshNow() }
         val stickyRow = Row("代理的消息一直显示", "不自动消失，按右镜腿才关；等确认的左单击直接回复").apply { accessory(stickyToggle.root) }
@@ -3106,7 +3106,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val t = s.agentGet("token"); tokenRow.value(if (t.isEmpty()) "未填" else "••••" + t.takeLast(4))
             labelRow.value(s.agentLabel)
             state.text = when {
-                !s.agentEnabled -> "没开。打开后，看书或 NimoGo 看板上长按左镜腿、系统看板上单击左镜腿，就能对${s.agentName}说命令"
+                !s.agentEnabled -> "没开。打开后，看书或 NimoGo 看板上长按左镜腿、系统看板上单击左镜腿，就能对${s.agentName}说命令（系统看板上连点三次是语音菜单）"
                 !s.agentReady -> "先填仓库和令牌"
                 s.agentError.isNotEmpty() -> "出错：${s.agentError}"
                 else -> "准备好了" + (if (s.agentCheckedAt > 0) "，上次查回复 " + java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date(s.agentCheckedAt)) else "")
