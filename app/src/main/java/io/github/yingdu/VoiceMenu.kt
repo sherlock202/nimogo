@@ -20,6 +20,8 @@ object VoiceMenu {
             VoiceCommand("nav", "导航", listOf("导航")),
             VoiceCommand("pomo", "番茄钟", listOf("番茄钟", "番茄")),
             VoiceCommand("workout", "锻炼", listOf("锻炼", "健身")),
+            VoiceCommand("eyes", "视力训练", listOf("视力训练", "眼睛休息", "护眼")),
+            VoiceCommand("sleep", "催眠", listOf("催眠", "催眠模式")),
             VoiceCommand("clock", "表盘", listOf("像素表盘", "表盘")),
             VoiceCommand("captions", "字幕", listOf("实时字幕", "字幕")),
             VoiceCommand("assist", "场景助手", listOf("场景助手", "助手")),
@@ -50,7 +52,7 @@ object VoiceMenu {
     }
 
     /** 戒指能逐条选的功能（语音还能用别名，比如骰子、看板）。游戏页只列游戏。 */
-    private val RING = listOf("read", "nav", "pomo", "workout", "clock", "captions", "assist", "agent", "memory", "sights", "party", "follow", "games")
+    private val RING = listOf("read", "nav", "pomo", "workout", "eyes", "sleep", "clock", "captions", "assist", "agent", "memory", "sights", "party", "follow", "games")
 
     fun ringItems(all: List<VoiceCommand>, games: Boolean): List<VoiceCommand> =
         if (games) all.filter { it.id.startsWith("game:") }

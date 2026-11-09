@@ -221,6 +221,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     val clock by lazy { ClockApp(this) }
     val pomodoro by lazy { PomodoroApp(this) }
     val workout by lazy { WorkoutApp(this) }
+    val eyes by lazy { EyeRestApp(this) }
     val party by lazy { PartyApp(this) }
     /** 导航（NimoGo：Google Navigation SDK 的逐向数据画到眼镜上）。导航开始时自动在眼镜上打开，结束后收回。 */
     val nav by lazy {
@@ -638,6 +639,8 @@ class ReaderService : Service(), NimoListener, AppHost {
             if (g == null || g.moves.isEmpty()) "先在手机上建好运动组"
             else { workout.startGroup(g); openApp(workout); null }
         }
+        "eyes" -> { eyes.begin(EyeMode.TRAIN); openApp(eyes); null }
+        "sleep" -> { eyes.begin(EyeMode.SLEEP); openApp(eyes); null }
         "clock" -> { openApp(clock); null }
         "captions" -> if (linkState != LinkState.READY || !asrReady()) "字幕还不能开：先设好转文字" else { openApp(captions); null }
         "assist" -> if (linkState != LinkState.READY || !assistAsrReady()) "场景助手还不能开始" else { callAssist("语音菜单"); null }

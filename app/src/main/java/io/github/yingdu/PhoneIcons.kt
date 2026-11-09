@@ -60,6 +60,19 @@ object PhoneIcons {
         "....######....",
     ), mapOf('#' to c(0xFFDE5B49), '+' to c(0xFFF2A194), 'g' to c(0xFF6FA35B)))
 
+    val EYES = PixelIcon(listOf(
+        "....######....",
+        "..##oooooo##..",
+        ".#oooooooooo#.",
+        "#oooooooooooo#",
+        "#oooo++##oooo#",
+        "#oooo++##oooo#",
+        "#oooooooooooo#",
+        ".#oooooooooo#.",
+        "..##oooooo##..",
+        "....######....",
+    ), mapOf('#' to c(0xFF2F7A78), 'o' to c(0xFF8FCFC6), '+' to c(0xFF143E3C)))
+
     val WORKOUT = PixelIcon(listOf(
         "..###....###..",
         ".#####..#####.",

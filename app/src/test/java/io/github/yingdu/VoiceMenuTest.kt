@@ -24,6 +24,8 @@ class VoiceMenuTest {
         assertEquals("pomo", idOf("打开番茄钟"))
         assertEquals("workout", idOf("锻炼"))
         assertEquals("workout", idOf("打开锻炼"))
+        assertEquals("eyes", idOf("视力训练"))
+        assertEquals("sleep", idOf("催眠"))
         assertEquals("read", idOf("我想看书"))
         assertEquals("assist", idOf("请打开场景助手"))
     }
@@ -48,7 +50,7 @@ class VoiceMenuTest {
         assertEquals(1, VoiceMenu.move(0, n, 4, "right"))
         assertEquals(n - 1, VoiceMenu.move(0, n, 4, "left"))
         assertEquals(4, VoiceMenu.move(0, n, 4, "down"))
-        // 13 项 4 列：最左最上抬头到最右最下；一列走完低头到右边一列最上，最右最下再低头回到最左最上
+        // 最左最上抬头到最右最下；一列走完低头到右边一列最上，最右最下再低头回到最左最上
         assertEquals(11, VoiceMenu.move(0, n, 4, "up"))
         assertEquals(1, VoiceMenu.move(12, n, 4, "down"))
         assertEquals(0, VoiceMenu.move(11, n, 4, "down"))

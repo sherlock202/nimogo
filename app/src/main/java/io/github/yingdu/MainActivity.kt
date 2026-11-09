@@ -81,7 +81,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
     private enum class Tab { HOME, DASH, ME }
     private enum class Sub {
-        READ, STOCKS, AGENDA, NOTIFY, GAMES, GAME, CLOCK, POMO, POMO_SET, WORKOUT, WORKOUT_GROUP, PARTY,
+        READ, STOCKS, AGENDA, NOTIFY, GAMES, GAME, CLOCK, POMO, POMO_SET, WORKOUT, WORKOUT_GROUP, EYES, PARTY,
         DASH_SET, FONT, READ_SET, OFFICIAL, LOG, ABOUT, LICENSES, MEMORY, MEMORY_SET, MEMORY_LISTEN, MEMORY_API, CAPTIONS, SIGHTS, MANUAL, MANUAL_TOPIC,
         NAV, NAV_SET, ASSIST, ASSIST_SET, ASSIST_SESSION, AGENT
     }
@@ -758,6 +758,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         subPages[Sub.POMO_SET] = buildPomoSettings()
         subPages[Sub.WORKOUT] = buildWorkout()
         subPages[Sub.WORKOUT_GROUP] = buildWorkoutGroup()
+        subPages[Sub.EYES] = buildEyes()
         subPages[Sub.PARTY] = buildParty()
         subPages[Sub.DASH_SET] = buildDashSettings()
         subPages[Sub.FONT] = buildFont()
@@ -866,6 +867,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.CLOCK -> s.activeApp === s.clock
         Sub.POMO -> s.activeApp === s.pomodoro
         Sub.WORKOUT -> s.activeApp === s.workout
+        Sub.EYES -> s.activeApp === s.eyes
         Sub.PARTY -> s.activeApp === s.party
         else -> false
     }
@@ -1001,6 +1003,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.CLOCK -> "像素表盘"
         Sub.POMO -> "番茄钟"; Sub.POMO_SET -> "番茄钟设置"
         Sub.WORKOUT -> "锻炼"; Sub.WORKOUT_GROUP -> service?.workout?.editingGroup()?.name ?: "运动组"
+        Sub.EYES -> "视力训练"
         Sub.PARTY -> "聚会工具"; Sub.DASH_SET -> "看板设置"
         Sub.FONT -> "眼镜字号"; Sub.READ_SET -> "阅读显示"; Sub.OFFICIAL -> "官方 app"; Sub.LOG -> "日志"; Sub.ABOUT -> "关于"; Sub.LICENSES -> "开源许可"
         Sub.MEMORY -> "全天记忆"; Sub.CAPTIONS -> "实时字幕"; Sub.MEMORY_LISTEN -> "收音方式和耗电"; Sub.MEMORY_API -> "转文字和总结"; Sub.MEMORY_SET -> "全天记忆设置"; Sub.SIGHTS -> "景点介绍"
@@ -1036,6 +1039,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.CLOCK -> glassesButton(s, s.clock, "在眼镜上显示表盘")
         Sub.POMO -> glassesButton(s, s.pomodoro, "在眼镜上看进度环")
         Sub.WORKOUT, Sub.WORKOUT_GROUP -> glassesButton(s, s.workout, "在眼镜上显示")
+        Sub.EYES -> glassesButton(s, s.eyes, "在眼镜上显示")
         Sub.PARTY -> glassesButton(s, s.party, "在眼镜上打开")
         Sub.NAV -> if (s.nav.phase == NavApp.Phase.IDLE) null else glassesButton(s, s.nav, "在眼镜上显示导航")
         Sub.CAPTIONS -> if (s.activeApp === s.captions && !s.glassesPaused) "关掉字幕" else glassesButton(s, s.captions, "在眼镜上开字幕")
@@ -1059,6 +1063,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 if (s.activeApp !== w) g?.let { w.arm(it) }
                 toggleOnGlasses { it.workout }
             }
+            Sub.EYES -> toggleOnGlasses { it.eyes }
             Sub.PARTY -> toggleOnGlasses { it.party }
             Sub.NAV -> toggleOnGlasses { it.nav }
             Sub.CAPTIONS -> {
@@ -1130,7 +1135,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
     /** 这几页每秒刷新一次（进度、倒计时、表盘预览）。 */
     private val pageTicker = object : Runnable {
         override fun run() {
-            if (sub != Sub.CLOCK && sub != Sub.POMO && sub != Sub.NAV && sub != Sub.WORKOUT && sub != Sub.WORKOUT_GROUP) return
+            if (sub != Sub.CLOCK && sub != Sub.POMO && sub != Sub.NAV && sub != Sub.WORKOUT && sub != Sub.WORKOUT_GROUP && sub != Sub.EYES) return
             refreshNow()
             uiHandler.postDelayed(this, 1000)
         }
@@ -1251,6 +1256,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val apps = listOf(
             app(px(PhoneIcons.READ), "阅读") { openSub(Sub.READ) }, app(px(PhoneIcons.NAV), "导航") { openSub(Sub.NAV) },
             app(px(PhoneIcons.POMO), "番茄钟") { openSub(Sub.POMO) }, app(px(PhoneIcons.WORKOUT), "锻炼") { openSub(Sub.WORKOUT) },
+            app(px(PhoneIcons.EYES), "视力训练") { openSub(Sub.EYES) },
             app(px(PhoneIcons.CLOCK), "像素表盘") { openSub(Sub.CLOCK) },
             app(px(PhoneIcons.GAMES), "小游戏") { openSub(Sub.GAMES) },
             app(px(PhoneIcons.PARTY), "聚会工具") { openSub(Sub.PARTY) }, app(px(PhoneIcons.OFFICIAL), "官方 app") { openSub(Sub.OFFICIAL) },
@@ -1318,6 +1324,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
                             a === s.clock -> openSub(Sub.CLOCK)
                             a === s.pomodoro -> openSub(Sub.POMO)
                             a === s.workout -> openSub(Sub.WORKOUT)
+                            a === s.eyes -> openSub(Sub.EYES)
                             a === s.party -> openSub(Sub.PARTY)
                             a === s.captions -> openSub(Sub.CAPTIONS)
                             a === s.assist -> openSub(Sub.ASSIST)
@@ -4344,6 +4351,64 @@ class MainActivity : Activity(), ReaderService.UiListener {
             refreshNow()
         }
         d.show()
+    }
+
+    // =====================================================================
+    // 视力训练：米字、绕圈、远近，以及五分钟催眠
+    // =====================================================================
+
+    private fun buildEyes(): View {
+        val page = vbox()
+        val note = text("用来休息眼睛，不改变近视度数。远近只是点变大变小。", 12f, SUB)
+        page.addView(note, lp(bottom = 10))
+        val seg = Seg(listOf("训练", "催眠")) { i ->
+            service?.eyes?.choose(if (i == 0) EyeMode.TRAIN else EyeMode.SLEEP)
+            refreshNow()
+        }
+        page.addView(seg.root, lp(bottom = 10))
+        val c = card().apply { gravity = Gravity.CENTER_HORIZONTAL; setPadding(dp(14), dp(18), dp(14), dp(16)) }
+        val phase = text("", 12f, SUB).apply { gravity = Gravity.CENTER }
+        val big = text("1:16", 52f, INK, true).apply { gravity = Gravity.CENTER; typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD) }
+        val info = text("", 12f, SUB).apply { gravity = Gravity.CENTER }
+        c.addView(phase); c.addView(big, lp(top = 6)); c.addView(info, lp(top = 8))
+        val start = Tile("▶︎", "开始") {
+            service?.let { s ->
+                s.eyes.startPause()
+                if (s.activeApp !== s.eyes) s.openApp(s.eyes) else if (s.glassesPaused) s.resumeGlasses()
+            }
+            refreshNow()
+        }
+        val skip = Tile("⇥", "下一段") { service?.eyes?.skip(); refreshNow() }
+        c.addView(hbox().apply {
+            gravity = Gravity.CENTER; layoutParams = lp(top = 16)
+            listOf(start, skip).forEach { addView(it.root, LinearLayout.LayoutParams(dp(76), ViewGroup.LayoutParams.WRAP_CONTENT)) }
+        })
+        page.addView(c)
+        onUpdate(Sub.EYES) { s ->
+            val e = s.eyes
+            val p = e.phase()
+            seg.select(if (e.mode == EyeMode.TRAIN) 0 else 1)
+            phase.text = EyeLogic.label(p) + when {
+                e.isRunning() -> " · 进行中"
+                p == EyePhase.DONE -> " · 结束"
+                e.hasProgress() -> " · 已暂停"
+                else -> ""
+            }
+            big.text = EyeLogic.clock(e.remaining())
+            info.text = if (e.mode == EyeMode.SLEEP) "左右慢慢摆，一共 5 分钟，结束时不亮画面"
+            else "米字 → 顺时针 → 逆时针 → 远近 → 闭眼 20 秒"
+            val running = e.isRunning()
+            start.setLabel(when {
+                p == EyePhase.DONE -> "再来一次"
+                running -> "暂停"
+                e.hasProgress() -> "继续"
+                else -> "开始"
+            })
+            start.iconView.text = if (running) "❚❚" else "▶︎"
+            start.setActive(true)
+            skip.setLabel(if (e.mode == EyeMode.SLEEP) "结束" else "下一段")
+        }
+        return page
     }
 
     // =====================================================================
