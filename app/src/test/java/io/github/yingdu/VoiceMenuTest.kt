@@ -38,15 +38,21 @@ class VoiceMenuTest {
         assertEquals("game:2048", idOf("2048"))
     }
 
-    @Test fun ringWindowAndKeys() {
-        val labels = VoiceMenu.ringItems(cmds, false).map { it.label }
-        assertEquals(listOf("【阅读】", "  导航", "  番茄钟", "  表盘"), VoiceMenu.window(labels, 0, 4))
-        assertEquals("【跟读】", VoiceMenu.window(labels, labels.lastIndex - 1, 4).last { it.startsWith("【") })
+    @Test fun ringGridAndKeys() {
+        val n = VoiceMenu.ringItems(cmds, false).size
+        assertEquals(4, VoiceMenu.columnsFor(n))
+        assertEquals(3, VoiceMenu.columnsFor(9))
+        assertEquals(1, VoiceMenu.move(0, n, 4, "right"))
+        assertEquals(n - 1, VoiceMenu.move(0, n, 4, "left"))
+        assertEquals(4, VoiceMenu.move(0, n, 4, "down"))
+        assertEquals(0, VoiceMenu.move(0, n, 4, "up"))
+        assertEquals(8, VoiceMenu.move(8, n, 4, "down"))
         assertEquals("up", VoiceMenu.keyAction(KeyEvent.KEYCODE_DPAD_UP))
         assertEquals("down", VoiceMenu.keyAction(KeyEvent.KEYCODE_VOLUME_DOWN))
+        assertEquals("left", VoiceMenu.keyAction(KeyEvent.KEYCODE_DPAD_LEFT))
+        assertEquals("right", VoiceMenu.keyAction(KeyEvent.KEYCODE_DPAD_RIGHT))
         assertEquals("ok", VoiceMenu.keyAction(KeyEvent.KEYCODE_DPAD_CENTER))
         assertEquals("ok", VoiceMenu.keyAction(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
-        assertNull(VoiceMenu.keyAction(KeyEvent.KEYCODE_DPAD_LEFT))
     }
 
     @Test fun gamesPageAndMiss() {

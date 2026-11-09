@@ -55,18 +55,29 @@ object VoiceMenu {
         if (games) all.filter { it.id.startsWith("game:") }
         else RING.mapNotNull { id -> all.find { it.id == id } }
 
-    /** 一屏里的菜单：选中的那条用【】括起来，选到后面时整窗跟着往下走。 */
-    fun window(labels: List<String>, index: Int, rows: Int): List<String> {
-        if (labels.isEmpty() || rows <= 0) return emptyList()
-        val i = index.coerceIn(0, labels.lastIndex)
-        val start = if (labels.size <= rows) 0 else (i - rows + 1).coerceIn(0, labels.size - rows)
-        return (start until minOf(start + rows, labels.size)).map { k -> if (k == i) "【${labels[k]}】" else "  ${labels[k]}" }
+    /** 9 项及以内用 3 列，更多用 4 列，一屏放得下全部。 */
+    fun columnsFor(count: Int) = if (count <= 9) 3 else 4
+
+    /** 格子里移动。左右沿条目绕回，上下按列移动，到顶或到底就停。 */
+    fun move(index: Int, count: Int, cols: Int, action: String): Int {
+        if (count <= 0) return 0
+        val i = index.coerceIn(0, count - 1)
+        val c = cols.coerceAtLeast(1)
+        return when (action) {
+            "left" -> (i - 1 + count) % count
+            "right" -> (i + 1) % count
+            "up" -> if (i - c >= 0) i - c else i
+            "down" -> if (i + c < count) i + c else i
+            else -> i
+        }
     }
 
-    /** 戒指：上一条、下一条、中间键确认。音量键和播放键是息屏时系统还能交过来的那几种。 */
+    /** 戒指：上下左右选，中间键确认。音量键和播放键是息屏时系统还能交过来的那几种。 */
     fun keyAction(code: Int): String? = when (code) {
         KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_PAGE_UP -> "up"
         KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_PAGE_DOWN -> "down"
+        KeyEvent.KEYCODE_DPAD_LEFT -> "left"
+        KeyEvent.KEYCODE_DPAD_RIGHT -> "right"
         KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER,
         KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_HEADSETHOOK,
         KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE, KeyEvent.KEYCODE_BUTTON_A,
@@ -233,16 +244,17 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
         activate(cmd)
     }
 
-    /** 戒指：up 上一条，down 下一条，ok 启动当前这条。 */
+    /** 戒指：上下换行，左右换列，ok 启动当前这条。 */
     fun remote(action: String) {
         if (!running) return
         val items = items()
         if (items.isEmpty()) return
-        when (action) {
-            "up" -> { index = (index - 1 + items.size) % items.size; note = ""; show(); armIdle() }
-            "down" -> { index = (index + 1) % items.size; note = ""; show(); armIdle() }
-            "ok" -> activate(items[index.coerceIn(0, items.lastIndex)])
-        }
+        if (action == "ok") { activate(items[index.coerceIn(0, items.lastIndex)]); return }
+        val next = VoiceMenu.move(index, items.size, VoiceMenu.columnsFor(items.size), action)
+        if (next == index && action != "up" && action != "down" && action != "left" && action != "right") return
+        index = next
+        note = ""
+        show(); armIdle()
     }
 
     private fun items() = VoiceMenu.ringItems(env.commands(), page == Page.GAMES)
@@ -275,21 +287,24 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
     override fun status() = if (hearing) "$title · 在听" else title
 
     override fun render(fontPx: Int): ByteArray {
-        val f = Frame(fontPx)
-        val (body, st) = screen(27, 5)
-        var y = f.header(st) + 2
-        for (l in body.lines()) { f.text(l, 6, y); y += f.font.height + 5 }
-        return f.done()
-    }
-
-    /** 菜单正文和顶栏。画成图片贴在看板上，不打开提词器。 */
-    private fun screen(cols: Int, rows: Int): Pair<String, String> {
+        val f = Frame(fontPx.coerceAtMost(16))
         val labels = items().map { it.label }
-        val itemRows = if (note.isNotEmpty()) (rows - 1).coerceAtLeast(1) else rows
-        val lines = ArrayList<String>()
-        if (note.isNotEmpty()) lines += AgentApp.wrapCols(note, cols).take(1)
-        if (labels.isNotEmpty()) lines += VoiceMenu.window(labels, index.coerceIn(0, labels.lastIndex), itemRows)
-        val st = if (hearing) "语音菜单 · 在听" else "上下选　中键打开"
-        return lines.take(rows).joinToString("\n") to st
+        val cols = VoiceMenu.columnsFor(labels.size)
+        var y = f.header(if (hearing) "语音菜单 · 在听" else "上下左右选　中键打开") + 4
+        if (note.isNotEmpty()) {
+            f.text(f.small.ellipsize(note, f.w - 12), 6, y, Frame.DIM, f.small)
+            y += f.small.height + 4
+        }
+        if (labels.isEmpty() || cols <= 0) return f.done()
+        val rows = (labels.size + cols - 1) / cols
+        val rowH = ((f.h - 4 - y) / rows).coerceAtLeast(f.font.height)
+        val colW = (f.w - 8) / cols
+        val sel = index.coerceIn(0, labels.lastIndex)
+        for (i in labels.indices) {
+            val text = if (i == sel) "【${labels[i]}】" else labels[i]
+            f.text(f.font.ellipsize(text, colW - 2), 4 + (i % cols) * colW, y + (i / cols) * rowH,
+                if (i == sel) Frame.FULL else Frame.DIM, f.font)
+        }
+        return f.done()
     }
 }

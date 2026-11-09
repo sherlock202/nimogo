@@ -138,8 +138,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         notifyUi()
     }
 
-    /** 提词器文字显示阅读时，长按右镜腿不退出（只用镜腿翻页；退出在手机上点「收起显示」）。 */
-    override fun keepPrompterOnLongPress(): Boolean = !glassesPaused && ((appMode == AppMode.READER && activeApp == null) || holdsPrompter)
+    /** 提词器上的场景助手、代理消息：长按右镜腿不退出。阅读长按就是退出，不再把这一页发回去。 */
+    override fun keepPrompterOnLongPress(): Boolean = !glassesPaused && holdsPrompter
 
     /** 只能用镜腿单击操作、长按也不退出的全屏功能：场景助手、代理的消息（都在提词器上）。语音菜单在看板上，不在这里。 */
     private val holdsPrompter get() = activeApp.let { it != null && (it === assist || it === agentMsg) }
@@ -570,7 +570,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun setRing(on: Boolean) { if (on) menuMediaOn() else menuMediaOff() }
     }).also { a -> a.closeSelf = { if (activeApp === a) closeVoiceMenu() } } }
 
-    /** 戒指选菜单：up 上一条，down 下一条，ok 启动。菜单没开时返回 false。 */
+    /** 戒指选菜单：up/down 换行，left/right 换列，ok 启动。菜单没开时返回 false。 */
     fun menuRemote(action: String): Boolean {
         val m = activeApp as? VoiceMenuApp ?: return false
         if (!m.running) return false
@@ -921,8 +921,12 @@ class ReaderService : Service(), NimoListener, AppHost {
         log("场景助手：放开音量键和耳机键")
     }
 
+    /** 长按退出后的一小段时间：番茄钟、导航还在刷新，不能把页面又打开，否则「正在退出」清不掉。 */
+    private var exitLockUntil = 0L
+
     /** 在眼镜上打开一个全屏功能（阅读的自动滚动、看板的轮换和自动收起都先停下）。 */
     fun openApp(app: GlassesApp) {
+        exitLockUntil = 0
         if (activeApp !== app) activeApp?.onClose()
         activeApp = app
         app.onOpen()
@@ -1038,6 +1042,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     fun resumeGlasses() {
+        exitLockUntil = 0
         if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
         glassesPaused = false; lastPushedDash = ""; dashPage = 0
         activeApp?.onResume()
@@ -2340,6 +2345,10 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     /** 把当前页推到眼镜上，同时保存进度。 */
     private fun pushPage() {
+        if (android.os.SystemClock.uptimeMillis() < exitLockUntil) {
+            log("刚长按退出，先不把页面打开")
+            return
+        }
         headHidden = false
         when (appMode) {
             AppMode.DASHBOARD -> { pushDashboard(force = true); return }
@@ -3013,21 +3022,17 @@ class ReaderService : Service(), NimoListener, AppHost {
         (appMode != AppMode.DASHBOARD || client.enteredAppId() == null)
 
     /**
-     * 主界面上左镜腿只报单击和双击，不报长按。点一下等 400ms：没有后续就是单击（AI 代理）；
-     * 再点一次再等 400ms，没有第三次就是双击（场景助手）；400ms 内第三下打开语音菜单。
+     * 主界面上左镜腿只报单击和双击，不报长按。点一下等 400ms：没有后续就是单击（语音菜单）；
+     * 再点一次再等 400ms，没有第三次就是双击（场景助手）；400ms 内第三下打开 AI 代理。
      */
     private var homeLeftClicks = 0
-    private var inHomeLeftClick = false
     private val homeLeftFire = Runnable {
         val n = homeLeftClicks
         homeLeftClicks = 0
         when {
-            n >= 3 -> callVoiceMenu("主界面上左三击")
+            n >= 3 -> callAgent("主界面上左三击")
             n == 2 -> callAssist("主界面上左双击")
-            n == 1 -> {
-                inHomeLeftClick = true
-                try { onInput(GlassesInput.CLICK_LEFT) } finally { inHomeLeftClick = false }
-            }
+            n == 1 -> callVoiceMenu("主界面上左单击")
         }
     }
 
@@ -3050,32 +3055,39 @@ class ReaderService : Service(), NimoListener, AppHost {
             if (followOn) stopFollow("眼镜上长按退出了", push = false)
             if (appMode == AppMode.DASHBOARD) cancelDashTimers()
             glassesPaused = true
-            // 退到了官方主界面，屏幕是我们关的就要打开
-            if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
-            // 看板被眼镜退出了：还能从眼镜上叫回来（点一下镜腿点亮主界面；关屏方式下也可以抬头）
-            headHidden = appMode == AppMode.DASHBOARD
-            log(if (headHidden) "眼镜上已退出看板，" + (if (headWakeOn) "抬头、" else "") + "点一下镜腿或在手机上点「显示看板」再看"
-                else "眼镜上已退出显示，在手机上翻页、切换或点通知栏按钮即可恢复")
+            main.removeCallbacks(restoreCheck)
+            quitHomeAt = android.os.SystemClock.uptimeMillis()
+            exitLockUntil = quitHomeAt + 2_000
+            val reading = baseMode == AppMode.READER && activeApp == null
+            if (reading) {
+                screenOffByUs = true
+                headHidden = false
+                client.stayOffAfterExit()
+                log("阅读已退出：关屏。开屏后停在主界面，要接着读在手机上点「恢复显示」")
+            } else {
+                if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
+                headHidden = appMode == AppMode.DASHBOARD
+                if (displayOff != true) client.clearExitOverlay()
+                log(if (headHidden) "眼镜上已退出，清掉「正在退出」。" + (if (headWakeOn) "抬头、" else "") + "点一下镜腿或在手机上点「显示看板」再看"
+                    else "眼镜上已退出${activeApp?.title ?: "显示"}，清掉「正在退出」。要再看在手机上点「恢复显示」")
+            }
             updateNotification()
             notifyUi()
             return
         }
-        // 系统看板（官方主界面）：左单击打开 AI 代理，左双击打开场景助手，左三击打开语音菜单。
+        // 系统看板（官方主界面）：左单击打开语音菜单，左双击打开场景助手，左三击打开 AI 代理。
         // 左长按和右镜腿在主界面上眼镜不上报。
-        if (!inHomeLeftClick && onOfficialHome() &&
-            (input == GlassesInput.CLICK_LEFT || input == GlassesInput.DOUBLE_LEFT)) {
+        if (onOfficialHome() && (input == GlassesInput.CLICK_LEFT || input == GlassesInput.DOUBLE_LEFT)) {
             homeLeftClicks = if (input == GlassesInput.DOUBLE_LEFT) maxOf(homeLeftClicks, 2) else homeLeftClicks + 1
             main.removeCallbacks(homeLeftFire)
             if (homeLeftClicks >= 3) {
                 homeLeftClicks = 0
-                callVoiceMenu("主界面上左三击")
+                callAgent("主界面上左三击")
             } else main.postDelayed(homeLeftFire, 400)
             return
         }
         // 看书、看板上眼镜会单独报左双击（单击仍翻页 / 上一页）：双击打开场景助手
         if (input == GlassesInput.DOUBLE_LEFT && activeApp == null && callAssist("左双击")) return
-        if (input == GlassesInput.CLICK_LEFT && glassesPaused && activeApp == null && agentEnabled && agentReady &&
-            (appMode != AppMode.DASHBOARD || client.enteredAppId() == null) && callAgent("主界面上左单击")) return
         // 通知正显示着：右单击立即关掉（不翻页、不收起看板）
         if (input == GlassesInput.CLICK_RIGHT && dismissNotification()) return
         // 语音菜单画在看板上（导航页）。这一页长按右镜腿是眼镜自己的退出，先关掉菜单再把看板叫回来

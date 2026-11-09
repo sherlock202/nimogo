@@ -271,14 +271,36 @@ class NimoClient(private val context: Context, private val listener: NimoListene
      * 关屏再开屏一次：退出提词器、导航页后眼镜有时一直挂着「正在退出」，在手机上关一次屏再开就好了（2026-10-26），
      * 所以退出时自动做一次。关屏 0.6 秒，开屏时如果已经又打开了别的页面、或者又被关了屏（看板收起等），就不动。
      */
+    private val flashOn = Runnable {
+        if (state != LinkState.READY || blanked || darkHome || enteringApp != null) return@Runnable
+        sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_SET_PARAMETER, NimoProtocol.SET_DISPLAY_OFF, byteArrayOf(0)))
+    }
+
     private fun flashScreen() {
         if (state != LinkState.READY) return
         log("退出后关一下屏再开（清掉眼镜上的「正在退出」）")
+        main.removeCallbacks(flashOn)
         sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_SET_PARAMETER, NimoProtocol.SET_DISPLAY_OFF, byteArrayOf(1)))
-        main.postDelayed({
-            if (state != LinkState.READY || blanked || darkHome || enteringApp != null) return@postDelayed
-            sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_SET_PARAMETER, NimoProtocol.SET_DISPLAY_OFF, byteArrayOf(0)))
-        }, 600)
+        main.postDelayed(flashOn, 600)
+    }
+
+    /** 长按退出后清掉挂着的「正在退出」：关屏再开，不重开页面。 */
+    fun clearExitOverlay() {
+        if (state != LinkState.READY || blanked || darkHome) return
+        main.removeCallbacks(unblankSafety)
+        flashScreen()
+    }
+
+    /** 阅读退出：关屏并停住。取消即将开屏、重发页面的安排。 */
+    fun stayOffAfterExit() {
+        if (state != LinkState.READY) return
+        pending = null
+        blanked = false
+        darkHome = false
+        main.removeCallbacks(unblankSafety)
+        main.removeCallbacks(flashOn)
+        main.removeCallbacks(releaseDark)
+        screenOff(true)
     }
 
     /**
@@ -976,7 +998,11 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             main.postDelayed({
                 if (System.currentTimeMillis() - lastGestureAt > 600) {
                     if (!right && listener.onLongPressLeft()) log("（由按下/松开合成）左长按")
-                    else {
+                    else if (right && enteredApp == NimoProtocol.APP_ID_NAV) {
+                        // 导航页上右长按是眼镜自己的退出，画面会停在「正在退出」。补上退出，别把这次长按交给番茄钟、导航自己。
+                        log("（由按下/松开合成）右长按：退出页面")
+                        onUserExited("长按镜腿")
+                    } else {
                         log("（由按下/松开合成）长按")
                         listener.onInput(GlassesInput.LONG_PRESS)
                     }
@@ -1075,16 +1101,18 @@ class NimoClient(private val context: Context, private val listener: NimoListene
     private fun exitPrompter(how: String) {
         if (enteredApp != NimoProtocol.APP_ID_PROMPTER) return
         log("提词器里长按右镜腿（$how）：结束提词器会话")
-        sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_CONTROL_INSTRUCTION, NimoProtocol.CTRL_QUIT_APP,
-            byteArrayOf(NimoProtocol.APP_ID_PROMPTER.toByte())))
         onUserExited("长按右镜腿")
     }
 
-    /** 眼镜自己退出了我们的页面（长按右镜腿）。 */
+    /** 眼镜自己退出了我们的页面（长按右镜腿）。补发退出，结束眼镜上挂着的「正在退出」。 */
     private fun onUserExited(how: String) {
         log("眼镜退出了当前页面（$how）")
+        val app = enteredApp
         enteredApp = null
         pending = null
+        if (app != null) {
+            sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_CONTROL_INSTRUCTION, NimoProtocol.CTRL_QUIT_APP, byteArrayOf(app.toByte())))
+        }
         listener.onInput(GlassesInput.EXITED)
     }
 
