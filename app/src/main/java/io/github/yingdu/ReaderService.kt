@@ -569,9 +569,13 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun commands() = VoiceMenu.commands(agentName, games.map { it.title })
         override fun launch(id: String) = launchVoice(id)
         override fun setRing(on: Boolean) { if (on) menuMediaOn() else menuMediaOff() }
+        override fun holdHead(on: Boolean) {
+            menuHoldsHead = on
+            if (on) suspendHeadUp() else if (!notifyLit) restoreHeadUp()
+        }
     }).also { a -> a.closeSelf = { if (activeApp === a) closeVoiceMenu() } } }
 
-    /** 戒指选菜单：up/down 换行，left/right 换列，ok 启动。菜单没开时返回 false。 */
+    /** 戒指选菜单：上下沿列走（到头换列），左右换一条，ok 启动。菜单没开时返回 false。 */
     fun menuRemote(action: String): Boolean {
         val m = activeApp as? VoiceMenuApp ?: return false
         if (!m.running) return false
@@ -2616,6 +2620,9 @@ class ReaderService : Service(), NimoListener, AppHost {
         restoreHeadUp()
     }
 
+    /** 语音菜单正用抬头低头选着：这段时间里不把抬头显示开回去，否则一低头屏幕就灭。 */
+    private var menuHoldsHead = false
+
     /** 弹通知期间临时关掉了眼镜的抬头显示（要恢复）。记在设置里，万一中途被杀掉，下次连上也会恢复。 */
     private var headUpSuspended = false
     private fun suspendHeadUp() {
@@ -2625,6 +2632,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         client.headUpDisplayTemp(false)
     }
     private fun restoreHeadUp() {
+        if (menuHoldsHead) return
         if (!headUpSuspended && !prefs.getBoolean("headUpRestore", false)) return
         if (linkState != LinkState.READY) return      // 没连着：留着标记，下次连上再恢复
         headUpSuspended = false

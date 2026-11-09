@@ -59,7 +59,7 @@ object VoiceMenu {
     /** 9 项及以内用 3 列，更多用 4 列，一屏放得下全部。 */
     fun columnsFor(count: Int) = if (count <= 9) 3 else 4
 
-    /** 格子里移动。左右沿条目绕回，上下按列移动，到顶或到底就停。 */
+    /** 格子里移动。左右沿条目绕回。上下在同一列里走，到头就换列：低头去右边一列最上，抬头去左边一列最下，最边上绕到另一头。 */
     fun move(index: Int, count: Int, cols: Int, action: String): Int {
         if (count <= 0) return 0
         val i = index.coerceIn(0, count - 1)
@@ -67,10 +67,25 @@ object VoiceMenu {
         return when (action) {
             "left" -> (i - 1 + count) % count
             "right" -> (i + 1) % count
-            "up" -> if (i - c >= 0) i - c else i
-            "down" -> if (i + c < count) i + c else i
+            "up" -> stepColumn(i, count, c, -1)
+            "down" -> stepColumn(i, count, c, 1)
             else -> i
         }
+    }
+
+    private fun stepColumn(index: Int, count: Int, cols: Int, dir: Int): Int {
+        val next = index + dir * cols
+        if (next in 0 until count) return next
+        var col = index % cols
+        repeat(cols - 1) {
+            col = (col + dir + cols) % cols
+            if (col >= count) return@repeat
+            if (dir > 0) return col
+            var bottom = col
+            while (bottom + cols < count) bottom += cols
+            return bottom
+        }
+        return index
     }
 
     /** 戒指：上下左右选，中间键确认。音量键和播放键是息屏时系统还能交过来的那几种。 */
@@ -152,7 +167,7 @@ object VoiceMenu {
 
 /**
  * 眼镜上的语音菜单。画在看板所在的导航页上（和提词器无关）：看板显示着时右双击打开。
- * 打开就开始听，说完停一下就匹配；左单击返回（在游戏名单上先回到功能名单）。
+ * 打开就开始听，说完停一下就匹配。抬头、低头在列里上下选（到头换到旁边一列），右单击启动，左单击返回（在游戏名单上先回到功能名单）。
  */
 class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp {
     interface Env {
@@ -165,6 +180,8 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
         fun launch(id: String): String?
         /** 接管戒指（息屏时的音量键和播放键）。 */
         fun setRing(on: Boolean)
+        /** 菜单用抬头低头选的时候，先关掉眼镜自己的抬头显示，免得一低头屏幕灭了。关掉菜单再恢复。 */
+        fun holdHead(on: Boolean)
     }
 
     private enum class Page { MAIN, GAMES }
@@ -188,6 +205,7 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
     override fun onOpen() {
         running = true; page = Page.MAIN; index = 0; note = ""; busy = false; finals.clear()
         env.setRing(true)
+        env.holdHead(true)
         if (!env.asrReady()) note = "离线转文字模型还没下载（全天记忆 › 设置 › 转文字）"
         else {
             decoder = OpusDecoder(NimoMic.SAMPLE_RATE, 1)
@@ -204,6 +222,7 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
 
     override fun onClose() {
         running = false
+        env.holdHead(false)
         host.main.removeCallbacks(idle)
         seg = null
         env.setMic(false)
@@ -279,8 +298,10 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
 
     override fun onInput(input: GlassesInput) {
         when (input) {
+            GlassesInput.HEAD_UP -> remote("up")
+            GlassesInput.HEAD_DOWN -> remote("down")
+            GlassesInput.CLICK_RIGHT -> remote("ok")
             GlassesInput.CLICK_LEFT -> if (page == Page.GAMES) { page = Page.MAIN; index = 0; note = ""; show() } else close()
-            GlassesInput.CLICK_RIGHT -> close()
             else -> {}
         }
     }
@@ -291,7 +312,7 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
         val f = Frame(fontPx.coerceAtMost(16))
         val labels = items().map { it.label }
         val cols = VoiceMenu.columnsFor(labels.size)
-        var y = f.header(if (hearing) "语音菜单 · 在听" else "上下左右选　中键打开") + 4
+        var y = f.header(if (hearing) "语音菜单 · 在听" else "抬头低头选　右键打开") + 4
         if (note.isNotEmpty()) {
             f.text(f.small.ellipsize(note, f.w - 12), 6, y, Frame.DIM, f.small)
             y += f.small.height + 4

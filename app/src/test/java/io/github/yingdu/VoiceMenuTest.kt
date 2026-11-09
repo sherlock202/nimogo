@@ -48,8 +48,16 @@ class VoiceMenuTest {
         assertEquals(1, VoiceMenu.move(0, n, 4, "right"))
         assertEquals(n - 1, VoiceMenu.move(0, n, 4, "left"))
         assertEquals(4, VoiceMenu.move(0, n, 4, "down"))
-        assertEquals(0, VoiceMenu.move(0, n, 4, "up"))
-        assertEquals(n - 1, VoiceMenu.move(n - 1, n, 4, "down"))
+        // 13 项 4 列：最左最上抬头到最右最下；一列走完低头到右边一列最上，最右最下再低头回到最左最上
+        assertEquals(11, VoiceMenu.move(0, n, 4, "up"))
+        assertEquals(1, VoiceMenu.move(12, n, 4, "down"))
+        assertEquals(0, VoiceMenu.move(11, n, 4, "down"))
+        assertEquals(12, VoiceMenu.move(1, n, 4, "up"))
+        val seen = mutableSetOf<Int>()
+        var i = 0
+        repeat(n) { seen.add(i); i = VoiceMenu.move(i, n, 4, "down") }
+        assertEquals(n, seen.size)
+        assertEquals(0, i)
         assertEquals("up", VoiceMenu.keyAction(KeyEvent.KEYCODE_DPAD_UP))
         assertEquals("down", VoiceMenu.keyAction(KeyEvent.KEYCODE_VOLUME_DOWN))
         assertEquals("left", VoiceMenu.keyAction(KeyEvent.KEYCODE_DPAD_LEFT))

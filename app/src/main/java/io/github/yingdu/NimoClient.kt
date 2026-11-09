@@ -944,6 +944,13 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     /** 最近一次收到"整理好的手势"（单击/双击/长按）的时间，用来判断要不要自己从按下/松开合成。 */
     private var lastGestureAt = 0L
+    /** 最近一次收到的单击/双击代码（同一种手势很快又来一次时当作重复）。 */
+    private var lastClickCode = 0
+    /** 导航页上最近一次按下、松开或单击的时间。单击时眼镜也会顺带发 05，那不是长按退出。 */
+    private var lastNavTouchAt = 0L
+
+    private fun navTouchJustNow(windowMs: Long) =
+        android.os.SystemClock.uptimeMillis() - lastNavTouchAt < windowMs
 
     private fun handleInput(code: Int, raw: ByteArray) {
         log("镜腿/头部：${inputNames[code] ?: "未知"}（${raw.joinToString(" ") { "%02x".format(it) }}）")
@@ -960,12 +967,27 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             else -> return
         }
         if (input == GlassesInput.HEAD_UP || input == GlassesInput.HEAD_DOWN) lastHeadAt = android.os.SystemClock.uptimeMillis()
-        // 除了右长按以外的镜腿 / 头部操作：提词器里眼镜会顺带发一条 cmd=7 key=9 状态 05，要分得开
-        if (code != NimoProtocol.INPUT_LONG_PRESS_RIGHT) lastOtherInputAt = android.os.SystemClock.uptimeMillis()
-        else {
-            lastGestureAt = System.currentTimeMillis()
+        val clickLike = code == NimoProtocol.INPUT_CLICK_RIGHT || code == NimoProtocol.INPUT_CLICK_LEFT ||
+            code == NimoProtocol.INPUT_DOUBLE_CLICK_RIGHT || code == NimoProtocol.INPUT_DOUBLE_CLICK_LEFT
+        val now = System.currentTimeMillis()
+        // 同一次按键有时会报两遍（输入上报一次，页面再转发一次），第二遍会把暂停又按回去，看起来像没反应。
+        // 只挡同一种手势在很短时间里重复到达；单击后紧接着的双击照常通过。
+        val repeatOfLast = clickLike && code == lastClickCode && now - lastGestureAt < 400
+        val afterSynth = clickLike && now - synthDeliveredAt < 500
+        if (repeatOfLast || afterSynth) {
+            log("同一次按键报了两遍，忽略")
+            cancelSynth()
+            return
+        }
+        // 眼镜已经报了整理好的手势：按住松开后不要再合成一次
+        if (clickLike || code == NimoProtocol.INPUT_LONG_PRESS_RIGHT || code == NimoProtocol.INPUT_LONG_PRESS_LEFT) {
+            lastGestureAt = now
+            if (clickLike) lastClickCode = code
             cancelSynth()
         }
+        // 除了右长按以外的镜腿 / 头部操作：提词器里眼镜会顺带发一条 cmd=7 key=9 状态 05，要分得开
+        if (code != NimoProtocol.INPUT_LONG_PRESS_RIGHT) lastOtherInputAt = android.os.SystemClock.uptimeMillis()
+        if (clickLike) lastNavTouchAt = android.os.SystemClock.uptimeMillis()
         if (code == NimoProtocol.INPUT_LONG_PRESS_LEFT && listener.onLongPressLeft()) return
         if (input == GlassesInput.LONG_PRESS && enteredApp == NimoProtocol.APP_ID_NAV) {
             // 导航页里长按右镜腿是眼镜自己的"退出"，不当作我们的操作
@@ -979,19 +1001,26 @@ class NimoClient(private val context: Context, private val listener: NimoListene
     // ---- 在导航页里，眼镜可能只上报"按下/松开"而不上报单击，这里自己合成手势 ----
     private var pressAt = 0L
     private var pendingClickRight: Boolean? = null
+    /** 刚用按下/松开合成过一次手势的时间。眼镜随后又报来的同一下不再处理。 */
+    private var synthDeliveredAt = 0L
     private val synthClick = Runnable {
         val right = pendingClickRight ?: return@Runnable
         pendingClickRight = null
         if (System.currentTimeMillis() - lastGestureAt < 600) return@Runnable  // 眼镜已经报过单击了，不重复
         log("（由按下/松开合成）${if (right) "右" else "左"}单击")
+        synthDeliveredAt = System.currentTimeMillis()
         listener.onInput(if (right) GlassesInput.CLICK_RIGHT else GlassesInput.CLICK_LEFT)
     }
 
     private fun cancelSynth() { main.removeCallbacks(synthClick); pendingClickRight = null }
 
-    private fun onTouchPress(code: Int) { pressAt = System.currentTimeMillis() }
+    private fun onTouchPress(code: Int) {
+        pressAt = System.currentTimeMillis()
+        lastNavTouchAt = android.os.SystemClock.uptimeMillis()
+    }
 
     private fun onTouchRelease(code: Int) {
+        lastNavTouchAt = android.os.SystemClock.uptimeMillis()
         val right = code == NimoProtocol.INPUT_TOUCH_RELEASE_RIGHT
         val held = System.currentTimeMillis() - pressAt
         if (held > 700) {
@@ -1016,6 +1045,7 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             main.postDelayed({
                 if (System.currentTimeMillis() - lastGestureAt > 600) {
                     log("（由按下/松开合成）${if (right) "右" else "左"}双击")
+                    synthDeliveredAt = System.currentTimeMillis()
                     listener.onInput(if (right) GlassesInput.DOUBLE_RIGHT else GlassesInput.DOUBLE_LEFT)
                 }
             }, 300)
@@ -1122,10 +1152,13 @@ class NimoClient(private val context: Context, private val listener: NimoListene
      * 所以前 1.5 秒、后 0.4 秒内有抬头低头的就不算退出。
      */
     private fun onNavAction05() {
-        if (android.os.SystemClock.uptimeMillis() - lastHeadAt < 1_500) { log("眼镜随抬头/低头发来 05，页面还开着，不算退出"); return }
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastHeadAt < 1_500) { log("眼镜随抬头/低头发来 05，页面还开着，不算退出"); return }
+        if (navTouchJustNow(1_500)) { log("导航页里 05 紧跟着单击，不算退出"); return }
         main.postDelayed({
             if (enteredApp != NimoProtocol.APP_ID_NAV) return@postDelayed
-            if (android.os.SystemClock.uptimeMillis() - lastHeadAt < 1_900) log("眼镜随抬头/低头发来 05，页面还开着，不算退出")
+            if (android.os.SystemClock.uptimeMillis() - lastHeadAt < 1_900 || navTouchJustNow(1_900))
+                log("导航页里这次 05 是单击带出来的，不算退出")
             else onUserExited("长按镜腿")
         }, 400)
     }
@@ -1160,6 +1193,10 @@ class NimoClient(private val context: Context, private val listener: NimoListene
                     NimoProtocol.APP_ID_PROMPTER -> onPrompterAction05(data)
                     else -> {}
                 }
+                // 导航页的单击有时只从这里转发，不走输入上报。不接的话，番茄钟、锻炼按镜腿没有反应
+                NimoProtocol.INPUT_CLICK_RIGHT, NimoProtocol.INPUT_CLICK_LEFT,
+                NimoProtocol.INPUT_DOUBLE_CLICK_RIGHT, NimoProtocol.INPUT_DOUBLE_CLICK_LEFT ->
+                    if (enteredApp == NimoProtocol.APP_ID_NAV) handleInput(status, data)
                 else -> {}
             }
             return
