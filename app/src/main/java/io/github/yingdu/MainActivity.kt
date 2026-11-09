@@ -4368,7 +4368,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         page.addView(seg.root, lp(bottom = 10))
         val c = card().apply { gravity = Gravity.CENTER_HORIZONTAL; setPadding(dp(14), dp(18), dp(14), dp(16)) }
         val phase = text("", 12f, SUB).apply { gravity = Gravity.CENTER }
-        val big = text("1:16", 52f, INK, true).apply { gravity = Gravity.CENTER; typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD) }
+        val big = text("2:20", 52f, INK, true).apply { gravity = Gravity.CENTER; typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD) }
         val info = text("", 12f, SUB).apply { gravity = Gravity.CENTER }
         c.addView(phase); c.addView(big, lp(top = 6)); c.addView(info, lp(top = 8))
         val start = Tile("▶︎", "开始") {
@@ -4396,7 +4396,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             }
             big.text = EyeLogic.clock(e.remaining())
             info.text = if (e.mode == EyeMode.SLEEP) "左右慢慢摆，一共 5 分钟，结束时不亮画面"
-            else "米字 → 顺时针 → 逆时针 → 远近 → 闭眼 20 秒"
+            else "米字四条线各 10 次 → 顺时针 10 圈 → 逆时针 10 圈 → 放大缩小 10 次 → 闭眼 20 秒"
             val running = e.isRunning()
             start.setLabel(when {
                 p == EyePhase.DONE -> "再来一次"

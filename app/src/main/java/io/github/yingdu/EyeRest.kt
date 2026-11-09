@@ -8,29 +8,36 @@ import kotlin.math.sin
 /** 眼睛休息：训练是一组视线移动，催眠是五分钟的单调摆动。不改变近视度数。 */
 enum class EyeMode { TRAIN, SLEEP }
 
-enum class EyePhase { MIZI, CW, CCW, DEPTH, REST, SWING, DONE }
+enum class EyePhase { MIZI_V, MIZI_H, MIZI_D1, MIZI_D2, CW, CCW, DEPTH, REST, SWING, DONE }
 
 /** 某一帧点该在哪。x、y 是 -1..1（上为负），scale 是点的大小，0 表示不画点。 */
 data class EyeSpot(val phase: EyePhase, val x: Float, val y: Float, val scale: Float, val dim: Boolean)
 
 object EyeLogic {
-    const val RAY_MS = 3_000L
-    const val RAYS = 8
-    const val MIZI_MS = RAY_MS * RAYS
-    const val ORBIT_MS = 10_000L
-    const val DEPTH_MS = 12_000L
+    /** 米字：竖、横、两条斜线，每条来回 10 次，一来一回 1.6 秒。 */
+    const val STROKE_MS = 800L
+    const val REPS = 10
+    const val LINE_MS = STROKE_MS * 2 * REPS
+    const val MIZI_MS = LINE_MS * 4
+    private val LINES = listOf(EyePhase.MIZI_V, EyePhase.MIZI_H, EyePhase.MIZI_D1, EyePhase.MIZI_D2)
+    /** 顺时针、逆时针各转 10 圈，一圈 2 秒。 */
+    const val LAP_MS = 2_000L
+    const val ORBIT_MS = LAP_MS * REPS
+    /** 放大再缩小算一次，10 次。 */
+    const val DEPTH_CYCLE_MS = STROKE_MS * 2
+    const val DEPTH_MS = DEPTH_CYCLE_MS * REPS
     const val REST_MS = 20_000L
     const val SLEEP_MS = 5 * 60_000L
     const val SWING_MS = 6_000L
 
-    private const val ORBIT_R = 0.85f
     private const val SWING_R = 0.62f
 
     fun total(mode: EyeMode) = if (mode == EyeMode.TRAIN) MIZI_MS + ORBIT_MS * 2 + DEPTH_MS + REST_MS else SLEEP_MS
 
     /** 各段结束的时间，最后一段是整段结束。左键跳到下一个。 */
     fun marks(mode: EyeMode): LongArray = if (mode == EyeMode.TRAIN)
-        longArrayOf(MIZI_MS, MIZI_MS + ORBIT_MS, MIZI_MS + ORBIT_MS * 2, MIZI_MS + ORBIT_MS * 2 + DEPTH_MS, total(mode))
+        longArrayOf(LINE_MS, LINE_MS * 2, LINE_MS * 3, MIZI_MS, MIZI_MS + ORBIT_MS, MIZI_MS + ORBIT_MS * 2,
+            MIZI_MS + ORBIT_MS * 2 + DEPTH_MS, total(mode))
     else longArrayOf(total(mode))
 
     fun nextMark(mode: EyeMode, elapsed: Long) = marks(mode).firstOrNull { it > elapsed + 200 } ?: total(mode)
@@ -39,7 +46,7 @@ object EyeLogic {
         if (elapsed >= total(mode)) return EyePhase.DONE
         if (mode == EyeMode.SLEEP) return EyePhase.SWING
         var t = elapsed
-        if (t < MIZI_MS) return EyePhase.MIZI
+        if (t < MIZI_MS) return LINES[(t / LINE_MS).toInt()]
         t -= MIZI_MS
         if (t < ORBIT_MS) return EyePhase.CW
         t -= ORBIT_MS
@@ -58,29 +65,43 @@ object EyeLogic {
                 val a = (2 * PI * (elapsed % SWING_MS) / SWING_MS).toFloat()
                 EyeSpot(phase, (sin(a) * SWING_R).toFloat(), 0f, 0.28f, true)
             }
-            EyePhase.MIZI -> {
-                val ray = (elapsed / RAY_MS).toInt().coerceIn(0, RAYS - 1)
-                val u = (elapsed % RAY_MS) / RAY_MS.toFloat()
-                val dist = if (u < 0.5f) u / 0.5f else (1f - u) / 0.5f
-                val theta = ray * PI / 4
-                EyeSpot(phase, (sin(theta) * dist).toFloat(), (-cos(theta) * dist).toFloat(), 0.22f, false)
+            EyePhase.MIZI_V, EyePhase.MIZI_H, EyePhase.MIZI_D1, EyePhase.MIZI_D2 -> {
+                val local = elapsed - LINES.indexOf(phase) * LINE_MS
+                val p = sweep(local)
+                val (x, y) = when (phase) {
+                    EyePhase.MIZI_V -> 0f to p
+                    EyePhase.MIZI_H -> p to 0f
+                    EyePhase.MIZI_D1 -> p to p
+                    else -> p to -p
+                }
+                EyeSpot(phase, x, y, 0.22f, false)
             }
             EyePhase.CW, EyePhase.CCW -> {
                 val local = if (phase == EyePhase.CW) elapsed - MIZI_MS else elapsed - MIZI_MS - ORBIT_MS
-                val turns = local / ORBIT_MS.toFloat()
+                val turns = local / LAP_MS.toFloat()
                 val theta = (if (phase == EyePhase.CW) 1 else -1) * 2 * PI * turns
-                EyeSpot(phase, (sin(theta) * ORBIT_R).toFloat(), (-cos(theta) * ORBIT_R).toFloat(), 0.22f, false)
+                EyeSpot(phase, sin(theta).toFloat(), (-cos(theta)).toFloat(), 0.22f, false)
             }
             EyePhase.DEPTH -> {
                 val local = elapsed - MIZI_MS - ORBIT_MS * 2
-                val wave = cos(2 * PI * 3 * local / DEPTH_MS).toFloat()
+                val wave = cos(2 * PI * local / DEPTH_CYCLE_MS).toFloat()
                 EyeSpot(phase, 0f, 0f, 0.5f - 0.5f * wave, false)
             }
         }
     }
 
+    /** 一条线上来回一次：-1 是起点那一头，+1 是另一头，回到起点时又是 -1。 */
+    private fun sweep(local: Long): Float {
+        val frac = (local % (STROKE_MS * 2)).toFloat() / (STROKE_MS * 2)
+        val tri = if (frac < 0.5f) frac * 2f else (1f - frac) * 2f
+        return -1f + 2f * tri
+    }
+
     fun label(phase: EyePhase) = when (phase) {
-        EyePhase.MIZI -> "米字"
+        EyePhase.MIZI_V -> "米字·竖"
+        EyePhase.MIZI_H -> "米字·横"
+        EyePhase.MIZI_D1 -> "米字·斜一"
+        EyePhase.MIZI_D2 -> "米字·斜二"
         EyePhase.CW -> "顺时针"
         EyePhase.CCW -> "逆时针"
         EyePhase.DEPTH -> "远近"
@@ -96,7 +117,7 @@ object EyeLogic {
 }
 
 /**
- * 眼镜上的眼睛休息。训练：米字、顺时针、逆时针、远近（只是点变大变小，镜片焦距不变），然后闭眼。
+ * 眼镜上的眼睛休息。训练：米字四条线各来回 10 次，顺时针、逆时针各 10 圈，放大缩小 10 次（只是点变大变小，镜片焦距不变），然后闭眼。
  * 催眠：点左右慢慢摆五分钟，结束时画面暗下去，不弹提醒。
  * 右单击开始或暂停，左单击下一段。点返回就暂停；切到首页或锁屏时，眼镜上还开着就继续。
  */
@@ -231,15 +252,17 @@ class EyeRestApp(private val host: AppHost) : GlassesApp {
             f.text(EyeLogic.clock(EyeLogic.total(mode) - e), f.w / 2, 96, Frame.FAINT, f.font, Frame.CENTER)
         } else if (spot.phase != EyePhase.DONE && spot.scale > 0f) {
             val cx = f.w / 2
-            val cy = 88
+            val cy = 90
             if (!sleep) {
                 f.rect(cx - 3, cy, 7, 1, Frame.FAINT)
                 f.rect(cx, cy - 3, 1, 7, Frame.FAINT)
             }
-            val px = cx + (spot.x * 150f).toInt()
-            val py = cy + (spot.y * 36f).toInt()
+            // 训练尽量铺满：左右留一点边，上下停在标题和底部提示之间。放大时点本身占满这块。催眠仍是小幅度
+            val px = cx + (spot.x * (if (sleep) 150f else 206f)).toInt()
+            val py = cy + (spot.y * (if (sleep) 36f else 50f)).toInt()
             val color = if (spot.dim) Frame.DIM else Frame.FULL
-            dot(f, px, py, (3f + spot.scale * 13f).toInt().coerceAtLeast(2), color)
+            val radius = if (spot.phase == EyePhase.DEPTH) (4f + spot.scale * 48f).toInt() else (3f + spot.scale * 8f).toInt()
+            dot(f, px, py, radius.coerceAtLeast(2), color)
         }
         if (!sleep) {
             f.footer(when {
@@ -251,9 +274,10 @@ class EyeRestApp(private val host: AppHost) : GlassesApp {
         return f.done()
     }
 
+    private val dotPaint = android.graphics.Paint()
+
     private fun dot(f: Frame, cx: Int, cy: Int, r: Int, color: Int) {
-        for (dy in -r..r) for (dx in -r..r) {
-            if (dx * dx + dy * dy <= r * r) f.rect(cx + dx, cy + dy, 1, 1, color)
-        }
+        dotPaint.color = color
+        f.canvas.drawCircle(cx.toFloat(), cy.toFloat(), r.toFloat(), dotPaint)
     }
 }
