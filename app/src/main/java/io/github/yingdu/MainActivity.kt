@@ -81,7 +81,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
     private enum class Tab { HOME, DASH, ME }
     private enum class Sub {
-        READ, STOCKS, AGENDA, NOTIFY, GAMES, GAME, CLOCK, POMO, POMO_SET, PARTY,
+        READ, STOCKS, AGENDA, NOTIFY, GAMES, GAME, CLOCK, POMO, POMO_SET, WORKOUT, WORKOUT_GROUP, PARTY,
         DASH_SET, FONT, READ_SET, OFFICIAL, LOG, ABOUT, LICENSES, MEMORY, MEMORY_SET, MEMORY_LISTEN, MEMORY_API, CAPTIONS, SIGHTS, MANUAL, MANUAL_TOPIC,
         NAV, NAV_SET, ASSIST, ASSIST_SET, ASSIST_SESSION, AGENT
     }
@@ -756,6 +756,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         subPages[Sub.CLOCK] = buildClock()
         subPages[Sub.POMO] = buildPomo()
         subPages[Sub.POMO_SET] = buildPomoSettings()
+        subPages[Sub.WORKOUT] = buildWorkout()
+        subPages[Sub.WORKOUT_GROUP] = buildWorkoutGroup()
         subPages[Sub.PARTY] = buildParty()
         subPages[Sub.DASH_SET] = buildDashSettings()
         subPages[Sub.FONT] = buildFont()
@@ -863,6 +865,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.GAME -> s.activeApp is GameApp
         Sub.CLOCK -> s.activeApp === s.clock
         Sub.POMO -> s.activeApp === s.pomodoro
+        Sub.WORKOUT -> s.activeApp === s.workout
         Sub.PARTY -> s.activeApp === s.party
         else -> false
     }
@@ -996,7 +999,9 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.READ -> "阅读"; Sub.STOCKS -> "股票"; Sub.AGENDA -> "日程待办"; Sub.NOTIFY -> "通知转发"
         Sub.GAMES -> "小游戏"; Sub.GAME -> (service?.activeApp as? GameApp)?.title ?: "小游戏"
         Sub.CLOCK -> "像素表盘"
-        Sub.POMO -> "番茄钟"; Sub.POMO_SET -> "番茄钟设置"; Sub.PARTY -> "聚会工具"; Sub.DASH_SET -> "看板设置"
+        Sub.POMO -> "番茄钟"; Sub.POMO_SET -> "番茄钟设置"
+        Sub.WORKOUT -> "锻炼"; Sub.WORKOUT_GROUP -> service?.workout?.editingGroup()?.name ?: "运动组"
+        Sub.PARTY -> "聚会工具"; Sub.DASH_SET -> "看板设置"
         Sub.FONT -> "眼镜字号"; Sub.READ_SET -> "阅读显示"; Sub.OFFICIAL -> "官方 app"; Sub.LOG -> "日志"; Sub.ABOUT -> "关于"; Sub.LICENSES -> "开源许可"
         Sub.MEMORY -> "全天记忆"; Sub.CAPTIONS -> "实时字幕"; Sub.MEMORY_LISTEN -> "收音方式和耗电"; Sub.MEMORY_API -> "转文字和总结"; Sub.MEMORY_SET -> "全天记忆设置"; Sub.SIGHTS -> "景点介绍"
         Sub.MANUAL -> "使用手册"; Sub.MANUAL_TOPIC -> manualTopic.title
@@ -1030,6 +1035,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.READ -> if (s.appMode != ReaderService.AppMode.READER || s.glassesPaused) "在眼镜上显示阅读" else "收起眼镜显示"
         Sub.CLOCK -> glassesButton(s, s.clock, "在眼镜上显示表盘")
         Sub.POMO -> glassesButton(s, s.pomodoro, "在眼镜上看进度环")
+        Sub.WORKOUT, Sub.WORKOUT_GROUP -> glassesButton(s, s.workout, "在眼镜上显示")
         Sub.PARTY -> glassesButton(s, s.party, "在眼镜上打开")
         Sub.NAV -> if (s.nav.phase == NavApp.Phase.IDLE) null else glassesButton(s, s.nav, "在眼镜上显示导航")
         Sub.CAPTIONS -> if (s.activeApp === s.captions && !s.glassesPaused) "关掉字幕" else glassesButton(s, s.captions, "在眼镜上开字幕")
@@ -1047,6 +1053,12 @@ class MainActivity : Activity(), ReaderService.UiListener {
             }
             Sub.CLOCK -> toggleOnGlasses { it.clock }
             Sub.POMO -> toggleOnGlasses { it.pomodoro }
+            Sub.WORKOUT, Sub.WORKOUT_GROUP -> {
+                val w = s.workout
+                val g = if (sub == Sub.WORKOUT_GROUP) w.editingGroup() else w.selectedGroup()
+                if (s.activeApp !== w) g?.let { w.arm(it) }
+                toggleOnGlasses { it.workout }
+            }
             Sub.PARTY -> toggleOnGlasses { it.party }
             Sub.NAV -> toggleOnGlasses { it.nav }
             Sub.CAPTIONS -> {
@@ -1112,13 +1124,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val label = p?.let { stickyLabel(it, s) }
         sticky.visibility = if (label == null) View.GONE else View.VISIBLE
         if (label != null) stickyButton.text = label
-        if (p == Sub.GAME) subTitle.text = titleOf(p)
+        if (p == Sub.GAME || p == Sub.WORKOUT_GROUP) subTitle.text = titleOf(p)
     }
 
     /** 这几页每秒刷新一次（进度、倒计时、表盘预览）。 */
     private val pageTicker = object : Runnable {
         override fun run() {
-            if (sub != Sub.CLOCK && sub != Sub.POMO && sub != Sub.NAV) return
+            if (sub != Sub.CLOCK && sub != Sub.POMO && sub != Sub.NAV && sub != Sub.WORKOUT && sub != Sub.WORKOUT_GROUP) return
             refreshNow()
             uiHandler.postDelayed(this, 1000)
         }
@@ -1238,7 +1250,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         fun px(icon: PixelIcon) = ImageView(this).apply { setImageBitmap(icon.bitmap(dp(2))) }
         val apps = listOf(
             app(px(PhoneIcons.READ), "阅读") { openSub(Sub.READ) }, app(px(PhoneIcons.NAV), "导航") { openSub(Sub.NAV) },
-            app(px(PhoneIcons.POMO), "番茄钟") { openSub(Sub.POMO) }, app(px(PhoneIcons.CLOCK), "像素表盘") { openSub(Sub.CLOCK) },
+            app(px(PhoneIcons.POMO), "番茄钟") { openSub(Sub.POMO) }, app(px(PhoneIcons.WORKOUT), "锻炼") { openSub(Sub.WORKOUT) },
+            app(px(PhoneIcons.CLOCK), "像素表盘") { openSub(Sub.CLOCK) },
             app(px(PhoneIcons.GAMES), "小游戏") { openSub(Sub.GAMES) },
             app(px(PhoneIcons.PARTY), "聚会工具") { openSub(Sub.PARTY) }, app(px(PhoneIcons.OFFICIAL), "官方 app") { openSub(Sub.OFFICIAL) },
             app(px(PhoneIcons.MEMORY), "全天记忆") { openSub(Sub.MEMORY) },
@@ -1304,6 +1317,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
                             a is GameApp -> { openSub(Sub.GAMES, animate = false); openSub(Sub.GAME) }
                             a === s.clock -> openSub(Sub.CLOCK)
                             a === s.pomodoro -> openSub(Sub.POMO)
+                            a === s.workout -> openSub(Sub.WORKOUT)
                             a === s.party -> openSub(Sub.PARTY)
                             a === s.captions -> openSub(Sub.CAPTIONS)
                             a === s.assist -> openSub(Sub.ASSIST)
@@ -4025,6 +4039,311 @@ class MainActivity : Activity(), ReaderService.UiListener {
             if (key != shown) { shown = key; preview.setImageBitmap(glassesTint(k.preview(), 1)) }
         }
         return page
+    }
+
+    // =====================================================================
+    // 锻炼：运动组、动作、眼镜上的进度环
+    // =====================================================================
+
+    /** 开始这一组，并在眼镜上打开。没动作时打开编辑页。另一组还在进行时先问一声。 */
+    private fun launchWorkout(g: WorkoutGroup) {
+        val s = service ?: return
+        val w = s.workout
+        if (g.moves.isEmpty()) {
+            toast("先添加动作")
+            w.editingId = g.id
+            if (sub != Sub.WORKOUT_GROUP) openSub(Sub.WORKOUT_GROUP)
+            return
+        }
+        val cur = w.run
+        if (cur != null && cur.plan.groupId != g.id && cur.phase != WorkoutPhase.DONE) {
+            AlertDialog.Builder(this).setTitle("换成「${g.name}」？")
+                .setMessage("「${cur.plan.title}」还在进行，换过去会从头开始这一组。")
+                .setPositiveButton("开始") { _, _ -> beginWorkout(g) }
+                .setNegativeButton("取消", null).show()
+            return
+        }
+        beginWorkout(g)
+    }
+
+    private fun beginWorkout(g: WorkoutGroup) {
+        val s = service ?: return
+        val w = s.workout
+        w.startGroup(g)
+        if (s.linkState != LinkState.READY) toast("眼镜还没连接，计时已经开始")
+        if (s.activeApp !== w) s.openApp(w) else if (s.glassesPaused) s.resumeGlasses()
+        refreshNow()
+    }
+
+    private fun buildWorkout(): View {
+        val page = vbox()
+        val live = card().apply { setPadding(dp(14), dp(16), dp(14), dp(14)) }
+        val phase = text("", 12f, SUB).apply { gravity = Gravity.CENTER }
+        val big = text("锻炼", 28f, INK, true).apply { gravity = Gravity.CENTER }
+        val count = text("", 22f, INK, true).apply { gravity = Gravity.CENTER }
+        val info = text("", 12f, SUB).apply { gravity = Gravity.CENTER }
+        live.addView(phase)
+        live.addView(big, lp(top = 4))
+        live.addView(count, lp(top = 2))
+        live.addView(info, lp(top = 4))
+        val pause = pill("开始", small = true) { service?.workout?.startPause(); refreshNow() }
+        val rep = pill("这次完成", dark = false, small = true) { service?.workout?.skipRep(); refreshNow() }
+        val next = pill("下一项", dark = false, small = true) { service?.workout?.skipMove(); refreshNow() }
+        val stop = pill("结束", dark = false, small = true) { service?.workout?.stop(); refreshNow() }
+        val controls = vbox().apply {
+            addView(pillRow(pause, rep), lp(top = 12))
+            addView(pillRow(next, stop), lp(top = 8))
+        }
+        live.addView(controls)
+        page.addView(live)
+
+        page.addView(section("运动组"))
+        val (box, list) = scrollListBox(360)
+        page.addView(box)
+        page.addView(pill("新建运动组") {
+            service?.workout?.addGroup() ?: return@pill
+            openSub(Sub.WORKOUT_GROUP)
+        })
+        page.addView(note("一组里可以有多个动作。每个动作设次数和每次多久，单位选秒或分钟。比如深蹲 10 次、每次 2 秒，或者慢跑 1 次、30 分钟。"))
+
+        var shown = ""
+        onUpdate(Sub.WORKOUT) { s ->
+            val w = s.workout
+            val r = w.run
+            val going = r != null && r.phase != WorkoutPhase.DONE
+            controls.visibility = if (r == null) View.GONE else View.VISIBLE
+            if (r == null) {
+                phase.text = "还没有开始"
+                big.text = "选一组开始"
+                count.text = ""
+                info.text = "开始后，眼镜上会显示动作和进度环"
+            } else {
+                val step = WorkoutLogic.step(r)
+                phase.text = r.plan.title + when {
+                    r.phase == WorkoutPhase.DONE -> " · 完成"
+                    r.phase == WorkoutPhase.REST -> " · 休息"
+                    else -> " · 第 ${r.round + 1}/${r.plan.rounds} 轮"
+                }
+                big.text = when (r.phase) {
+                    WorkoutPhase.REST -> "休息"
+                    WorkoutPhase.DONE -> "完成"
+                    else -> step?.name ?: ""
+                }
+                count.text = when (r.phase) {
+                    WorkoutPhase.REP -> step?.let { "${r.rep} / ${it.reps}" } ?: ""
+                    WorkoutPhase.REST -> WorkoutLogic.nextName(r)?.let { "下一个 $it" } ?: ""
+                    WorkoutPhase.DONE -> "这一组做完了"
+                }
+                val clock = if (r.phase == WorkoutPhase.DONE) "" else "还剩 " + WorkoutLogic.remainText(w.remaining())
+                val st = when {
+                    r.phase == WorkoutPhase.DONE -> "右键可以再来一次"
+                    r.running -> "进行中 · $clock"
+                    r.leftMs >= 0 -> "已暂停 · $clock"
+                    else -> "等你开始 · $clock"
+                }
+                info.text = st
+                pause.text = when {
+                    r.phase == WorkoutPhase.DONE -> "再来一次"
+                    r.running -> "暂停"
+                    r.leftMs >= 0 -> "继续"
+                    else -> "开始"
+                }
+            }
+            val key = w.groups.joinToString("|") { g ->
+                val active = going && r?.plan?.groupId == g.id
+                g.id + g.name + g.summary() + (if (active && r?.running == true) "#" else if (active) "!" else "")
+            }
+            if (key != shown) {
+                shown = key
+                list.removeAllViews()
+                if (w.groups.isEmpty()) list.addView(text("还没有运动组", 13f, SUB).apply { setPadding(dp(14), dp(14), dp(14), dp(14)) })
+                w.groups.forEach { g ->
+                    val active = going && r?.plan?.groupId == g.id
+                    val row = Row(g.name, g.summary(), chevron = true) {
+                        w.editingId = g.id
+                        openSub(Sub.WORKOUT_GROUP)
+                    }
+                    if (active) row.value(if (r?.running == true) "进行中" else "已暂停")
+                    val label = when {
+                        g.moves.isEmpty() -> "编辑"
+                        active && r?.running == true -> "显示"
+                        active -> "继续"
+                        else -> "开始"
+                    }
+                    row.accessory(smallButton(label) { launchWorkout(g) })
+                    list.addRow(row.root)
+                }
+            }
+        }
+        return page
+    }
+
+    private fun buildWorkoutGroup(): View {
+        val page = vbox()
+        val missing = hint("这一组已经删掉了").apply { visibility = View.GONE }
+        page.addView(missing, lp(bottom = 8))
+        val body = vbox()
+        page.addView(body)
+
+        val name = Row("名称", chevron = true) {
+            val g = service?.workout?.editingGroup() ?: return@Row
+            val f = field("比如：室内健身").apply { setText(g.name) }
+            AlertDialog.Builder(this).setTitle("运动组名称")
+                .setView(vbox().apply { setPadding(dp(20), dp(8), dp(20), 0); addView(f) })
+                .setPositiveButton("保存") { _, _ -> service?.workout?.rename(g.id, f.text.toString()); refreshNow() }
+                .setNegativeButton("取消", null).show()
+        }
+        val rounds = Stepper(
+            { service?.workout?.editingGroup()?.let { service?.workout?.setRounds(it.id, it.rounds - 1) }; refreshNow() },
+            { service?.workout?.editingGroup()?.let { service?.workout?.setRounds(it.id, it.rounds + 1) }; refreshNow() },
+        )
+        val meta = listBox()
+        meta.addRow(name.root)
+        meta.addRow(hbox().apply {
+            minimumHeight = dp(46)
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            addView(text("循环", 14f), weighted())
+            addView(rounds.root)
+        })
+        body.addView(meta)
+
+        val rest = smallField(56)
+        var writingRest = false
+        rest.addTextChangedListener(onEdit { t ->
+            if (writingRest) return@onEdit
+            val g = service?.workout?.editingGroup() ?: return@onEdit
+            val n = t.toIntOrNull() ?: return@onEdit
+            if (n != g.rest) service?.workout?.setRest(g.id, n)
+        })
+        val units = WorkoutUnit.values()
+        val unitSeg = Seg(units.map { it.label }) { i ->
+            val g = service?.workout?.editingGroup() ?: return@Seg
+            service?.workout?.setRestUnit(g.id, units[i])
+            refreshNow()
+        }
+        val gap = listBox()
+        gap.addRow(hbox().apply {
+            minimumHeight = dp(46)
+            setPadding(dp(14), dp(6), dp(8), dp(6))
+            gravity = Gravity.CENTER_VERTICAL
+            addView(text("动作之间休息", 14f), weighted())
+            addView(rest)
+        })
+        gap.addRow(hbox().apply {
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            addView(unitSeg.root, weighted())
+        })
+        body.addView(section("休息"))
+        body.addView(gap)
+        body.addView(note("填 0 表示做完一个动作直接做下一个。单位是上面数字的单位。"))
+
+        body.addView(section("动作"))
+        val (moveBox, moves) = scrollListBox(320)
+        body.addView(moveBox)
+        body.addView(pill("添加动作") {
+            val id = service?.workout?.editingId ?: return@pill
+            editMove(id, null)
+        })
+        val start = pill("开始这一组") {
+            val g = service?.workout?.editingGroup() ?: return@pill
+            launchWorkout(g)
+        }
+        val again = pill("重新开始", dark = false) {
+            service?.workout?.restart()
+            val s = service ?: return@pill
+            if (s.activeApp !== s.workout) s.openApp(s.workout) else if (s.glassesPaused) s.resumeGlasses()
+            refreshNow()
+        }
+        body.addView(start, lp(top = 4))
+        body.addView(again, lp(top = 8))
+        body.addView(pill("删除这一组", dark = false) {
+            val g = service?.workout?.editingGroup() ?: return@pill
+            AlertDialog.Builder(this).setTitle("删除「${g.name}」？").setMessage("这一组里的动作都会删掉。")
+                .setPositiveButton("删除") { _, _ -> service?.workout?.deleteGroup(g.id); closeSub() }
+                .setNegativeButton("取消", null).show()
+        }, lp(top = 8))
+
+        var shown = ""
+        onUpdate(Sub.WORKOUT_GROUP) { s ->
+            val g = s.workout.editingGroup()
+            missing.visibility = if (g == null) View.VISIBLE else View.GONE
+            body.visibility = if (g == null) View.GONE else View.VISIBLE
+            if (g == null) return@onUpdate
+            name.value(g.name)
+            rounds.value.text = "${g.rounds} 次"
+            if (!rest.isFocused) {
+                val t = "${g.rest}"
+                if (rest.text.toString() != t) {
+                    writingRest = true
+                    rest.setText(t)
+                    writingRest = false
+                }
+            }
+            unitSeg.select(g.restUnit.ordinal)
+            val r = s.workout.run
+            val same = r != null && r.plan.groupId == g.id && r.phase != WorkoutPhase.DONE
+            start.text = when {
+                same && r!!.running -> "在眼镜上显示"
+                same -> "继续这一组"
+                else -> "开始这一组"
+            }
+            again.visibility = if (r?.plan?.groupId == g.id) View.VISIBLE else View.GONE
+            val key = g.moves.joinToString(";") { "${it.id}:${it.name}:${it.reps}:${it.each}:${it.unit}" }
+            if (key != shown) {
+                shown = key
+                moves.removeAllViews()
+                if (g.moves.isEmpty()) moves.addView(text("还没有动作", 13f, SUB).apply { setPadding(dp(14), dp(14), dp(14), dp(14)) })
+                g.moves.forEach { m ->
+                    val row = Row(m.name.ifBlank { "动作" }, "${m.reps} 次 · 每次 ${m.each} ${m.unit.label}") { editMove(g.id, m) }
+                    row.accessory(hbox().apply {
+                        addView(smallButton("上") { s.workout.shiftMove(g.id, m.id, -1); refreshNow() })
+                        addView(smallButton("下") { s.workout.shiftMove(g.id, m.id, 1); refreshNow() })
+                    })
+                    moves.addRow(row.root)
+                }
+            }
+        }
+        return page
+    }
+
+    /** 新建或修改一个动作。次数、每次时长可以填，单位选秒或分钟。 */
+    private fun editMove(groupId: String, old: WorkoutMove?) {
+        val name = field("动作名称（比如深蹲、慢跑）").apply { setText(old?.name ?: "") }
+        val reps = field("次数", number = true).apply { setText("${old?.reps ?: 10}") }
+        val each = field("每次多久", number = true).apply { setText("${old?.each ?: 2}") }
+        val units = WorkoutUnit.values()
+        var unit = old?.unit ?: WorkoutUnit.SEC
+        val seg = Seg(units.map { it.label }) { unit = units[it] }
+        seg.select(unit.ordinal)
+        val box = vbox().apply {
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(name)
+            addView(hint("做几次"), lp(top = 12))
+            addView(reps, lp(top = 4))
+            addView(hint("每次多久"), lp(top = 12))
+            addView(each, lp(top = 4))
+            addView(seg.root, lp(top = 8))
+            addView(hint("深蹲可以是 10 次、每次 2 秒。慢跑可以是 1 次、30 分钟。"), lp(top = 8))
+        }
+        val d = AlertDialog.Builder(this).setTitle(if (old == null) "添加动作" else "编辑动作")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("保存") { _, _ ->
+                val move = WorkoutMove(
+                    old?.id ?: "m${System.nanoTime()}",
+                    name.text.toString().trim().ifEmpty { "动作" }.take(20),
+                    reps.text.toString().toIntOrNull()?.coerceIn(1, 999) ?: 10,
+                    each.text.toString().toIntOrNull()?.coerceIn(1, 999) ?: 2,
+                    unit,
+                )
+                if (old == null) service?.workout?.addMove(groupId, move) else service?.workout?.updateMove(groupId, move)
+                refreshNow()
+            }
+            .setNegativeButton("取消", null)
+        if (old != null) d.setNeutralButton("删除") { _, _ ->
+            service?.workout?.deleteMove(groupId, old.id)
+            refreshNow()
+        }
+        d.show()
     }
 
     // =====================================================================

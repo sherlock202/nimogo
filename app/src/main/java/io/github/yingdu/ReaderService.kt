@@ -220,6 +220,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     val games: List<GameApp> by lazy { Games.all(this) }
     val clock by lazy { ClockApp(this) }
     val pomodoro by lazy { PomodoroApp(this) }
+    val workout by lazy { WorkoutApp(this) }
     val party by lazy { PartyApp(this) }
     /** 导航（NimoGo：Google Navigation SDK 的逐向数据画到眼镜上）。导航开始时自动在眼镜上打开，结束后收回。 */
     val nav by lazy {
@@ -628,6 +629,11 @@ class ReaderService : Service(), NimoListener, AppHost {
         "read" -> if (book == null) "还没有打开书" else { switchAppMode(AppMode.READER); null }
         "nav" -> { openApp(nav); null }
         "pomo" -> { openApp(pomodoro); if (!pomodoro.state.running) pomodoro.startPause(); null }
+        "workout" -> {
+            val g = workout.selectedGroup()
+            if (g == null || g.moves.isEmpty()) "先在手机上建好运动组"
+            else { workout.startGroup(g); openApp(workout); null }
+        }
         "clock" -> { openApp(clock); null }
         "captions" -> if (linkState != LinkState.READY || !asrReady()) "字幕还不能开：先设好转文字" else { openApp(captions); null }
         "assist" -> if (linkState != LinkState.READY || !assistAsrReady()) "场景助手还不能开始" else { callAssist("语音菜单"); null }
@@ -1706,6 +1712,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (appMode == AppMode.DASHBOARD) { refreshDashboard(forceWeather = true); restartDashTimer() }
         prefs.getString("lastBook", null)?.let { openBook(Uri.parse(it), fromRestore = true) }
         pomodoro.restore()
+        workout.restore()
         // 全天记忆：定好今晚的总结，把上次没转完的文字接着转
         scheduleSummary()
         main.postDelayed({ memKickTranscribe(); memPurge() }, 10_000)

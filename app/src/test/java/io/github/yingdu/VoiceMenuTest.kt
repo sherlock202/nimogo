@@ -14,6 +14,7 @@ class VoiceMenuTest {
         '记' to "ji", '忆' to "yi", '牌' to "pai",
         '贪' to "tan", '吃' to "chi", '蛇' to "she",
         '看' to "kan", '书' to "shu",
+        '锻' to "duan", '炼' to "lian",
     )
 
     private fun idOf(heard: String) = VoiceMenu.match(heard, cmds) { py[it] }?.id
@@ -21,6 +22,8 @@ class VoiceMenuTest {
     @Test fun exactAndFiller() {
         assertEquals("pomo", idOf("番茄钟"))
         assertEquals("pomo", idOf("打开番茄钟"))
+        assertEquals("workout", idOf("锻炼"))
+        assertEquals("workout", idOf("打开锻炼"))
         assertEquals("read", idOf("我想看书"))
         assertEquals("assist", idOf("请打开场景助手"))
     }
@@ -46,7 +49,7 @@ class VoiceMenuTest {
         assertEquals(n - 1, VoiceMenu.move(0, n, 4, "left"))
         assertEquals(4, VoiceMenu.move(0, n, 4, "down"))
         assertEquals(0, VoiceMenu.move(0, n, 4, "up"))
-        assertEquals(8, VoiceMenu.move(8, n, 4, "down"))
+        assertEquals(n - 1, VoiceMenu.move(n - 1, n, 4, "down"))
         assertEquals("up", VoiceMenu.keyAction(KeyEvent.KEYCODE_DPAD_UP))
         assertEquals("down", VoiceMenu.keyAction(KeyEvent.KEYCODE_VOLUME_DOWN))
         assertEquals("left", VoiceMenu.keyAction(KeyEvent.KEYCODE_DPAD_LEFT))
