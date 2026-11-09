@@ -1860,7 +1860,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     /** 眼镜按环境光算出了新的亮度：开着自动亮度时平滑地设过去；关着就不管（官方也是忽略）。 */
     override fun onAutoBrightnessLevel(level: Int) {
         if (autoBrightness != true || linkState != LinkState.READY) return
-        val target = level * 100.0 / NimoProtocol.MAX_BRIGHTNESS_LEVEL
+        val target = NimoClient.autoPercent(level)
         val cur = brightnessPct.toDouble()
         if (Math.abs(target - cur) < 0.5) return
         log("自动亮度：${cur.toInt()}% → ${target.toInt()}%（$level 档）")

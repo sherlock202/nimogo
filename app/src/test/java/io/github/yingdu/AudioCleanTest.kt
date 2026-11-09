@@ -58,6 +58,14 @@ class BrightnessTest {
         org.junit.Assert.assertEquals(9, NimoClient.brightnessLevel(60)); org.junit.Assert.assertEquals(15, NimoClient.brightnessLevel(99))
         org.junit.Assert.assertEquals(0x15, NimoProtocol.SET_BRIGHTNESS_OFFSET)
     }
+
+    @Test fun autoBrightnessCapsAtEightyPercent() {
+        // 眼镜自动亮度 0..16 档 → 0..80%，最亮也只到 80%
+        org.junit.Assert.assertEquals(0.0, NimoClient.autoPercent(0), 0.001)
+        org.junit.Assert.assertEquals(40.0, NimoClient.autoPercent(8), 0.001)
+        org.junit.Assert.assertEquals(80.0, NimoClient.autoPercent(16), 0.001)
+        org.junit.Assert.assertEquals(80.0, NimoClient.autoPercent(99), 0.001)
+    }
 }
 
 class UpdaterTest {

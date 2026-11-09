@@ -74,6 +74,11 @@ class NimoClient(private val context: Context, private val listener: NimoListene
     companion object {
         /** 百分比 → 0..16 档（官方是直接舍去小数）。 */
         fun brightnessLevel(percent: Int): Int = (percent.coerceIn(0, 100) / 100.0 * NimoProtocol.MAX_BRIGHTNESS_LEVEL).toInt()
+        /** 自动亮度的上限（百分比）：眼镜报的最亮档（16）对应这里，大太阳下用到这个亮度。 */
+        const val AUTO_MAX_PERCENT = 80.0
+        /** 眼镜自动亮度档位（0..16）→ 自动亮度的目标百分比（0..[AUTO_MAX_PERCENT]），比官方的 0..100% 更暗。 */
+        fun autoPercent(level: Int): Double =
+            level.coerceIn(0, NimoProtocol.MAX_BRIGHTNESS_LEVEL) * AUTO_MAX_PERCENT / NimoProtocol.MAX_BRIGHTNESS_LEVEL
         private const val TWS_TIMEOUT_MS = 10_000L
         private const val ACK_TIMEOUT_MS = 5_000L
         /** 麦克风特征值的属性句柄（实测）。 */
