@@ -80,18 +80,22 @@ class UpdaterTest {
 
     @Test fun parsesGithubRelease() {
         val sha = "7f49cdd55c8405684d02642ce828d273bace32ae017f1f42270667b7cf82d8bd"
-        val json = """{"tag_name":"v1.0.3","draft":false,"prerelease":false,
+        val json = """{"tag_name":"v1.5.4","draft":false,"prerelease":false,
             "body":"## 更新\n- **阅读**：音量键翻页\n- 亮度修复\n\nSHA-256：`$sha`\n\n> 非官方项目",
-            "assets":[{"name":"Yingdu-v1.0.3.apk","browser_download_url":"https://github.com/codexmasterme/yingdu/releases/download/v1.0.3/Yingdu-v1.0.3.apk"}]}"""
+            "assets":[{"name":"NimoGo-v1.5.4.apk","browser_download_url":"https://github.com/sherlock202/nimogo/releases/download/v1.5.4/NimoGo-v1.5.4.apk"}]}"""
         val r = Updater.parseGithub(json)!!
-        org.junit.Assert.assertEquals("1.0.3", r.version)
-        org.junit.Assert.assertEquals("Yingdu-v1.0.3.apk", r.apkName)
+        org.junit.Assert.assertEquals("sherlock202/nimogo", Updater.REPO)
+        org.junit.Assert.assertEquals("1.5.4", r.version)
+        org.junit.Assert.assertEquals("NimoGo-v1.5.4.apk", r.apkName)
         org.junit.Assert.assertEquals(sha, r.sha256)
-        org.junit.Assert.assertEquals("https://cdn.jsdelivr.net/gh/codexmasterme/yingdu@v1.0.3/releases/Yingdu-v1.0.3.apk", r.urls[0])
-        org.junit.Assert.assertEquals("https://github.com/codexmasterme/yingdu/releases/download/v1.0.3/Yingdu-v1.0.3.apk", r.urls[1])
+        org.junit.Assert.assertEquals("https://github.com/sherlock202/nimogo/releases/download/v1.5.4/NimoGo-v1.5.4.apk", r.urls.single())
         org.junit.Assert.assertEquals("更新\n- 阅读：音量键翻页\n- 亮度修复\n\n> 非官方项目", r.notes)
+        val fallback = Updater.parseGithub("""{"tag_name":"v1.5.5","body":"说明"}""")!!
+        org.junit.Assert.assertEquals("NimoGo-v1.5.5.apk", fallback.apkName)
+        org.junit.Assert.assertEquals("https://github.com/sherlock202/nimogo/releases/download/v1.5.5/NimoGo-v1.5.5.apk", fallback.urls.single())
         org.junit.Assert.assertNull(Updater.parseGithub("""{"tag_name":"v2.0.0","draft":true}"""))
-        val u = Updater.parseUpdateJson("""{"version":"1.0.4","apk":"releases/Yingdu-v1.0.4.apk","sha256":"$sha","notes":"修复"}""")!!
-        org.junit.Assert.assertEquals("Yingdu-v1.0.4.apk", u.apkName); org.junit.Assert.assertEquals(sha, u.sha256)
+        val u = Updater.parseUpdateJson("""{"version":"1.5.4","apk":"releases/NimoGo-v1.5.4.apk","sha256":"$sha","notes":"修复"}""")!!
+        org.junit.Assert.assertEquals("NimoGo-v1.5.4.apk", u.apkName); org.junit.Assert.assertEquals(sha, u.sha256)
+        org.junit.Assert.assertEquals("https://github.com/sherlock202/nimogo/releases/download/v1.5.4/NimoGo-v1.5.4.apk", u.urls.single())
     }
 }

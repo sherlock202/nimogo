@@ -49,8 +49,6 @@ class MainActivity : Activity(), ReaderService.UiListener {
         private const val REQ_OPEN = 1
         private const val REQ_PERMS = 2
         private const val REQ_NAV_LOC = 3
-        /** NimoGo 不检查原版萤读的更新。 */
-        private const val UPDATES_ENABLED = false
 
         // 配色
         private const val BG = 0xFFF6F0E9.toInt()
@@ -3754,11 +3752,6 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
     /** manual = 用户点了「检查更新」：不管今天查没查过、跳没跳过这一版，都查，并且告诉结果。 */
     private fun checkUpdate(manual: Boolean) {
-        if (!UPDATES_ENABLED) {
-            // NimoGo 是自己编译安装的；原版萤读的安装包没有导航，包名也不同，不提示下载
-            if (manual) message("检查更新", "NimoGo 是自己编译安装的，不会自动更新。它基于开源的萤读（github.com/codexmasterme/yingdu），原版的新功能可以合并进来后重新编译。")
-            return
-        }
         if (updateChecking) return
         val now = System.currentTimeMillis()
         if (!manual && (!autoUpdateCheck || now - updatePrefs.getLong("checkedAt", 0L) < 24 * 3600_000L)) return
