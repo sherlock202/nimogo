@@ -52,6 +52,7 @@ Nimo 智能眼镜的非官方海外版伴侣 app：**场景助手**在面试、�
 
 1. 到 [Releases](https://github.com/sherlock202/nimogo/releases/latest) 下载最新的 `NimoGo-vX.Y.Z.apk`，传到手机安装（要允许「安装未知应用」）。
    需要 Android 8.0 以上、有 Google Play 服务。以后的新版可以直接覆盖安装，设置不会丢。
+   装上这一版之后，app 每天看一次这个仓库的最新 Release；有新版才问要不要下载，安装仍要你自己确认。可以在「我的 → 关于」里关掉。
 2. 先在系统设置里**强行停止 Nimo 官方 app**（眼镜同一时间只能连一个 app），打开 NimoGo，在「我的 → 连接眼镜」里连接。
 3. 导航要用**你自己的** Google Maps Platform API Key（安装包里没有任何 Key，费用记在你自己的 Google Cloud 账号上），步骤见下一节。
 4. 在 Google Maps 里选好地点 →「共享」→ NimoGo → 选步行 / 驾车 / 骑行 →「开始」。第一次会弹出 Google 导航服务条款，同意后才能用。
@@ -79,8 +80,8 @@ Nimo 智能眼镜的非官方海外版伴侣 app：**场景助手**在面试、�
 
 **发布新版本（自动发到 Releases）**
 1. 改 `app/build.gradle.kts` 里的 `versionName`（和 `versionCode` 加一），在 `docs/release-notes.md` 里写这一版的说明，提交。
-2. 打标签并推送：`git tag v1.5.4 && git push origin main v1.5.4`。
-3. Actions 编好后会自动建一个 Release，附上 `NimoGo-v1.5.4.apk`。发布版必须用固定签名（上面第 4 步的 Secrets），没设置会报错停止。
+2. 打标签并推送：`git tag v1.5.5 && git push origin main v1.5.5`。
+3. Actions 编好后会自动建一个 Release，附上 `NimoGo-v1.5.5.apk`。发布版必须用固定签名（上面第 4 步的 Secrets），没设置会报错停止。
 
 **方法二：Android Studio**（必须用 Android Studio / Gradle）
 
@@ -127,7 +128,7 @@ NimoGo 依赖 Navigation SDK（从 Google Maven 下载），原版的「不用 A
 
 ## 附：萤读原说明
 
-> 以下是上游项目 [萤读 Yingdu](https://github.com/codexmasterme/yingdu)（v1.0.3）的原说明，NimoGo 保留了这些功能。其中「安装」「检查更新」「从源码构建 › 方式二」不适用于 NimoGo。
+> 以下是上游项目 [萤读 Yingdu](https://github.com/codexmasterme/yingdu)（v1.0.3）的原说明，NimoGo 保留了这些功能。其中「安装」「从源码构建 › 方式二」不适用于 NimoGo。「检查更新」查的是本仓库（github.com/sherlock202/nimogo）的 Release，不是萤读的仓库。
 
 ### 萤读 Yingdu —— Nimo 智能眼镜的第三方伴侣 app
 
@@ -221,7 +222,7 @@ app/src/main/java/io/github/yingdu/
   PhoneIcons.kt       手机首页「功能」的像素图标
   AudioClean.kt       转文字前的录音清理：按说话响度自动调音量、降噪、提前量限幅（有单元测试）
   NoiseReducer.kt     维纳滤波降噪（STFT、按最安静的帧估计底噪、决策导向平滑），转文字用（有单元测试）
-  Updater.kt          检查更新：查 GitHub / jsDelivr 上的最新版本、下载并核对 SHA-256（有单元测试）
+  Updater.kt          检查更新：查 github.com/sherlock202/nimogo 的最新 Release、下载安装包（有单元测试）
   Sights.kt           景点介绍：高德 / Google 周边搜索、子点合并、百度百科 / 维基百科介绍、裁成一屏（有单元测试）
   PixelClock.kt / Clock.kt  像素表盘：翻页钟、数码管、二进制钟的点阵画法（有单元测试）/ 全屏表盘
   Pomodoro.kt         番茄钟：计时规则（有单元测试）、进度环画面、到点提醒
