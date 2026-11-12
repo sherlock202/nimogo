@@ -497,25 +497,42 @@ class WorkoutApp(private val host: AppHost) : GlassesApp {
     }
 
     /**
-     * 用提词器文字显示（不用导航页图片）：导航页上眼镜常常不把镜腿单击报给手机，
-     * 锻炼里按左右键没反应；提词器页会把单击、长按报过来，所以这里改成文字。
+     * 提词器文字版：左边是字符拼成的进度环（TextRing，外圈 ◎ 绕着转），中间是剩余时间，右边是动作和次数。
+     * 提词器里眼镜会把单击、长按报给手机，所以锻炼的按键只能在这一页上用。
      */
     override fun glassesText(cols: Int, rows: Int): Pair<String, String>? {
-        val s = run ?: return Pair("还没有开始\n右单击开始", title)
-        val name = when (s.phase) {
-            WorkoutPhase.DONE -> "${s.plan.title} 完成"
-            WorkoutPhase.REST -> "休息" + (WorkoutLogic.nextName(s)?.let { "\n下一个：$it" } ?: "")
-            WorkoutPhase.REP -> WorkoutLogic.step(s)?.name ?: s.plan.title
+        val now = System.currentTimeMillis()
+        val s = run
+        if (s == null || s.plan.moves.isEmpty()) {
+            return TextRing.lines(0.0, "", listOf("还没有开始", "在手机上点「开始」"), false, now, cols)
+                .joinToString("\n") to title
         }
-        val count = WorkoutLogic.step(s)?.let { " ${s.rep + 1}/${it.reps}" } ?: ""
-        val clock = if (s.phase == WorkoutPhase.DONE) "" else WorkoutLogic.remainText(remaining())
-        val state = if (s.phase == WorkoutPhase.DONE) "右单击重新开始" else if (!s.running) "暂停（右单击继续）" else ""
-        val body = listOfNotNull(
-            if (count.isEmpty()) name else "$name $count",
-            clock.ifEmpty { null },
-            state.ifEmpty { null }
-        ).joinToString("\n")
-        return Pair(body, "$title · 第 ${s.round + 1}/${s.plan.rounds.coerceAtLeast(1)} 轮")
+        val step = WorkoutLogic.step(s)
+        val left = WorkoutLogic.remaining(s, now)
+        val prog = WorkoutLogic.progress(s, now)
+        val done = s.phase == WorkoutPhase.DONE
+        val center = if (done) "完成" else WorkoutLogic.remainText(left)
+        val headline = when (s.phase) {
+            WorkoutPhase.REST -> "休息"
+            WorkoutPhase.DONE -> "完成"
+            else -> step?.name ?: ""
+        }
+        val count = when (s.phase) {
+            WorkoutPhase.REP -> step?.let { "已完成 ${s.rep} / ${it.reps}" } ?: ""
+            WorkoutPhase.DONE -> s.plan.title
+            WorkoutPhase.REST -> ""
+        }
+        val state = when {
+            done -> "这一组做完了"
+            s.running -> "进行中"
+            s.leftMs >= 0 -> "已暂停"
+            else -> "等你开始"
+        }
+        val next = WorkoutLogic.nextName(s)?.let { "下一个 $it" } ?: ""
+        val hint = if (done) "右键 再来一次" else "右键 开始/暂停 · 左键 这次完成"
+        val body = TextRing.lines(prog, center, listOf(headline, count, state, next, hint), s.running, now, cols)
+        val status = if (done) "$title · 完成" else "$title · 第 ${s.round + 1}/${s.plan.rounds.coerceAtLeast(1)} 轮"
+        return body.joinToString("\n") to status
     }
 
     override fun render(fontPx: Int): ByteArray {

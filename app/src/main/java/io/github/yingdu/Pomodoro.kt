@@ -189,20 +189,26 @@ class PomodoroApp(private val host: AppHost) : GlassesApp {
     }
 
     /**
-     * 用提词器文字显示（不用导航页图片）：导航页上眼镜常常不把镜腿单击报给手机，
-     * 番茄钟里按左右键没反应；提词器页会把单击、长按报过来，所以这里改成文字。
+     * 提词器文字版：左边是字符拼成的进度环（TextRing，外圈 ◎ 绕着转），中间是剩余时间，右边是这一段和今天的个数。
+     * 提词器里眼镜会把单击、长按报给手机，所以番茄钟的按键只能在这一页上用。
      */
     override fun glassesText(cols: Int, rows: Int): Pair<String, String>? {
+        val now = System.currentTimeMillis()
         val s = state
-        val clock = PomoLogic.clock(remaining())
-        val done = !s.running && !PomoLogic.started(s)
-        val line = when {
-            done -> "右单击开始"
-            !s.running -> "暂停\n$clock\n右单击继续"
-            else -> "${s.phase.zh}\n$clock"
+        val set = settings
+        val left = PomoLogic.remaining(s, set, now)
+        val prog = PomoLogic.progress(s, set, now)
+        val st = when {
+            s.running -> "进行中"
+            PomoLogic.started(s) -> "已暂停"
+            else -> "等你开始"
         }
-        val today = if (s.done > 0) "今天 $s.done 个" else ""
-        return Pair(line, "$title $today".trimEnd())
+        val body = TextRing.lines(
+            prog, PomoLogic.clock(left),
+            listOf(s.phase.zh, st, "今天完成 ${s.done} 个", if (bounce > 0) "时间到" else "", "右键 开始/暂停 · 左键 重来"),
+            s.running, now, cols,
+        )
+        return body.joinToString("\n") to title
     }
 
     override fun render(fontPx: Int): ByteArray {
