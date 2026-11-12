@@ -2199,6 +2199,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         page.addView(section("怎么开始"))
         page.addView(card().apply {
             addView(text("1. 在 Google Maps 里找到地点\n2. 点「共享」，选「NimoGo」\n3. 选出行方式，点「开始」\n\n" +
+                "也可以不拿手机：语音菜单说「导航」，再说要去的地方。对上好几个地点时，眼镜上标 1 到 4，说数字就开始（出行方式用右上角「设置」里的默认）。\n\n" +
                 "导航开始后眼镜自动显示转向箭头、距离和路名；单击镜腿在「当前一步」和「后续步骤」之间切换。" +
                 "长按右镜腿只是眼镜不显示，导航还在继续，可以点下面的按钮恢复。", 13.5f).apply { setLineSpacing(0f, 1.4f) })
         })

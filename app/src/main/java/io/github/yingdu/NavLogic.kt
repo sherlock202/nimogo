@@ -413,3 +413,42 @@ object NavPlacesApi {
     }
 }
 
+/**
+ * 语音导航：从一句听到的话里取出地名，或认出「一 / 二 / 三 / 四」。
+ * 不联网，方便单元测试。地点本身由 Places API 查，这里只处理听到的字。
+ */
+object NavVoice {
+    private val LEAD = listOf("请帮我", "帮我", "我想", "我要", "请", "导航到", "导航去", "带我去", "带我到", "前往", "去往", "到", "去")
+
+    private fun norm(s: String) = s.trim().lowercase().replace(Regex("[，。！？、,.!?:：；;\"'“”\\s　]"), "")
+
+    /** 去掉「我要去、导航到」这类口头语，留下地名。太短的（只有「去」）不算。 */
+    fun query(heard: String): String {
+        var t = norm(heard)
+        var changed = true
+        while (changed) {
+            changed = false
+            val hit = LEAD.filter { t.startsWith(it) && t.length > it.length }.maxByOrNull { it.length } ?: continue
+            t = t.removePrefix(hit); changed = true
+        }
+        return t.removeSuffix("吧").removeSuffix("一下")
+    }
+
+    /** 听到的是不是在选第几个（1..count）。「四谷」这种地名不是「四」。 */
+    fun pick(heard: String, count: Int): Int? {
+        if (count <= 0) return null
+        val n = when (norm(heard)) {
+            "1", "一", "幺", "壹", "第一", "第一个", "第一项", "一号" -> 1
+            "2", "二", "两", "贰", "第二", "第二个", "第二项", "二号" -> 2
+            "3", "三", "叁", "第三", "第三个", "第三项", "三号" -> 3
+            "4", "四", "肆", "第四", "第四个", "第四项", "四号" -> 4
+            else -> return null
+        }
+        return n.takeIf { it <= count }
+    }
+
+    /** 眼前最多列 4 个，同一个地点不重复。 */
+    fun top(choices: List<NavChoice>, n: Int = 4): List<NavChoice> =
+        choices.distinctBy { it.dest.placeId ?: (it.name + "\n" + it.address) }.take(n)
+}
+

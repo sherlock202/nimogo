@@ -227,7 +227,10 @@ class ReaderService : Service(), NimoListener, AppHost {
     val nav by lazy {
         navCreated = true
         // 开始导航时让服务以前台方式常驻（没连眼镜、只是绑定着的时候，离开萤读服务就会被销毁，导航也跟着停）
-        NavApp(this, { keepForNav(); openApp(it) }, { if (activeApp === it) closeApp() })
+        NavApp(this, { keepForNav(); openApp(it) }, { if (activeApp === it) closeApp() }).also { n ->
+            n.voiceMic = { on -> navWantsMic = on; glassesMic(on) }
+            n.voiceLang = { memGet("asrLang", "zh").let { if (it == "auto") "" else it } }
+        }
     }
     private var navCreated = false
 
@@ -281,6 +284,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private fun agentSave() { agentPrefs.edit().putString("cmds", AgentCommand.listToJson(agentCommands.take(30))).apply() }
     private var agentWantsMic = false
     private var menuWantsMic = false
+    private var navWantsMic = false
     var agentError = ""; private set
     var agentCheckedAt = 0L; private set
 
@@ -632,7 +636,11 @@ class ReaderService : Service(), NimoListener, AppHost {
     private fun launchVoice(id: String): String? = when (id) {
         "dash" -> { menuFromHome = false; switchAppMode(AppMode.DASHBOARD); null }
         "read" -> if (book == null) "还没有打开书" else { switchAppMode(AppMode.READER); null }
-        "nav" -> { openApp(nav); null }
+        "nav" -> when {
+            nav.active() -> { openApp(nav); null }
+            !LocalAsr.ready() -> "听写模型还没下载（全天记忆 › 设置 › 转文字）"
+            else -> { nav.beginByVoice(); openApp(nav); null }
+        }
         "pomo" -> { openApp(pomodoro); if (!pomodoro.state.running) pomodoro.startPause(); null }
         "workout" -> {
             val g = workout.selectedGroup()
@@ -3228,7 +3236,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private var captionsWantMic = false
     private fun glassesMic(on: Boolean) {
         if (on) client.micStart()
-        else if (!memWantsMic && !captionsWantMic && !followWantsMic && !assistWantsMic && !agentWantsMic && !menuWantsMic) client.micStop()
+        else if (!memWantsMic && !captionsWantMic && !followWantsMic && !assistWantsMic && !agentWantsMic && !menuWantsMic && !navWantsMic) client.micStop()
     }
 
     override fun onMicFrames(frames: List<NimoMic.Frame>) {
@@ -3238,6 +3246,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (assist.running) assist.onFrames(frames)
         if (agent.running) agent.onFrames(frames)
         if (voiceMenu.running) voiceMenu.onFrames(frames)
+        if (navCreated && nav.hearing) nav.onFrames(frames)
     }
 
     val micAvailable get() = ::client.isInitialized && client.micAvailable

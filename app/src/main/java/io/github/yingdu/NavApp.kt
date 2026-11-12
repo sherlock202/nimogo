@@ -7,16 +7,21 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import io.github.jaredmdobson.concentus.OpusDecoder
+import java.util.concurrent.Executors
 import kotlin.math.cos
 import kotlin.math.sin
 
 /**
  * NimoGo 的导航（Google Navigation SDK 逐向数据）：导航时眼镜显示转向箭头、距离、路名和剩余时间。
- * 目的地从 Google Maps「共享」过来（或在萤读里输入地名），见 MainActivity。
- * 镜腿单击：在「当前一步」和「后续步骤」之间切换。长按右镜腿是眼镜自己的退出：只是眼镜不显示了，导航继续。
+ * 目的地从 Google Maps「共享」过来、在手机上输入，或语音菜单说「导航」后直接说出地点。
+ * 说出的话对上好几个地点时，眼镜上标 1 到 4，再说数字（或抬头低头后右单击）就开始导航。
+ * 导航中镜腿单击：在「当前一步」和「后续步骤」之间切换。长按右镜腿是眼镜自己的退出：只是眼镜不显示了，导航继续。
  */
 class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> Unit, private val hideFromGlasses: (NavApp) -> Unit) : GlassesApp {
     enum class Phase { IDLE, ROUTING, GUIDING, ARRIVED, ERROR }
+    /** 语音选地点：听地名、查找、在 1..4 里选。和正在进行的导航分开。 */
+    enum class Ask { OFF, LISTEN, LOOKUP, PICK }
 
     private val prefs = host.context.getSharedPreferences("nav", Context.MODE_PRIVATE)
 
@@ -29,6 +34,29 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     var error = ""; private set
     /** 眼镜上显示哪一页：0 当前一步，1 后续步骤。 */
     private var page = 0
+
+    // ---------- 语音选地点（不用打开手机） ----------
+
+    var ask = Ask.OFF; private set
+    /** 正在听眼镜麦克风（查找时也算，免得这段声音被丢掉）。 */
+    val hearing get() = ask != Ask.OFF
+    /** 服务把眼镜麦克风的开关交过来。 */
+    var voiceMic: ((Boolean) -> Unit)? = null
+    /** 离线转文字用的语言（zh、ja、en、空字符串表示自动）。 */
+    var voiceLang: () -> String = { "" }
+    private var voiceArmed = false
+    private var heard = ""
+    private var choices = emptyList<NavChoice>()
+    private var choiceIndex = 0
+    private var voiceNote = ""
+    private var searchGen = 0
+    private var vSeg: CaptionSegmenter? = null
+    private var vDec: OpusDecoder? = null
+    private val vPcm = ShortArray(960)
+    private val vFinals = ArrayDeque<ShortArray>()
+    private var vBusy = false
+    private val vExec = Executors.newSingleThreadExecutor()
+    private val vIdle = Runnable { if (ask == Ask.LISTEN || ask == Ask.PICK) { stopListen(); show() } }
 
     // ---------- 设置 ----------
 
@@ -82,9 +110,18 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         if (NavGuide.guiding()) NavGuide.stop()
     }
 
+    /** 语音菜单说「导航」：还没在导航就接着听目的地。已经在导航就只把画面打开。 */
+    fun beginByVoice() {
+        if (phase == Phase.GUIDING || phase == Phase.ROUTING) return
+        host.main.removeCallbacks(autoClose)
+        if (phase == Phase.ARRIVED || phase == Phase.ERROR) { phase = Phase.IDLE; error = "" }
+        voiceArmed = true
+    }
+
     /** 开始导航（已经同意了服务条款、有定位权限、填了 API Key）。 */
     fun start(dest: NavDest, mode: NavMode) {
         if (!canStart()) { fail("本月已经导航了 ${usedThisMonth()} 个目的地，到了你设的上限（${monthlyLimit}）"); return }
+        stopListen()
         host.main.removeCallbacks(autoClose)
         val id = ++reqId
         this.dest = dest; this.mode = mode
@@ -114,6 +151,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
 
     fun stop() {
         reqId++
+        stopListen()
         NavGuide.stop()
         host.main.removeCallbacks(autoClose)
         if (phase != Phase.IDLE) host.log("导航结束")
@@ -125,6 +163,8 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     /** 服务销毁时：停止引导，不再接收 SDK 的回调。 */
     fun shutdown() {
         reqId++
+        stopListen()
+        vExec.shutdown()
         NavGuide.stop()
         NavGuide.sink = null; NavGuide.onArrived = null
         host.main.removeCallbacks(autoClose); host.main.removeCallbacks(drawNow)
@@ -132,6 +172,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
 
     private fun fail(msg: String) {
         reqId++
+        stopListen()
         NavGuide.stop()
         phase = Phase.ERROR; error = msg
         host.log("导航：$msg")
@@ -207,6 +248,161 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         show()
     }
 
+    // ---------- 语音听地点 ----------
+
+    private fun startListen() {
+        if (!LocalAsr.ready()) { fail("离线转文字模型还没下载（全天记忆 › 设置 › 转文字）"); return }
+        ask = Ask.LISTEN
+        heard = ""; choices = emptyList(); choiceIndex = 0; voiceNote = ""; searchGen++
+        vFinals.clear(); vBusy = false
+        if (vDec == null) vDec = OpusDecoder(NimoMic.SAMPLE_RATE, 1)
+        vSeg = CaptionSegmenter(object : CaptionSegmenter.Listener {
+            override fun partial(id: Int, pcm: ShortArray) { armVoice() }
+            override fun final(id: Int, pcm: ShortArray) { vFinals.addLast(pcm); pumpVoice() }
+            override fun dropped(id: Int) {}
+        })
+        voiceMic?.invoke(true)
+        host.log("导航：说出要去的地方")
+        show(); armVoice()
+    }
+
+    private fun stopListen() {
+        if (ask == Ask.OFF && vSeg == null) return
+        ask = Ask.OFF
+        searchGen++
+        vSeg = null
+        vFinals.clear(); vBusy = false
+        host.main.removeCallbacks(vIdle)
+        voiceMic?.invoke(false)
+    }
+
+    private fun armVoice() {
+        host.main.removeCallbacks(vIdle)
+        if (ask == Ask.LISTEN || ask == Ask.PICK) host.main.postDelayed(vIdle, 45_000)
+    }
+
+    /** 眼镜麦克风的声音。服务在听的时候送过来。 */
+    fun onFrames(frames: List<NimoMic.Frame>) {
+        if (ask == Ask.OFF) return
+        val s = vSeg ?: return
+        val d = vDec ?: return
+        for (f in frames) {
+            val n = try { d.decode(f.packet, 0, f.packet.size, vPcm, 0, vPcm.size, false) } catch (e: Exception) { 0 }
+            if (n > 0) s.feed(vPcm, n)
+        }
+    }
+
+    private fun pumpVoice() {
+        if (vBusy || ask == Ask.OFF || ask == Ask.LOOKUP) return
+        val p = vFinals.removeFirstOrNull() ?: return
+        vBusy = true
+        val lang = voiceLang()
+        vExec.execute {
+            val r = runCatching { LocalAsr.transcribe(AudioClean.process(p, AudioClean.Mode.NONE, floor = 0.2f, boost = true), lang).trim() }
+            host.main.post {
+                vBusy = false
+                if (ask == Ask.OFF) return@post
+                r.onSuccess { t -> if (t.isNotEmpty()) onVoiceText(t) else armVoice() }
+                    .onFailure { voiceNote = "转文字出错：${it.message ?: it}"; show(); armVoice() }
+                pumpVoice()
+            }
+        }
+    }
+
+    private fun onVoiceText(t: String) {
+        if (ask == Ask.PICK) {
+            val n = NavVoice.pick(t, choices.size)
+            if (n != null) { choiceIndex = n - 1; depart(choices[choiceIndex].dest); return }
+        }
+        if (ask != Ask.LISTEN && ask != Ask.PICK) return
+        val q = NavVoice.query(t)
+        host.log("导航：听到「$t」" + if (q == t.trim()) "" else " → 「$q」")
+        if (q.length < 2) { voiceNote = "没听清，再说一次地点"; show(); armVoice(); return }
+        lookup(q)
+    }
+
+    private fun lookup(q: String) {
+        val gen = ++searchGen
+        heard = q
+        ask = Ask.LOOKUP
+        voiceNote = ""
+        show()
+        val key = apiKey
+        val ctx = host.context
+        vExec.execute {
+            val r = runCatching { NavResolve.search(ctx, q, key) }
+            host.main.post {
+                if (gen != searchGen) return@post
+                val found = r.getOrNull()
+                val list = NavVoice.top(found?.choices.orEmpty())
+                when {
+                    r.isFailure -> { ask = Ask.LISTEN; voiceNote = "查找失败：${r.exceptionOrNull()?.message ?: ""}"; show() }
+                    list.isEmpty() -> {
+                        ask = Ask.LISTEN
+                        voiceNote = found?.note?.let { "地点搜索用不了：$it" } ?: "没找到「$q」，再说一次"
+                        show()
+                    }
+                    list.size == 1 -> depart(list[0].dest)
+                    else -> { choices = list; choiceIndex = 0; ask = Ask.PICK; voiceNote = ""; host.log("导航：「$q」有 ${list.size} 个地点"); show() }
+                }
+                armVoice(); pumpVoice()
+            }
+        }
+    }
+
+    /** 用选中的地点开始导航。条款、定位或 Key 还没好时留在眼镜上说明，不打开手机。 */
+    private fun depart(dest: NavDest?) {
+        val d = dest ?: return
+        if (apiKey.isEmpty()) { voiceNote = "还没填 API Key（手机上「导航 › 设置」）"; ask = Ask.LISTEN; show(); return }
+        val app = host.context.applicationContext as Application
+        if (!NavGuide.termsAccepted(app, apiKey)) {
+            voiceNote = "先在手机上打开 NimoGo，同意 Google 导航条款"
+            ask = if (choices.size > 1) Ask.PICK else Ask.LISTEN
+            show(); return
+        }
+        if (host.context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            voiceNote = "先在手机上允许 NimoGo 定位"
+            ask = if (choices.size > 1) Ask.PICK else Ask.LISTEN
+            show(); return
+        }
+        start(d, defaultMode)
+    }
+
+    private fun shiftChoice(dir: Int) {
+        if (choices.isEmpty()) return
+        choiceIndex = (choiceIndex + dir + choices.size) % choices.size
+        show(); armVoice()
+    }
+
+    private fun drawAsk(f: Frame) {
+        val title = when (ask) {
+            Ask.LOOKUP -> "导航 · 正在查找"
+            Ask.PICK -> "说数字　或抬头低头后右键"
+            else -> "导航 · 说出目的地"
+        }
+        var y = f.header(title) + 4
+        val note = when {
+            voiceNote.isNotEmpty() -> voiceNote
+            ask == Ask.PICK && heard.isNotEmpty() -> "听到「$heard」"
+            ask == Ask.LISTEN -> "直接说要去的地方。对上好几个时标 1 到 4，再说数字。"
+            else -> ""
+        }
+        if (note.isNotEmpty()) {
+            f.small.wrap(note, f.w - 12).take(if (ask == Ask.PICK) 1 else 3).forEach { line ->
+                f.text(line, 6, y, Frame.DIM, f.small); y += f.small.height + 3
+            }
+            y += 2
+        }
+        if (ask != Ask.PICK) return
+        choices.forEachIndexed { i, c ->
+            val dist = c.meters?.let { "  " + NavText.distance(it) }.orEmpty()
+            val label = "${i + 1} ${c.name}$dist"
+            val on = i == choiceIndex
+            f.text(f.font.ellipsize(if (on) "【$label】" else label, f.w - 12), 6, y, if (on) Frame.FULL else Frame.DIM)
+            y += f.font.height + 2
+        }
+    }
+
     // ---------- 眼镜画面 ----------
 
     private var lastDraw = 0L
@@ -223,18 +419,36 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
 
     private val drawNow = Runnable { lastDraw = System.currentTimeMillis(); host.redraw(this) }
 
-    override fun onOpen() { lastKey = ""; show() }
-    override fun onClose() { host.main.removeCallbacks(drawNow) }
+    override fun onOpen() {
+        lastKey = ""
+        if (voiceArmed) { voiceArmed = false; startListen() } else show()
+    }
+    override fun onClose() { host.main.removeCallbacks(drawNow); stopListen() }
     override fun onResume() { lastKey = ""; show() }
 
     override fun onInput(input: GlassesInput) {
+        if (ask == Ask.PICK && phase != Phase.GUIDING && phase != Phase.ROUTING) {
+            when (input) {
+                GlassesInput.HEAD_UP -> shiftChoice(-1)
+                GlassesInput.HEAD_DOWN -> shiftChoice(1)
+                GlassesInput.CLICK_RIGHT -> depart(choices.getOrNull(choiceIndex)?.dest)
+                GlassesInput.CLICK_LEFT -> { ask = Ask.LISTEN; choices = emptyList(); heard = ""; voiceNote = "再说一个地点"; show(); armVoice() }
+                else -> {}
+            }
+            return
+        }
+        if (ask == Ask.LISTEN && input == GlassesInput.CLICK_LEFT) { stopListen(); hideFromGlasses(this); return }
         when (input) {
             GlassesInput.CLICK_RIGHT, GlassesInput.CLICK_LEFT -> if (phase == Phase.GUIDING) { page = 1 - page; lastKey = ""; show() }
             else -> {}
         }
     }
 
-    override fun status(): String = when (phase) {
+    override fun status(): String = when {
+        ask == Ask.LISTEN -> "导航 · 说出目的地"
+        ask == Ask.LOOKUP -> "导航 · 正在查找「$heard」"
+        ask == Ask.PICK -> "导航 · 说数字选择（${choices.size} 个）"
+        else -> when (phase) {
         Phase.IDLE -> "导航 · 没有在导航"
         Phase.ROUTING -> "导航 · 正在规划路线"
         Phase.ARRIVED -> "导航 · 已到达 ${dest?.title ?: ""}"
@@ -245,6 +459,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
             else "导航 · " + listOfNotNull(s.toStepMeters?.let { NavText.distance(it) + "后" }, NavIcon.zh(NavIcon.of(c.maneuver)).ifEmpty { null },
                 c.road.ifEmpty { null }).joinToString(" ")
         }
+        }
     }
 
     override fun render(fontPx: Int): ByteArray = Frame(fontPx).also { draw(it) }.done()
@@ -253,13 +468,14 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     fun preview(fontPx: Int): Bitmap = Frame(fontPx).also { draw(it) }.bitmap()
 
     private fun draw(f: Frame) {
+        if (ask != Ask.OFF && phase != Phase.GUIDING && phase != Phase.ROUTING && phase != Phase.ARRIVED) { drawAsk(f); return }
         val d = dest
         val big = GlassesFonts.text(32)
         when (phase) {
             Phase.IDLE -> {
                 f.header("导航")
                 f.text("没有在导航", 12, 44, Frame.FULL)
-                f.small.wrap("在 Google Maps 里选好地点，点「共享」→ NimoGo；或在 NimoGo 里输入地点。", f.w - 24).take(3)
+                f.small.wrap("语音菜单说「导航」，再说要去的地方。也可以从 Google Maps 共享，或在手机上输入地点。", f.w - 24).take(3)
                     .forEachIndexed { i, l -> f.text(l, 12, 44 + f.font.height + 12 + i * (f.small.height + 4), Frame.DIM, f.small) }
             }
             Phase.ROUTING -> {
