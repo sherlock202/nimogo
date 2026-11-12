@@ -530,6 +530,9 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     private fun callVoiceMenu(how: String) {
         if (activeApp === voiceMenu) return
+        val busy = activeApp
+        if (busy != null) { log("$how：${busy.title} 开着，不打开语音菜单"); return }
+        if (!onOfficialHome() && how.startsWith("主界面")) { log("$how：不在系统看板，不打开语音菜单"); return }
         if (linkState != LinkState.READY) { log("$how：眼镜还没连上，打不开语音菜单"); return }
         menuFromHome = onOfficialHome()
         log("$how：打开语音菜单")
@@ -950,6 +953,8 @@ class ReaderService : Service(), NimoListener, AppHost {
     /** 在眼镜上打开一个全屏功能（阅读的自动滚动、看板的轮换和自动收起都先停下）。 */
     fun openApp(app: GlassesApp) {
         exitLockUntil = 0
+        homeLeftClicks = 0
+        main.removeCallbacks(homeLeftFire)
         if (activeApp !== app) activeApp?.onClose()
         activeApp = app
         app.onOpen()
@@ -1037,8 +1042,9 @@ class ReaderService : Service(), NimoListener, AppHost {
     private val dashAtHome get() = !dashEnabled
 
     /**
-     * 看板模式开着、基础模式是看板：左镜腿按以前的（主界面上左单击叫回看板，看板上左双击上一屏）。
-     * 看板模式关着、或者在阅读里：左镜腿用语音菜单（单击）、场景助手（双击）、AI 代理（三击）。
+     * 系统看板（官方主界面）上、并且看板模式开着：左镜腿按以前的（左单击叫回看板，看板上左双击上一屏）。
+     * 看板模式关着时，只有系统看板本身用新的：左单击语音菜单，左双击场景助手，左三击 AI 代理。
+     * 锻炼、番茄钟等功能一旦打开，按键只跟那个功能，这里不再插手。
      */
     private val dashLegacyLeft get() = dashEnabled && baseMode == AppMode.DASHBOARD
 
@@ -3051,9 +3057,11 @@ class ReaderService : Service(), NimoListener, AppHost {
         updateNotification(); notifyUi()
     }
 
-    /** 官方主界面（看板收起且页面已关，或阅读已收起）：单击、双击都报给手机。 */
-    private fun onOfficialHome() = glassesPaused && activeApp == null &&
-        (appMode != AppMode.DASHBOARD || client.enteredAppId() == null)
+    /**
+     * 眼镜正停在系统看板（官方主界面）：没有全屏功能，页面也已经关掉。
+     * 导航页还开着（锻炼、番茄钟的画面）时不是系统看板，左键不能拿去叫菜单。
+     */
+    private fun onOfficialHome() = glassesPaused && activeApp == null && client.enteredAppId() == null
 
     /**
      * 主界面上左镜腿只报单击和双击，不报长按。点一下等 400ms：没有后续就是单击（语音菜单）；
@@ -3063,6 +3071,16 @@ class ReaderService : Service(), NimoListener, AppHost {
     private val homeLeftFire = Runnable {
         val n = homeLeftClicks
         homeLeftClicks = 0
+        val app = activeApp
+        if (app != null) {
+            log("${app.title} 已打开，左键交给这个功能，不叫菜单")
+            app.onInput(if (n >= 2) GlassesInput.DOUBLE_LEFT else GlassesInput.CLICK_LEFT)
+            return@Runnable
+        }
+        if (!onOfficialHome()) {
+            log("已经不在系统看板，左键不叫菜单")
+            return@Runnable
+        }
         when {
             n >= 3 -> callAgent("主界面上左三击")
             n == 2 -> callAssist("主界面上左双击")
@@ -3109,7 +3127,14 @@ class ReaderService : Service(), NimoListener, AppHost {
             notifyUi()
             return
         }
-        // 系统看板（官方主界面）：左单击打开语音菜单，左双击打开场景助手，左三击打开 AI 代理。
+        // 全屏功能开着（锻炼、番茄钟、导航……）：按键只跟这个功能，绝不拿去叫语音菜单。
+        activeApp?.let { app ->
+            if (app === voiceMenu && input == GlassesInput.LONG_PRESS) { closeMenuToDash(); return }
+            if (input == GlassesInput.CLICK_RIGHT && dismissNotification()) return
+            app.onInput(input)
+            return
+        }
+        // 系统看板（官方主界面）才用这套：左单击打开语音菜单，左双击打开场景助手，左三击打开 AI 代理。
         // 左长按和右镜腿在主界面上眼镜不上报。
         if (!dashLegacyLeft && onOfficialHome() && (input == GlassesInput.CLICK_LEFT || input == GlassesInput.DOUBLE_LEFT)) {
             homeLeftClicks = if (input == GlassesInput.DOUBLE_LEFT) maxOf(homeLeftClicks, 2) else homeLeftClicks + 1
@@ -3124,9 +3149,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (input == GlassesInput.DOUBLE_LEFT && activeApp == null && !dashLegacyLeft && callAssist("左双击")) return
         // 通知正显示着：右单击立即关掉（不翻页、不收起看板）
         if (input == GlassesInput.CLICK_RIGHT && dismissNotification()) return
-        // 语音菜单画在看板上（导航页）。这一页长按右镜腿是眼镜自己的退出，先关掉菜单再把看板叫回来
-        if (activeApp === voiceMenu && input == GlassesInput.LONG_PRESS) { closeMenuToDash(); return }
-        activeApp?.let { it.onInput(input); return }
         if (appMode == AppMode.DASHBOARD) when (input) {
             GlassesInput.HOME_WAKE -> {
                 headIsDown = false
