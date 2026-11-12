@@ -476,9 +476,9 @@ class WorkoutApp(private val host: AppHost) : GlassesApp {
 
     override fun onInput(input: GlassesInput) {
         when (input) {
-            GlassesInput.CLICK_RIGHT -> startPause()
-            GlassesInput.CLICK_LEFT -> skipRep()
-            GlassesInput.DOUBLE_RIGHT -> skipMove()
+            GlassesInput.CLICK_RIGHT -> { host.log("锻炼：右单击"); startPause() }
+            GlassesInput.CLICK_LEFT -> { host.log("锻炼：左单击"); skipRep() }
+            GlassesInput.DOUBLE_RIGHT -> { host.log("锻炼：右双击"); skipMove() }
             else -> {}
         }
     }

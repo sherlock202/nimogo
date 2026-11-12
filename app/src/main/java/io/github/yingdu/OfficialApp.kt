@@ -6,8 +6,8 @@ import android.net.Uri
 import android.provider.Settings
 
 /**
- * Nimo 官方 app：翻译、导航这类功能官方做得更完整（用眼镜麦克风 + 云端模型，导航能画小地图和加粗路线），
- * 萤读把连接"交"给官方 app 来用。眼镜同一时间只能连一个 app，所以是切换，不是同时使用。
+ * Nimo 官方 app。眼镜同一时间只能连一个 app，所以要切换，不能同时连。
+ * 导航和场景助手的即时翻译在 NimoGo 里做；切过去是为了用官方 app 自己的翻译等功能。
  */
 object OfficialApp {
     private var cached: String? = null

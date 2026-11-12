@@ -1741,7 +1741,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             howSeg.select(hows.indexOf(s.dashHideModeSetting).coerceAtLeast(0))
             howSeg.root.visibility = if (s.dashHeadWake) View.VISIBLE else View.GONE
             val home = s.dashHideMode == ReaderService.HIDE_HOME
-            howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时回官方主界面，点一下镜腿叫回看板；显示时右单击收起，左单击翻屏，左双击打开场景助手，右双击打开语音菜单。" +
+            howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时回官方主界面。看板模式开着时左单击叫回看板；显示时右单击收起，左单击翻屏，左双击上一屏，右双击打开语音菜单。" +
                 "官方 app 连着时眼镜的报告会发给官方 app，NimoGo 收不到，要先停止官方 app（「我的 › 和官方 app 切换」）。"
                 else if (home) "回官方主界面；眼镜报告「主界面被点亮」时叫回看板。官方 app 连着时这个报告会发给官方 app，" +
                 "NimoGo 收不到，所以要先停止官方 app（「我的 › 和官方 app 切换」）。"
@@ -1750,7 +1750,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             headRow.titleV.text = "眼镜的抬头显示"
             headRow.desc(when {
                 s.headUpDisplay == null -> "连上眼镜后读取（和官方 app 里的是同一个设置）"
-                !s.dashHeadWake -> "关：收起时回官方主界面，点一下镜腿叫回看板"
+                !s.dashHeadWake -> "关：收起时回官方主界面，说「看板」叫回"
                 home -> "开：抬头叫回看板，低头回主界面"
                 else -> "开：抬头显示看板，低头关屏"
             })
@@ -2313,7 +2313,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         return page
     }
 
-    /** 翻译、导航交给官方 app：萤读先收起画面、断开眼镜，再打开官方 app。 */
+    /** 把眼镜交给官方 app：先收起画面、断开眼镜，再打开官方 app。导航不走这里。 */
     private fun handOff(what: String) {
         if (OfficialApp.packageName(this) == null) { toast("没有找到 Nimo 官方 app"); return }
         AlertDialog.Builder(this)
@@ -3868,7 +3868,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val c = card()
         val v = text("", 16f, INK, true)
         c.addView(v)
-        c.addView(hint("NimoGo：戴着 Nimo 走出去。Nimo 智能眼镜的第三方伴侣 app，基于开源的萤读（Yingdu）修改，加了海外可用的 Google 导航。翻译请用 Nimo 官方 app。"), lp(top = 6))
+        c.addView(hint("NimoGo：戴着 Nimo 走出去。Nimo 智能眼镜的第三方伴侣 app，基于开源的萤读（Yingdu）修改。导航用 NimoGo 自带的 Google 导航；对话翻译在场景助手里，眼镜自己的翻译模式仍用官方 app。"), lp(top = 6))
         page.addView(c)
         val legal = listBox().apply { layoutParams = lp(top = 10, bottom = 10) }
         legal.addRow(Row("免责说明", chevron = true) { showLegal("免责说明", Legal.DISCLAIMER) }.root)

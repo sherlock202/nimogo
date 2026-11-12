@@ -176,9 +176,9 @@ class PomodoroApp(private val host: AppHost) : GlassesApp {
 
     override fun onInput(input: GlassesInput) {
         when (input) {
-            GlassesInput.CLICK_RIGHT -> startPause()
-            GlassesInput.DOUBLE_RIGHT -> skip()
-            GlassesInput.CLICK_LEFT -> reset()
+            GlassesInput.CLICK_RIGHT -> { host.log("番茄钟：右单击"); startPause() }
+            GlassesInput.DOUBLE_RIGHT -> { host.log("番茄钟：右双击"); skip() }
+            GlassesInput.CLICK_LEFT -> { host.log("番茄钟：左单击"); reset() }
             else -> {}
         }
     }

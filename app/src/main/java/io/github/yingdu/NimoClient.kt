@@ -953,6 +953,8 @@ class NimoClient(private val context: Context, private val listener: NimoListene
     private var lastClickCode = 0
     /** 导航页上最近一次按下、松开或单击的时间。单击时眼镜也会顺带发 05，那不是长按退出。 */
     private var lastNavTouchAt = 0L
+    /** 同一种单击/双击在很短时间里重复到达只交一次。重复的那一遍会把暂停又按回去。 */
+    private val temple = TempleClicks()
 
     private fun navTouchJustNow(windowMs: Long) =
         android.os.SystemClock.uptimeMillis() - lastNavTouchAt < windowMs
@@ -975,11 +977,13 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         val clickLike = code == NimoProtocol.INPUT_CLICK_RIGHT || code == NimoProtocol.INPUT_CLICK_LEFT ||
             code == NimoProtocol.INPUT_DOUBLE_CLICK_RIGHT || code == NimoProtocol.INPUT_DOUBLE_CLICK_LEFT
         val now = System.currentTimeMillis()
-        // 同一次按键有时会报两遍（输入上报一次，页面再转发一次），第二遍会把暂停又按回去，看起来像没反应。
-        // 只挡同一种手势在很短时间里重复到达；单击后紧接着的双击照常通过。
-        val repeatOfLast = clickLike && code == lastClickCode && now - lastGestureAt < 400
-        val afterSynth = clickLike && now - synthDeliveredAt < 500
-        if (repeatOfLast || afterSynth) {
+        // 短按有时也会带一条「右长按」。按住还不到长按的时间就不当退出，也不取消正在合成的单击。
+        if (code == NimoProtocol.INPUT_LONG_PRESS_RIGHT && enteredApp == NimoProtocol.APP_ID_NAV &&
+            pressAt != 0L && now - pressAt < 700) {
+            log("导航页短按带出的长按，不当退出")
+            return
+        }
+        if (clickLike && !temple.tryDeliver(now, code)) {
             log("同一次按键报了两遍，忽略")
             cancelSynth()
             return
@@ -1006,14 +1010,16 @@ class NimoClient(private val context: Context, private val listener: NimoListene
     // ---- 在导航页里，眼镜可能只上报"按下/松开"而不上报单击，这里自己合成手势 ----
     private var pressAt = 0L
     private var pendingClickRight: Boolean? = null
-    /** 刚用按下/松开合成过一次手势的时间。眼镜随后又报来的同一下不再处理。 */
-    private var synthDeliveredAt = 0L
     private val synthClick = Runnable {
         val right = pendingClickRight ?: return@Runnable
         pendingClickRight = null
-        if (System.currentTimeMillis() - lastGestureAt < 600) return@Runnable  // 眼镜已经报过单击了，不重复
+        val now = System.currentTimeMillis()
+        if (now - lastGestureAt < 600) return@Runnable
+        val code = if (right) NimoProtocol.INPUT_CLICK_RIGHT else NimoProtocol.INPUT_CLICK_LEFT
+        if (!temple.tryDeliver(now, code)) return@Runnable
+        lastGestureAt = now
+        lastClickCode = code
         log("（由按下/松开合成）${if (right) "右" else "左"}单击")
-        synthDeliveredAt = System.currentTimeMillis()
         listener.onInput(if (right) GlassesInput.CLICK_RIGHT else GlassesInput.CLICK_LEFT)
     }
 
@@ -1048,9 +1054,11 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             // 第二次松开：双击
             cancelSynth()
             main.postDelayed({
-                if (System.currentTimeMillis() - lastGestureAt > 600) {
+                val now = System.currentTimeMillis()
+                val code = if (right) NimoProtocol.INPUT_DOUBLE_CLICK_RIGHT else NimoProtocol.INPUT_DOUBLE_CLICK_LEFT
+                if (now - lastGestureAt > 600 && temple.tryDeliver(now, code)) {
                     log("（由按下/松开合成）${if (right) "右" else "左"}双击")
-                    synthDeliveredAt = System.currentTimeMillis()
+                    lastGestureAt = now
                     listener.onInput(if (right) GlassesInput.DOUBLE_RIGHT else GlassesInput.DOUBLE_LEFT)
                 }
             }, 300)
@@ -1192,7 +1200,13 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             return
         }
         if (cmd == NimoProtocol.CMD_CONTROL_INSTRUCTION && key == 9) {
-            when (status) {
+            // 操作码有时在状态字节，有时在数据第一字节。只认状态的话，导航页上的单击会被丢掉。
+            val code = when {
+                status in inputNames -> status
+                data.isNotEmpty() && (data[0].toInt() and 0xFF) in inputNames -> data[0].toInt() and 0xFF
+                else -> 0
+            }
+            when (code) {
                 NimoProtocol.INPUT_LONG_PRESS_RIGHT -> when (enteredApp) {
                     NimoProtocol.APP_ID_NAV -> onNavAction05()
                     NimoProtocol.APP_ID_PROMPTER -> onPrompterAction05(data)
@@ -1201,7 +1215,11 @@ class NimoClient(private val context: Context, private val listener: NimoListene
                 // 导航页的单击有时只从这里转发，不走输入上报。不接的话，番茄钟、锻炼按镜腿没有反应
                 NimoProtocol.INPUT_CLICK_RIGHT, NimoProtocol.INPUT_CLICK_LEFT,
                 NimoProtocol.INPUT_DOUBLE_CLICK_RIGHT, NimoProtocol.INPUT_DOUBLE_CLICK_LEFT ->
-                    if (enteredApp == NimoProtocol.APP_ID_NAV) handleInput(status, data)
+                    if (enteredApp == NimoProtocol.APP_ID_NAV) handleInput(code, data)
+                0 -> {
+                    if (status != 0 || data.isNotEmpty())
+                        log("页面按键没认出来 status=$status data=${data.joinToString(" ") { "%02x".format(it) }}")
+                }
                 else -> {}
             }
             return
