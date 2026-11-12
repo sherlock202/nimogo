@@ -188,6 +188,23 @@ class PomodoroApp(private val host: AppHost) : GlassesApp {
         return "$title · ${s.phase.zh} " + PomoLogic.clock(remaining()) + if (!s.running && PomoLogic.started(s)) "（暂停）" else ""
     }
 
+    /**
+     * 用提词器文字显示（不用导航页图片）：导航页上眼镜常常不把镜腿单击报给手机，
+     * 番茄钟里按左右键没反应；提词器页会把单击、长按报过来，所以这里改成文字。
+     */
+    override fun glassesText(cols: Int, rows: Int): Pair<String, String>? {
+        val s = state
+        val clock = PomoLogic.clock(remaining())
+        val done = !s.running && !PomoLogic.started(s)
+        val line = when {
+            done -> "右单击开始"
+            !s.running -> "暂停\n$clock\n右单击继续"
+            else -> "${s.phase.zh}\n$clock"
+        }
+        val today = if (s.done > 0) "今天 $s.done 个" else ""
+        return Pair(line, "$title $today".trimEnd())
+    }
+
     override fun render(fontPx: Int): ByteArray {
         val f = Frame(fontPx)
         val s = state

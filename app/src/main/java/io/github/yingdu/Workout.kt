@@ -496,6 +496,28 @@ class WorkoutApp(private val host: AppHost) : GlassesApp {
         return "$title · $name$count$clock$paused"
     }
 
+    /**
+     * 用提词器文字显示（不用导航页图片）：导航页上眼镜常常不把镜腿单击报给手机，
+     * 锻炼里按左右键没反应；提词器页会把单击、长按报过来，所以这里改成文字。
+     */
+    override fun glassesText(cols: Int, rows: Int): Pair<String, String>? {
+        val s = run ?: return Pair("还没有开始\n右单击开始", title)
+        val name = when (s.phase) {
+            WorkoutPhase.DONE -> "${s.plan.title} 完成"
+            WorkoutPhase.REST -> "休息" + (WorkoutLogic.nextName(s)?.let { "\n下一个：$it" } ?: "")
+            WorkoutPhase.REP -> WorkoutLogic.step(s)?.name ?: s.plan.title
+        }
+        val count = WorkoutLogic.step(s)?.let { " ${s.rep + 1}/${it.reps}" } ?: ""
+        val clock = if (s.phase == WorkoutPhase.DONE) "" else WorkoutLogic.remainText(remaining())
+        val state = if (s.phase == WorkoutPhase.DONE) "右单击重新开始" else if (!s.running) "暂停（右单击继续）" else ""
+        val body = listOfNotNull(
+            if (count.isEmpty()) name else "$name $count",
+            clock.ifEmpty { null },
+            state.ifEmpty { null }
+        ).joinToString("\n")
+        return Pair(body, "$title · 第 ${s.round + 1}/${s.plan.rounds.coerceAtLeast(1)} 轮")
+    }
+
     override fun render(fontPx: Int): ByteArray {
         val f = Frame(fontPx)
         val s = run
