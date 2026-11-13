@@ -76,6 +76,13 @@ class VoiceMenuTest {
         assertEquals(VoiceMenu.HeadNod.Step.BACK, n.take(1_300, false))
     }
 
+    @Test fun returningAfterAFewSecondsStillCountsAsBack() {
+        val n = VoiceMenu.HeadNod()
+        assertEquals(VoiceMenu.HeadNod.Step.UP, n.take(0, true))
+        assertEquals(VoiceMenu.HeadNod.Step.BACK, n.take(3_500, false))
+        assertEquals(VoiceMenu.HeadNod.Step.UP, n.take(4_500, true))
+    }
+
     @Test fun nodDownRepeatsAfterReturning() {
         val n = VoiceMenu.HeadNod()
         assertEquals(VoiceMenu.HeadNod.Step.DOWN, n.take(0, false))

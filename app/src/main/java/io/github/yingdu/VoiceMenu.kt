@@ -90,8 +90,8 @@ object VoiceMenu {
         }
 
         companion object {
-            /** 抬头之后多久以内的低头，当作头回到了正位。 */
-            const val BACK_MS = 1_200L
+            /** 抬头之后多久以内的低头，当作头回到了正位（抬着头看一会儿菜单再放回去，要留够时间）。 */
+            const val BACK_MS = 6_000L
             /** 同方向这么近的再来一次，还是同一次抬头或低头。 */
             const val REPEAT_MS = 280L
         }
@@ -339,9 +339,9 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
     override fun onInput(input: GlassesInput) {
         when (input) {
             GlassesInput.HEAD_UP, GlassesInput.HEAD_DOWN -> when (nod.take(System.currentTimeMillis(), input == GlassesInput.HEAD_UP)) {
-                VoiceMenu.HeadNod.Step.UP -> remote("up")
-                VoiceMenu.HeadNod.Step.DOWN -> remote("down")
-                VoiceMenu.HeadNod.Step.BACK -> host.log("语音菜单：头回到正位")
+                VoiceMenu.HeadNod.Step.UP -> { host.log("语音菜单：抬头，上一格"); remote("up") }
+                VoiceMenu.HeadNod.Step.DOWN -> { host.log("语音菜单：低头，下一格"); remote("down") }
+                VoiceMenu.HeadNod.Step.BACK -> host.log("语音菜单：头回到正位（眼镜报了相反方向，不算一格）")
                 VoiceMenu.HeadNod.Step.REPEAT -> {}
             }
             GlassesInput.CLICK_RIGHT -> remote("ok")

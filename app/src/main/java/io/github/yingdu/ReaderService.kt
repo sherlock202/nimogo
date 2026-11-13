@@ -1852,6 +1852,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     fun setBrightness(percent: Int) {
         if (linkState != LinkState.READY) return
         main.removeCallbacks(brightnessStep); brightnessAnim = null
+        autoBrightFilter.reset()
         client.setBrightness(percent, brightnessPct, autoBrightness == true)
         brightnessPct = percent
         notifyUi()
@@ -1864,6 +1865,7 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     /** 自动亮度平滑过渡：(开始的百分比, 目标百分比, 开始时间)。和官方一样 4 秒、50 毫秒一步、先快后慢。 */
     private var brightnessAnim: Triple<Double, Double, Long>? = null
+    private val autoBrightFilter = AutoBrightnessFilter()
     private var brightnessSentLevel = -1
     private val brightnessStep: Runnable = object : Runnable {
         override fun run() {
@@ -1882,8 +1884,9 @@ class ReaderService : Service(), NimoListener, AppHost {
     /** 眼镜按环境光算出了新的亮度：开着自动亮度时平滑地设过去；关着就不管（官方也是忽略）。 */
     override fun onAutoBrightnessLevel(level: Int) {
         if (autoBrightness != true || linkState != LinkState.READY) return
-        val target = NimoClient.autoPercent(level)
         val cur = brightnessPct.toDouble()
+        // 同一个环境里眼镜报的档位会上下跳：先平滑、差得不够多就不动、两次调整之间隔开（AutoBrightnessFilter）
+        val target = autoBrightFilter.feed(android.os.SystemClock.uptimeMillis(), NimoClient.autoPercent(level), cur) ?: return
         if (Math.abs(target - cur) < 0.5) return
         log("自动亮度：${cur.toInt()}% → ${target.toInt()}%（$level 档）")
         main.removeCallbacks(brightnessStep)
@@ -2986,7 +2989,7 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     override fun onLinkState(state: LinkState) {
         linkState = state
-        if (state == LinkState.DISCONNECTED) { memEngine.onGlassesLost(); headUpSuspended = false; notifyLit = false }
+        if (state == LinkState.DISCONNECTED) { memEngine.onGlassesLost(); headUpSuspended = false; notifyLit = false; autoBrightFilter.reset() }
         if (state == LinkState.READY && memEnabled && !memEngine.running) main.postDelayed({ memStartIfEnabled() }, 3_000)
         if (state == LinkState.READY) {
             // 刚连上时眼镜还在初始化，立刻打开页面容易被忽略：
@@ -3241,7 +3244,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         when (key) {
             NimoProtocol.SET_HEADUP_DISPLAY -> headUpDisplay = on
             NimoProtocol.SET_DISPLAY_OFF -> displayOff = on
-            NimoProtocol.SET_AUTO_BRIGHTNESS -> { autoBrightness = on; if (!on) { main.removeCallbacks(brightnessStep); brightnessAnim = null } }
+            NimoProtocol.SET_AUTO_BRIGHTNESS -> { autoBrightness = on; autoBrightFilter.reset(); if (!on) { main.removeCallbacks(brightnessStep); brightnessAnim = null } }
         }
         notifyUi()
     }
