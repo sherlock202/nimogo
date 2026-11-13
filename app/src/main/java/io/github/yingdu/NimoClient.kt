@@ -516,10 +516,10 @@ class NimoClient(private val context: Context, private val listener: NimoListene
                     g.disconnect()
                     return@post
                 }
-                // 连上后用均衡连接间隔（省电）；真正发图、发字时才临时提到高优先级，停了几秒再放回来（见 boostLink）
+                // 连上后用省电连接间隔（待机时的耗电主要在这里）；真正发图、发字时才临时提到高优先级，停了几秒再放回来（见 boostLink）
                 linkHigh = false
-                val prio = try { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED) } catch (_: Exception) { false }
-                log(if (prio) "连接间隔：均衡（省电）" else "请求均衡连接间隔失败（不影响使用）")
+                val prio = try { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER) } catch (_: Exception) { false }
+                log(if (prio) "连接间隔：省电（发数据时临时提速）" else "请求省电连接间隔失败（不影响使用）")
                 findMic(g)
                 enableNotifications(g, r)
             }
@@ -1339,10 +1339,10 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     /** 现在的连接优先级是不是高（发图发字时才是）。 */
     private var linkHigh = false
-    /** 发完一阵子后放回均衡。 */
+    /** 发完一阵子后放回省电连接间隔。 */
     private val linkIdle = Runnable { setLinkPriority(false) }
 
-    /** 有数据要发：临时提到高优先级（连接间隔短，发得快；耗电高）。停下 3 秒后由 linkIdle 放回。 */
+    /** 有数据要发：临时提到高优先级（连接间隔短，发得快；耗电高）。停下 3 秒后由 linkIdle 放回省电。 */
     private fun boostLink() {
         setLinkPriority(true)
         main.removeCallbacks(linkIdle)
@@ -1351,9 +1351,9 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     private fun setLinkPriority(high: Boolean) {
         val g = gatt ?: return
-        if (state != LinkState.READY || high == linkHigh) return
+        if (high == linkHigh) return
         linkHigh = high
-        val p = if (high) BluetoothGatt.CONNECTION_PRIORITY_HIGH else BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+        val p = if (high) BluetoothGatt.CONNECTION_PRIORITY_HIGH else BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER
         runCatching { g.requestConnectionPriority(p) }
     }
 
