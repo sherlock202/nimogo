@@ -3,6 +3,7 @@ package io.github.yingdu
 import android.view.KeyEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VoiceMenuTest {
@@ -111,6 +112,15 @@ class VoiceMenuTest {
         assertEquals(VoiceMenu.HeadHold.Move.STOP, n.onSignal(1_200, false))
         assertEquals(VoiceMenu.HeadHold.Move.UP, n.onSignal(1_600, true))
         assertEquals(true, n.goingUp)
+    }
+
+    @Test fun menuTextMarksTheSelectionAndFits() {
+        val labels = listOf("阅读", "导航", "番茄钟", "锻炼", "视力训练")
+        val page = VoiceMenu.textPage(labels, 2, 27, 5, "", "右键打开")
+        val lines = page.split("\n")
+        assertTrue(lines.size <= 5)
+        assertTrue(lines.any { it.contains("【番茄钟】") })
+        assertTrue(lines.all { it.length <= 27 })
     }
 
     @Test fun gamesPageAndMiss() {

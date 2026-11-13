@@ -2561,6 +2561,23 @@ class ReaderService : Service(), NimoListener, AppHost {
             main.postDelayed(endNotifyOverReader, litMs + 6_000)
             client.showImage(DashboardImage.toGlasses(img), DashboardImage.W, DashboardImage.H)
             how = "阅读上 · 画成图"
+        } else if (!fit && custom == null && (screenOffByUs || notifyLit) && client.enteredAppId() == NimoProtocol.APP_ID_NAV && !client.reopenPending) {
+            // 眼镜待机（关屏收起、页面还开着）：不再把通知画成整张图发过去（约 19 KB，每条要发两次），改用眼镜自带的弹窗。
+            // 先开屏（等眼镜确认），再发弹窗，litMs 后关回去。看板那一页不用重发，屏幕亮着时就是原来的看板。
+            val fromOff = screenOffByUs
+            screenOffByUs = false; notifyLit = true
+            val id = ++notifySerial
+            main.removeCallbacks(reOffAfterNotify)
+            val show = Runnable {
+                if (notifyLit && id == notifySerial) {
+                    client.sendNotification(t, popupText)
+                    main.removeCallbacks(reOffAfterNotify); main.postDelayed(reOffAfterNotify, litMs)
+                }
+            }
+            // 眼镜确认开屏后，屏幕还要 1～2 秒才真正亮起，太早发弹窗会丢（v3.7 实测），所以确认后再等 1.5 秒
+            if (fromOff) client.screenOnThen { main.postDelayed(show, 1_500) } else show.run()
+            main.postDelayed(reOffAfterNotify, litMs + 6_000)     // 保险：弹窗没发出去也不会一直亮着
+            how = "关屏时 · 标准弹窗"
         } else if (screenOffByUs && client.enteredAppId() == NimoProtocol.APP_ID_NAV && !client.reopenPending) {
             // 看板关屏收起、页面还开着：和抬头叫回看板走同一条路——不重开页面、不改抬头显示，
             // 直接把图发进开着的页面，发完用带确认的开屏（插到发送队列最前面）。litMs 后关回去，再把看板第一屏放回去

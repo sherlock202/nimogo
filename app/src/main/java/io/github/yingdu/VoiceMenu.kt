@@ -61,12 +61,32 @@ object VoiceMenu {
     /** 9 项及以内用 3 列，更多用 4 列，一屏放得下全部。 */
     fun columnsFor(count: Int) = if (count <= 9) 3 else 4
 
+    /** 提词器上的菜单：一行列几个名字，选中的用【】。放不下就截断，行数不超过 rows。 */
+    fun textPage(labels: List<String>, index: Int, cols: Int, rows: Int, note: String, hint: String): String {
+        val width = cols.coerceAtLeast(8)
+        val limit = rows.coerceAtLeast(1)
+        val c = columnsFor(labels.size).coerceAtLeast(1)
+        val lines = ArrayList<String>()
+        if (note.isNotEmpty()) lines.add(clip(note, width))
+        val rowCount = (labels.size + c - 1) / c
+        for (r in 0 until rowCount) {
+            val cells = (0 until c).mapNotNull { col ->
+                val i = r * c + col
+                if (i !in labels.indices) null else if (i == index) "【${labels[i]}】" else labels[i]
+            }
+            if (cells.isNotEmpty()) lines.add(clip(cells.joinToString(" "), width))
+        }
+        if (hint.isNotEmpty() && lines.size < limit) lines.add(clip(hint, width))
+        return lines.take(limit).joinToString("\n").ifEmpty { " " }
+    }
+
+    private fun clip(s: String, width: Int) = if (s.length <= width) s else s.take(width)
+
     /**
-     * 抬着头就一直向上，低着头就一直向下，每秒一格；头回到正位就停。
-     * 眼镜回到正位时报的是相反方向，而且常常晚大约一拍：这一拍里多走的那一格要收回。
-     * 回到正位的那一次只用来停下。紧接着 0.28 秒内的重复还是这一次，不当成新的低头或抬头。
-     * 过了这 0.28 秒再来的低头，就是真的往下（之前 0.7 秒内一律丢掉，低头接不上）。
-     * 刚开始走的 0.15 秒内的相反信号是抖动，不停。
+     * 抬着头就一直往后选，每秒一格；头回到正位就停。
+     * 眼镜只在头越过一条界线时报一次抬头，回到正位时报低头。正位往下看没有信号，低头不能开始选。
+     * 回到正位的信号常常晚大约一拍：这一拍里多走的那一格要收回。
+     * 刚开始走的 0.15 秒内的相反信号是抖动，不停。紧接着 0.28 秒内的重复还是同一次。
      */
     class HeadHold {
         enum class Move { UP, DOWN, STOP, SAME }
@@ -254,7 +274,7 @@ object VoiceMenu {
 }
 
 /**
- * 眼镜上的语音菜单。画在看板所在的导航页上（和提词器无关）：看板显示着时右双击打开。
+ * 眼镜上的语音菜单。用提词器文字显示：导航页的图片不把镜腿单击报给手机，提词器会报。
  * 打开就开始听，说完停一下就匹配。抬着头一直往后选（每秒一格，回到正位停下；低头没有信号，只有抬头能用），右单击启动，左单击返回（在游戏名单上先回到功能名单）。
  */
 class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp {
@@ -434,6 +454,17 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
     }
 
     override fun status() = if (hearing) "$title · 在听" else title
+
+    /**
+     * 提词器文字：导航页上的图片不把左右单击报给手机，提词器会报，所以菜单放在这里。
+     * 正文按列排开，选中的一条用【】括起来。
+     */
+    override fun glassesText(cols: Int, rows: Int): Pair<String, String> {
+        val hint = if (page == Page.GAMES) "右键打开　左键返回" else "抬着头往后选　右键打开"
+        val body = VoiceMenu.textPage(items().map { it.label }, index, cols, rows, note, hint)
+        val status = if (hearing) "语音菜单 · 在听" else "语音菜单"
+        return body to status
+    }
 
     override fun render(fontPx: Int): ByteArray {
         val f = Frame(fontPx.coerceAtMost(16))
