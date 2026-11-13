@@ -946,6 +946,9 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     /** 最近一次抬头/低头的时间（导航页里抬头低头时眼镜还会顺带发一条 cmd=7 key=9 状态 05，那不是退出）。 */
     private var lastHeadAt = 0L
+    /** 头正抬着（收到抬头、还没收到回到正位的低头）。抬着头选菜单时，这段时间里页面发来的 05 不当成长按退出。 */
+    private var headUpActive = false
+    private fun headHeldNow() = headUpActive && android.os.SystemClock.uptimeMillis() - lastHeadAt < 20_000
 
     /** 最近一次收到"整理好的手势"（单击/双击/长按）的时间，用来判断要不要自己从按下/松开合成。 */
     private var lastGestureAt = 0L
@@ -973,7 +976,10 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             NimoProtocol.INPUT_TOUCH_RELEASE_RIGHT, NimoProtocol.INPUT_TOUCH_RELEASE_LEFT -> { onTouchRelease(code); return }
             else -> return
         }
-        if (input == GlassesInput.HEAD_UP || input == GlassesInput.HEAD_DOWN) lastHeadAt = android.os.SystemClock.uptimeMillis()
+        if (input == GlassesInput.HEAD_UP || input == GlassesInput.HEAD_DOWN) {
+            lastHeadAt = android.os.SystemClock.uptimeMillis()
+            headUpActive = input == GlassesInput.HEAD_UP
+        }
         val clickLike = code == NimoProtocol.INPUT_CLICK_RIGHT || code == NimoProtocol.INPUT_CLICK_LEFT ||
             code == NimoProtocol.INPUT_DOUBLE_CLICK_RIGHT || code == NimoProtocol.INPUT_DOUBLE_CLICK_LEFT
         val now = System.currentTimeMillis()
@@ -1107,10 +1113,11 @@ class NimoClient(private val context: Context, private val listener: NimoListene
      */
     private fun onPrompterAction05(data: ByteArray) {
         val hex = data.joinToString(" ") { "%02x".format(it) }
+        if (headHeldNow()) { log("提词器里头正抬着，眼镜发来 05（$hex），不算长按"); return }
         if (android.os.SystemClock.uptimeMillis() - lastOtherInputAt < 1_500) { log("提词器里眼镜随镜腿操作发来 05（$hex），不算长按"); return }
         main.postDelayed({
             if (enteredApp != NimoProtocol.APP_ID_PROMPTER) return@postDelayed
-            if (android.os.SystemClock.uptimeMillis() - lastOtherInputAt < 1_900) log("提词器里眼镜随镜腿操作发来 05（$hex），不算长按")
+            if (headHeldNow() || android.os.SystemClock.uptimeMillis() - lastOtherInputAt < 1_900) log("提词器里眼镜随镜腿操作发来 05（$hex），不算长按")
             else { log("提词器里眼镜发来 05（$hex），当作长按右镜腿"); onPrompterLongPress() }
         }, 400)
     }
@@ -1166,7 +1173,7 @@ class NimoClient(private val context: Context, private val listener: NimoListene
      */
     private fun onNavAction05() {
         val now = android.os.SystemClock.uptimeMillis()
-        if (now - lastHeadAt < 1_500) { log("眼镜随抬头/低头发来 05，页面还开着，不算退出"); return }
+        if (headHeldNow() || now - lastHeadAt < 1_500) { log("眼镜随抬头/低头发来 05，页面还开着，不算退出"); return }
         if (navTouchJustNow(1_500)) { log("导航页里 05 紧跟着单击，不算退出"); return }
         main.postDelayed({
             if (enteredApp != NimoProtocol.APP_ID_NAV) return@postDelayed
@@ -1216,6 +1223,11 @@ class NimoClient(private val context: Context, private val listener: NimoListene
                 NimoProtocol.INPUT_CLICK_RIGHT, NimoProtocol.INPUT_CLICK_LEFT,
                 NimoProtocol.INPUT_DOUBLE_CLICK_RIGHT, NimoProtocol.INPUT_DOUBLE_CLICK_LEFT ->
                     if (enteredApp == NimoProtocol.APP_ID_NAV) handleInput(code, data)
+                // 提词器页面上抬头、低头有时只从这里转发，不走输入上报：不接的话，抬着头选菜单没有反应。
+                // 两条路都来时，选菜单那边认得出重复（同方向再来一次不动）。
+                NimoProtocol.INPUT_HEAD_UP, NimoProtocol.INPUT_HEAD_DOWN ->
+                    if (enteredApp == NimoProtocol.APP_ID_PROMPTER) { log("提词器页面经页面按键转发了抬头 / 低头"); handleInput(code, data) }
+                    else {}
                 0 -> {
                     if (status != 0 || data.isNotEmpty())
                         log("页面按键没认出来 status=$status data=${data.joinToString(" ") { "%02x".format(it) }}")

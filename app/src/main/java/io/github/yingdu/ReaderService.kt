@@ -638,7 +638,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     /** 语音菜单选中的功能。返回留在菜单上的提示；null 表示已经切走，或菜单该关掉。 */
     private fun launchVoice(id: String): String? = when (id) {
         "dash" -> { menuFromHome = false; switchAppMode(AppMode.DASHBOARD); null }
-        "read" -> if (book == null) "还没有打开书" else { switchAppMode(AppMode.READER); null }
+        "read" -> if (book == null) "还没有打开书" else { switchAppMode(AppMode.READER); readFromMenu = true; null }
         "nav" -> when {
             nav.active() -> { openApp(nav); null }
             !LocalAsr.ready() -> "听写模型还没下载（全天记忆 › 设置 › 转文字）"
@@ -664,7 +664,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         "party:dice" -> { openApp(party); party.rollDice(); null }
         "party:lots" -> { openApp(party); party.drawLot(); null }
         "party:truth" -> { openApp(party); party.truthOrDare(null); null }
-        "follow" -> if (book == null) "跟读要先在手机上打开讲稿" else { switchAppMode(AppMode.READER); startFollow(); null }
+        "follow" -> if (book == null) "跟读要先在手机上打开讲稿" else { switchAppMode(AppMode.READER); readFromMenu = true; startFollow(); null }
         else -> {
             if (!id.startsWith("game:")) "没有这个功能"
             else {
@@ -1077,6 +1077,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     fun resumeGlasses() {
+        readFromMenu = false
         exitLockUntil = 0
         if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
         glassesPaused = false; lastPushedDash = ""; dashPage = 0
@@ -1476,7 +1477,11 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     fun toggleAppMode() = switchAppMode(if (appMode == AppMode.READER) AppMode.DASHBOARD else AppMode.READER)
 
+    /** 这次阅读是从语音菜单打开的：长按退出后画面照常回到主界面，不关屏（别的方式打开的阅读，退出后仍然关屏）。 */
+    private var readFromMenu = false
+
     private fun setMode(mode: AppMode) {
+        readFromMenu = false
         if (followOn && mode != AppMode.READER) stopFollow("切换到了别的页面")
         activeApp?.let { activeApp = null; it.onClose() }
         baseMode = mode
@@ -3130,7 +3135,8 @@ class ReaderService : Service(), NimoListener, AppHost {
             main.removeCallbacks(restoreCheck)
             quitHomeAt = android.os.SystemClock.uptimeMillis()
             exitLockUntil = quitHomeAt + 2_000
-            val reading = baseMode == AppMode.READER && activeApp == null
+            val reading = baseMode == AppMode.READER && activeApp == null && !readFromMenu
+            readFromMenu = false
             if (reading) {
                 screenOffByUs = true
                 headHidden = false
