@@ -275,7 +275,8 @@ object VoiceMenu {
 
 /**
  * 眼镜上的语音菜单。用提词器文字显示：导航页的图片不把镜腿单击报给手机，提词器会报。
- * 打开就开始听，说完停一下就匹配。抬着头一直往后选（每秒一格，回到正位停下；低头没有信号，只有抬头能用），右单击启动，左单击返回（在游戏名单上先回到功能名单）。
+ * 打开就开始听，说完停一下就匹配。提词器不报抬头，所以不看头：左单击下一项，右单击启动。右镜腿长按关掉。
+ * 游戏名单最后一条是「返回」，右单击回到功能名单。
  */
 class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp {
     interface Env {
@@ -288,7 +289,7 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
         fun launch(id: String): String?
         /** 接管戒指（息屏时的音量键和播放键）。 */
         fun setRing(on: Boolean)
-        /** 菜单用抬头低头选的时候，先关掉眼镜自己的抬头显示，免得一低头屏幕灭了。关掉菜单再恢复。 */
+        /** 菜单开着时先关掉眼镜自己的抬头显示，免得一低头屏幕灭了。关掉菜单再恢复。 */
         fun holdHead(on: Boolean)
     }
 
@@ -297,14 +298,6 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
     override val title = "语音菜单"
     var running = false; private set
     private var page = Page.MAIN
-    private val nod = VoiceMenu.HeadHold()
-    private val holdStep = object : Runnable {
-        override fun run() {
-            if (!running || nod.goingUp != true) return
-            stepHold()
-            host.main.postDelayed(this, VoiceMenu.HeadHold.STEP_MS)
-        }
-    }
     private var index = 0
     private var note = ""
     private var seg: CaptionSegmenter? = null
@@ -320,7 +313,6 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
 
     override fun onOpen() {
         running = true; page = Page.MAIN; index = 0; note = ""; busy = false; finals.clear()
-        nod.reset()
         env.setRing(true)
         env.holdHead(true)
         if (!env.asrReady()) note = "离线转文字模型还没下载（全天记忆 › 设置 › 转文字）"
@@ -339,8 +331,6 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
 
     override fun onClose() {
         running = false
-        nod.reset()
-        host.main.removeCallbacks(holdStep)
         env.holdHead(false)
         host.main.removeCallbacks(idle)
         seg = null
@@ -396,10 +386,14 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
         show(); armIdle()
     }
 
-    private fun items() = VoiceMenu.ringItems(env.commands(), page == Page.GAMES)
+    private fun items(): List<VoiceCommand> {
+        val list = VoiceMenu.ringItems(env.commands(), page == Page.GAMES)
+        return if (page == Page.GAMES) list + VoiceCommand("back", "返回", emptyList()) else list
+    }
 
     private fun activate(cmd: VoiceCommand) {
         host.log("语音菜单：打开 ${cmd.label}")
+        if (cmd.id == "back") { page = Page.MAIN; index = 0; note = ""; show(); armIdle(); return }
         if (cmd.id == "games") { page = Page.GAMES; index = 0; note = ""; show(); armIdle(); return }
         if (cmd.id == "dash") { env.launch("dash"); return }
         val err = env.launch(cmd.id)
@@ -412,43 +406,16 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
         host.main.postDelayed(idle, 45_000)
     }
 
-    /** 抬着头，每秒往后走一格；头回到正位就停。 */
-    private fun beginHold() {
-        host.log("语音菜单：抬头，每秒向后一格")
-        stepHold()
-        host.main.removeCallbacks(holdStep)
-        host.main.postDelayed(holdStep, VoiceMenu.HeadHold.STEP_MS)
-    }
-
-    private fun stepHold() {
-        nod.noteStep(System.currentTimeMillis())
-        remote("down")
-    }
-
-    private fun stopHold(where: String) {
-        host.main.removeCallbacks(holdStep)
-        if (nod.undo) {
-            host.log("$where：头回到正位，收回多走的一格")
-            remote("up")
-        } else host.log("$where：头回到正位，停止")
-    }
-
     private fun close() { closeSelf?.invoke() }
     private fun show() { host.redraw(this); host.changed() }
 
+    /** 左长按：上一项（ReaderService 把左长按转到这里）。 */
+    fun previous() { host.log("语音菜单：左长按，上一项"); remote("left") }
+
     override fun onInput(input: GlassesInput) {
         when (input) {
-            GlassesInput.HEAD_UP, GlassesInput.HEAD_DOWN -> {
-                val up = input == GlassesInput.HEAD_UP
-                when (nod.onSignal(System.currentTimeMillis(), up)) {
-                    VoiceMenu.HeadHold.Move.UP -> beginHold()
-                    VoiceMenu.HeadHold.Move.DOWN -> {}
-                    VoiceMenu.HeadHold.Move.STOP -> stopHold("语音菜单")
-                    VoiceMenu.HeadHold.Move.SAME -> host.log("语音菜单：" + (if (up) "抬头" else "低头") + "，" + nod.detail)
-                }
-            }
+            GlassesInput.CLICK_LEFT -> { host.log("语音菜单：左键，下一项"); remote("right") }
             GlassesInput.CLICK_RIGHT -> remote("ok")
-            GlassesInput.CLICK_LEFT -> if (page == Page.GAMES) { page = Page.MAIN; index = 0; note = ""; show() } else close()
             else -> {}
         }
     }
@@ -460,7 +427,7 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
      * 正文按列排开，选中的一条用【】括起来。
      */
     override fun glassesText(cols: Int, rows: Int): Pair<String, String> {
-        val hint = if (page == Page.GAMES) "右键打开　左键返回" else "抬着头往后选　右键打开"
+        val hint = "左键下一项　右键打开"
         val body = VoiceMenu.textPage(items().map { it.label }, index, cols, rows, note, hint)
         val status = if (hearing) "语音菜单 · 在听" else "语音菜单"
         return body to status
@@ -470,7 +437,7 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
         val f = Frame(fontPx.coerceAtMost(16))
         val labels = items().map { it.label }
         val cols = VoiceMenu.columnsFor(labels.size)
-        var y = f.header(if (hearing) "语音菜单 · 在听" else "抬着头往后选　右键打开") + 4
+        var y = f.header(if (hearing) "语音菜单 · 在听" else "左键下一项　右键打开") + 4
         if (note.isNotEmpty()) {
             f.text(f.small.ellipsize(note, f.w - 12), 6, y, Frame.DIM, f.small)
             y += f.small.height + 4

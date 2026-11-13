@@ -490,6 +490,8 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     /** 长按左镜腿：看书、NimoGo 看板上叫 AI 代理。系统看板上若眼镜真的报了左长按，也打开语音菜单（实测主界面通常不报）。 */
     override fun onLongPressLeft(): Boolean {
+        // 语音菜单开着：左长按是上一项（不叫 AI 代理，也不关菜单）
+        if (activeApp === voiceMenu) { voiceMenu.previous(); return true }
         if (onOfficialHome() && !dashLegacyLeft) { callVoiceMenu("系统看板上左长按"); return true }
         return callAgent("长按左镜腿")
     }
