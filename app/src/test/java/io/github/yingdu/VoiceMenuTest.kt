@@ -88,21 +88,29 @@ class VoiceMenuTest {
         assertEquals(true, n.undoUp)
     }
 
-    @Test fun theReleaseSignalDoesNotStartTheOtherWay() {
+    @Test fun theReturnSignalRepeatedAfterStoppingDoesNothing() {
         val n = VoiceMenu.HeadHold()
         assertEquals(VoiceMenu.HeadHold.Move.UP, n.onSignal(0, true))
         n.noteStep(0)
         assertEquals(VoiceMenu.HeadHold.Move.STOP, n.onSignal(2_000, false))
-        assertEquals(VoiceMenu.HeadHold.Move.SAME, n.onSignal(2_300, false))
-        assertEquals(VoiceMenu.HeadHold.Move.DOWN, n.onSignal(3_500, false))
+        assertEquals(VoiceMenu.HeadHold.Move.SAME, n.onSignal(2_100, false))
+        assertEquals(VoiceMenu.HeadHold.Move.SAME, n.onSignal(2_400, false))
+        assertEquals(null, n.goingUp)
     }
 
-    @Test fun aJitterRightAfterStartingDownDoesNotStop() {
+    @Test fun aLowHeadOnItsOwnNeverStartsAnything() {
         val n = VoiceMenu.HeadHold()
-        assertEquals(VoiceMenu.HeadHold.Move.DOWN, n.onSignal(0, false))
+        assertEquals(VoiceMenu.HeadHold.Move.SAME, n.onSignal(0, false))
+        assertEquals(null, n.goingUp)
+    }
+
+    @Test fun liftingAgainAfterComingBackStartsAgain() {
+        val n = VoiceMenu.HeadHold()
+        assertEquals(VoiceMenu.HeadHold.Move.UP, n.onSignal(0, true))
         n.noteStep(0)
-        assertEquals(VoiceMenu.HeadHold.Move.SAME, n.onSignal(200, true))
-        assertEquals(false, n.goingUp)
+        assertEquals(VoiceMenu.HeadHold.Move.STOP, n.onSignal(1_200, false))
+        assertEquals(VoiceMenu.HeadHold.Move.UP, n.onSignal(1_600, true))
+        assertEquals(true, n.goingUp)
     }
 
     @Test fun gamesPageAndMiss() {

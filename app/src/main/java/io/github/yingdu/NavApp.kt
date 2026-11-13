@@ -368,10 +368,11 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         start(d, defaultMode)
     }
 
-    private fun beginHold(up: Boolean) {
-        host.log(if (up) "导航：抬头，每秒向上一个" else "导航：低头，每秒向下一个")
+    /** 抬着头，每秒往后选一个；头回到正位就停。 */
+    private fun beginHold() {
+        host.log("导航：抬头，每秒向后一个")
         nod.noteStep(System.currentTimeMillis())
-        shiftChoice(if (up) -1 else 1)
+        shiftChoice(1)
         host.main.removeCallbacks(holdStep)
         host.main.postDelayed(holdStep, VoiceMenu.HeadHold.STEP_MS)
     }
@@ -380,7 +381,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         host.main.removeCallbacks(holdStep)
         if (nod.undo) {
             host.log("导航：头回到正位，收回多走的一个")
-            shiftChoice(if (nod.undoUp) 1 else -1)
+            shiftChoice(-1)
         } else host.log("导航：头回到正位，停止")
     }
 
@@ -393,7 +394,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     private fun drawAsk(f: Frame) {
         val title = when (ask) {
             Ask.LOOKUP -> "导航 · 正在查找"
-            Ask.PICK -> "说数字　或抬头低头后右键"
+            Ask.PICK -> "说数字　或抬着头选后右键"
             else -> "导航 · 说出目的地"
         }
         var y = f.header(title) + 4
@@ -425,12 +426,9 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     private val nod = VoiceMenu.HeadHold()
     private val holdStep = object : Runnable {
         override fun run() {
-            if (ask != Ask.PICK) return
-            when (nod.goingUp) {
-                true -> { nod.noteStep(System.currentTimeMillis()); shiftChoice(-1) }
-                false -> { nod.noteStep(System.currentTimeMillis()); shiftChoice(1) }
-                null -> return
-            }
+            if (ask != Ask.PICK || nod.goingUp != true) return
+            nod.noteStep(System.currentTimeMillis())
+            shiftChoice(1)
             host.main.postDelayed(this, VoiceMenu.HeadHold.STEP_MS)
         }
     }
@@ -463,11 +461,14 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     override fun onInput(input: GlassesInput) {
         if (ask == Ask.PICK && phase != Phase.GUIDING && phase != Phase.ROUTING) {
             when (input) {
-                GlassesInput.HEAD_UP, GlassesInput.HEAD_DOWN -> when (nod.onSignal(System.currentTimeMillis(), input == GlassesInput.HEAD_UP)) {
-                    VoiceMenu.HeadHold.Move.UP -> beginHold(true)
-                    VoiceMenu.HeadHold.Move.DOWN -> beginHold(false)
-                    VoiceMenu.HeadHold.Move.STOP -> stopHold()
-                    VoiceMenu.HeadHold.Move.SAME -> {}
+                GlassesInput.HEAD_UP, GlassesInput.HEAD_DOWN -> {
+                    val up = input == GlassesInput.HEAD_UP
+                    when (nod.onSignal(System.currentTimeMillis(), up)) {
+                        VoiceMenu.HeadHold.Move.UP -> beginHold()
+                        VoiceMenu.HeadHold.Move.DOWN -> {}
+                        VoiceMenu.HeadHold.Move.STOP -> stopHold()
+                        VoiceMenu.HeadHold.Move.SAME -> host.log("导航：" + (if (up) "抬头" else "低头") + "，" + nod.detail)
+                    }
                 }
                 GlassesInput.CLICK_RIGHT -> depart(choices.getOrNull(choiceIndex)?.dest)
                 GlassesInput.CLICK_LEFT -> {
