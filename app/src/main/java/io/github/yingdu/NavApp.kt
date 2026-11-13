@@ -370,9 +370,18 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
 
     private fun beginHold(up: Boolean) {
         host.log(if (up) "导航：抬头，每秒向上一个" else "导航：低头，每秒向下一个")
+        nod.noteStep(System.currentTimeMillis())
         shiftChoice(if (up) -1 else 1)
         host.main.removeCallbacks(holdStep)
         host.main.postDelayed(holdStep, VoiceMenu.HeadHold.STEP_MS)
+    }
+
+    private fun stopHold() {
+        host.main.removeCallbacks(holdStep)
+        if (nod.undo) {
+            host.log("导航：头回到正位，收回多走的一个")
+            shiftChoice(if (nod.undoUp) 1 else -1)
+        } else host.log("导航：头回到正位，停止")
     }
 
     private fun shiftChoice(dir: Int) {
@@ -418,8 +427,8 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         override fun run() {
             if (ask != Ask.PICK) return
             when (nod.goingUp) {
-                true -> shiftChoice(-1)
-                false -> shiftChoice(1)
+                true -> { nod.noteStep(System.currentTimeMillis()); shiftChoice(-1) }
+                false -> { nod.noteStep(System.currentTimeMillis()); shiftChoice(1) }
                 null -> return
             }
             host.main.postDelayed(this, VoiceMenu.HeadHold.STEP_MS)
@@ -454,10 +463,10 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     override fun onInput(input: GlassesInput) {
         if (ask == Ask.PICK && phase != Phase.GUIDING && phase != Phase.ROUTING) {
             when (input) {
-                GlassesInput.HEAD_UP, GlassesInput.HEAD_DOWN -> when (nod.onSignal(input == GlassesInput.HEAD_UP)) {
+                GlassesInput.HEAD_UP, GlassesInput.HEAD_DOWN -> when (nod.onSignal(System.currentTimeMillis(), input == GlassesInput.HEAD_UP)) {
                     VoiceMenu.HeadHold.Move.UP -> beginHold(true)
                     VoiceMenu.HeadHold.Move.DOWN -> beginHold(false)
-                    VoiceMenu.HeadHold.Move.STOP -> { host.main.removeCallbacks(holdStep); host.log("导航：头回到正位，停止") }
+                    VoiceMenu.HeadHold.Move.STOP -> stopHold()
                     VoiceMenu.HeadHold.Move.SAME -> {}
                 }
                 GlassesInput.CLICK_RIGHT -> depart(choices.getOrNull(choiceIndex)?.dest)

@@ -70,19 +70,39 @@ class VoiceMenuTest {
 
     @Test fun holdingUpThenReturningStopsWithoutReversing() {
         val n = VoiceMenu.HeadHold()
-        assertEquals(VoiceMenu.HeadHold.Move.UP, n.onSignal(true))
-        assertEquals(VoiceMenu.HeadHold.Move.SAME, n.onSignal(true))
-        assertEquals(VoiceMenu.HeadHold.Move.STOP, n.onSignal(false))
+        assertEquals(VoiceMenu.HeadHold.Move.UP, n.onSignal(0, true))
+        n.noteStep(0)
+        assertEquals(VoiceMenu.HeadHold.Move.SAME, n.onSignal(100, true))
+        assertEquals(VoiceMenu.HeadHold.Move.STOP, n.onSignal(2_000, false))
+        assertEquals(false, n.undo)
         assertEquals(null, n.goingUp)
     }
 
-    @Test fun afterStoppingAnotherNodStartsAgain() {
+    @Test fun aLateReturnTakesBackTheExtraStep() {
         val n = VoiceMenu.HeadHold()
-        assertEquals(VoiceMenu.HeadHold.Move.DOWN, n.onSignal(false))
-        assertEquals(VoiceMenu.HeadHold.Move.STOP, n.onSignal(true))
-        assertEquals(VoiceMenu.HeadHold.Move.DOWN, n.onSignal(false))
-        assertEquals(VoiceMenu.HeadHold.Move.STOP, n.onSignal(true))
-        assertEquals(VoiceMenu.HeadHold.Move.UP, n.onSignal(true))
+        assertEquals(VoiceMenu.HeadHold.Move.UP, n.onSignal(0, true))
+        n.noteStep(0)
+        n.noteStep(1_000)
+        assertEquals(VoiceMenu.HeadHold.Move.STOP, n.onSignal(1_400, false))
+        assertEquals(true, n.undo)
+        assertEquals(true, n.undoUp)
+    }
+
+    @Test fun theReleaseSignalDoesNotStartTheOtherWay() {
+        val n = VoiceMenu.HeadHold()
+        assertEquals(VoiceMenu.HeadHold.Move.UP, n.onSignal(0, true))
+        n.noteStep(0)
+        assertEquals(VoiceMenu.HeadHold.Move.STOP, n.onSignal(2_000, false))
+        assertEquals(VoiceMenu.HeadHold.Move.SAME, n.onSignal(2_300, false))
+        assertEquals(VoiceMenu.HeadHold.Move.DOWN, n.onSignal(3_500, false))
+    }
+
+    @Test fun aJitterRightAfterStartingDownDoesNotStop() {
+        val n = VoiceMenu.HeadHold()
+        assertEquals(VoiceMenu.HeadHold.Move.DOWN, n.onSignal(0, false))
+        n.noteStep(0)
+        assertEquals(VoiceMenu.HeadHold.Move.SAME, n.onSignal(200, true))
+        assertEquals(false, n.goingUp)
     }
 
     @Test fun gamesPageAndMiss() {
