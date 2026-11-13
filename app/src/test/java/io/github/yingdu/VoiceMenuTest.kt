@@ -68,6 +68,34 @@ class VoiceMenuTest {
         assertEquals("ok", VoiceMenu.keyAction(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
     }
 
+    @Test fun nodUpThenBackThenUpAgain() {
+        val n = VoiceMenu.HeadNod()
+        assertEquals(VoiceMenu.HeadNod.Step.UP, n.take(0, true))
+        assertEquals(VoiceMenu.HeadNod.Step.BACK, n.take(400, false))
+        assertEquals(VoiceMenu.HeadNod.Step.UP, n.take(900, true))
+        assertEquals(VoiceMenu.HeadNod.Step.BACK, n.take(1_300, false))
+    }
+
+    @Test fun nodDownRepeatsAfterReturning() {
+        val n = VoiceMenu.HeadNod()
+        assertEquals(VoiceMenu.HeadNod.Step.DOWN, n.take(0, false))
+        assertEquals(VoiceMenu.HeadNod.Step.BACK, n.take(500, true))
+        assertEquals(VoiceMenu.HeadNod.Step.DOWN, n.take(1_000, false))
+    }
+
+    @Test fun holdingTheSameWayDoesNotKeepStepping() {
+        val n = VoiceMenu.HeadNod()
+        assertEquals(VoiceMenu.HeadNod.Step.UP, n.take(0, true))
+        assertEquals(VoiceMenu.HeadNod.Step.REPEAT, n.take(200, true))
+        assertEquals(VoiceMenu.HeadNod.Step.REPEAT, n.take(400, true))
+    }
+
+    @Test fun aRealDownAfterTheReturnWindowStillMoves() {
+        val n = VoiceMenu.HeadNod()
+        assertEquals(VoiceMenu.HeadNod.Step.UP, n.take(0, true))
+        assertEquals(VoiceMenu.HeadNod.Step.DOWN, n.take(VoiceMenu.HeadNod.BACK_MS + 50, false))
+    }
+
     @Test fun gamesPageAndMiss() {
         assertEquals("games", idOf("小游戏"))
         assertEquals("dash", idOf("回到看板"))

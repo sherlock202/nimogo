@@ -61,6 +61,42 @@ object VoiceMenu {
     /** 9 项及以内用 3 列，更多用 4 列，一屏放得下全部。 */
     fun columnsFor(count: Int) = if (count <= 9) 3 else 4
 
+    /**
+     * 抬头一次再回到正位，算向上一格；低头一次再回到正位，算向下一格。可以连着做。
+     * 眼镜在回到正位时往往再报一次相反的方向，那一下不是新的一格。
+     * 同方向隔得很近的重复也不算（头还没回到正位）。
+     */
+    class HeadNod {
+        enum class Step { UP, DOWN, BACK, REPEAT }
+
+        private var lastUp: Boolean? = null
+        private var lastAt = 0L
+        private var waitBack = false
+
+        fun reset() { lastUp = null; lastAt = 0L; waitBack = false }
+
+        fun take(now: Long, up: Boolean): Step {
+            val prev = lastUp
+            if (waitBack && prev != null && up != prev && now - lastAt <= BACK_MS) {
+                waitBack = false
+                lastUp = null
+                return Step.BACK
+            }
+            if (prev == up && now - lastAt < REPEAT_MS) { lastAt = now; return Step.REPEAT }
+            lastUp = up
+            lastAt = now
+            waitBack = true
+            return if (up) Step.UP else Step.DOWN
+        }
+
+        companion object {
+            /** 抬头之后多久以内的低头，当作头回到了正位。 */
+            const val BACK_MS = 1_200L
+            /** 同方向这么近的再来一次，还是同一次抬头或低头。 */
+            const val REPEAT_MS = 280L
+        }
+    }
+
     /** 格子里移动。左右沿条目绕回。上下在同一列里走，到头就换列：低头去右边一列最上，抬头去左边一列最下，最边上绕到另一头。 */
     fun move(index: Int, count: Int, cols: Int, action: String): Int {
         if (count <= 0) return 0
@@ -191,6 +227,7 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
     override val title = "语音菜单"
     var running = false; private set
     private var page = Page.MAIN
+    private val nod = VoiceMenu.HeadNod()
     private var index = 0
     private var note = ""
     private var seg: CaptionSegmenter? = null
@@ -206,6 +243,7 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
 
     override fun onOpen() {
         running = true; page = Page.MAIN; index = 0; note = ""; busy = false; finals.clear()
+        nod.reset()
         env.setRing(true)
         env.holdHead(true)
         if (!env.asrReady()) note = "离线转文字模型还没下载（全天记忆 › 设置 › 转文字）"
@@ -300,8 +338,12 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
 
     override fun onInput(input: GlassesInput) {
         when (input) {
-            GlassesInput.HEAD_UP -> remote("up")
-            GlassesInput.HEAD_DOWN -> remote("down")
+            GlassesInput.HEAD_UP, GlassesInput.HEAD_DOWN -> when (nod.take(System.currentTimeMillis(), input == GlassesInput.HEAD_UP)) {
+                VoiceMenu.HeadNod.Step.UP -> remote("up")
+                VoiceMenu.HeadNod.Step.DOWN -> remote("down")
+                VoiceMenu.HeadNod.Step.BACK -> host.log("语音菜单：头回到正位")
+                VoiceMenu.HeadNod.Step.REPEAT -> {}
+            }
             GlassesInput.CLICK_RIGHT -> remote("ok")
             GlassesInput.CLICK_LEFT -> if (page == Page.GAMES) { page = Page.MAIN; index = 0; note = ""; show() } else close()
             else -> {}

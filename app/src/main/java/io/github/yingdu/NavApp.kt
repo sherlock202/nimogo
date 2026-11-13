@@ -343,7 +343,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
                         show()
                     }
                     list.size == 1 -> depart(list[0].dest)
-                    else -> { choices = list; choiceIndex = 0; ask = Ask.PICK; voiceNote = ""; host.log("导航：「$q」有 ${list.size} 个地点"); show() }
+                    else -> { choices = list; choiceIndex = 0; ask = Ask.PICK; nod.reset(); voiceNote = ""; host.log("导航：「$q」有 ${list.size} 个地点"); show() }
                 }
                 armVoice(); pumpVoice()
             }
@@ -406,6 +406,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     // ---------- 眼镜画面 ----------
 
     private var lastDraw = 0L
+    private val nod = VoiceMenu.HeadNod()
 
     /** 画面变了才发；眼镜收图慢时合并成一张（只发最新的）。 */
     private fun show() {
@@ -420,6 +421,7 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     private val drawNow = Runnable { lastDraw = System.currentTimeMillis(); host.redraw(this) }
 
     override fun onOpen() {
+        nod.reset()
         lastKey = ""
         if (voiceArmed) { voiceArmed = false; startListen() } else show()
     }
@@ -429,8 +431,12 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     override fun onInput(input: GlassesInput) {
         if (ask == Ask.PICK && phase != Phase.GUIDING && phase != Phase.ROUTING) {
             when (input) {
-                GlassesInput.HEAD_UP -> shiftChoice(-1)
-                GlassesInput.HEAD_DOWN -> shiftChoice(1)
+                GlassesInput.HEAD_UP, GlassesInput.HEAD_DOWN -> when (nod.take(System.currentTimeMillis(), input == GlassesInput.HEAD_UP)) {
+                    VoiceMenu.HeadNod.Step.UP -> shiftChoice(-1)
+                    VoiceMenu.HeadNod.Step.DOWN -> shiftChoice(1)
+                    VoiceMenu.HeadNod.Step.BACK -> host.log("导航：头回到正位")
+                    VoiceMenu.HeadNod.Step.REPEAT -> {}
+                }
                 GlassesInput.CLICK_RIGHT -> depart(choices.getOrNull(choiceIndex)?.dest)
                 GlassesInput.CLICK_LEFT -> { ask = Ask.LISTEN; choices = emptyList(); heard = ""; voiceNote = "再说一个地点"; show(); armVoice() }
                 else -> {}
