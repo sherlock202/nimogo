@@ -368,6 +368,13 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         start(d, defaultMode)
     }
 
+    private fun beginHold(up: Boolean) {
+        host.log(if (up) "导航：抬头，每秒向上一个" else "导航：低头，每秒向下一个")
+        shiftChoice(if (up) -1 else 1)
+        host.main.removeCallbacks(holdStep)
+        host.main.postDelayed(holdStep, VoiceMenu.HeadHold.STEP_MS)
+    }
+
     private fun shiftChoice(dir: Int) {
         if (choices.isEmpty()) return
         choiceIndex = (choiceIndex + dir + choices.size) % choices.size
@@ -406,7 +413,18 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
     // ---------- 眼镜画面 ----------
 
     private var lastDraw = 0L
-    private val nod = VoiceMenu.HeadNod()
+    private val nod = VoiceMenu.HeadHold()
+    private val holdStep = object : Runnable {
+        override fun run() {
+            if (ask != Ask.PICK) return
+            when (nod.goingUp) {
+                true -> shiftChoice(-1)
+                false -> shiftChoice(1)
+                null -> return
+            }
+            host.main.postDelayed(this, VoiceMenu.HeadHold.STEP_MS)
+        }
+    }
 
     /** 画面变了才发；眼镜收图慢时合并成一张（只发最新的）。 */
     private fun show() {
@@ -425,20 +443,28 @@ class NavApp(private val host: AppHost, private val showOnGlasses: (NavApp) -> U
         lastKey = ""
         if (voiceArmed) { voiceArmed = false; startListen() } else show()
     }
-    override fun onClose() { host.main.removeCallbacks(drawNow); stopListen() }
+    override fun onClose() {
+        nod.reset()
+        host.main.removeCallbacks(holdStep)
+        host.main.removeCallbacks(drawNow)
+        stopListen()
+    }
     override fun onResume() { lastKey = ""; show() }
 
     override fun onInput(input: GlassesInput) {
         if (ask == Ask.PICK && phase != Phase.GUIDING && phase != Phase.ROUTING) {
             when (input) {
-                GlassesInput.HEAD_UP, GlassesInput.HEAD_DOWN -> when (nod.take(System.currentTimeMillis(), input == GlassesInput.HEAD_UP)) {
-                    VoiceMenu.HeadNod.Step.UP -> shiftChoice(-1)
-                    VoiceMenu.HeadNod.Step.DOWN -> shiftChoice(1)
-                    VoiceMenu.HeadNod.Step.BACK -> host.log("导航：头回到正位")
-                    VoiceMenu.HeadNod.Step.REPEAT -> {}
+                GlassesInput.HEAD_UP, GlassesInput.HEAD_DOWN -> when (nod.onSignal(input == GlassesInput.HEAD_UP)) {
+                    VoiceMenu.HeadHold.Move.UP -> beginHold(true)
+                    VoiceMenu.HeadHold.Move.DOWN -> beginHold(false)
+                    VoiceMenu.HeadHold.Move.STOP -> { host.main.removeCallbacks(holdStep); host.log("导航：头回到正位，停止") }
+                    VoiceMenu.HeadHold.Move.SAME -> {}
                 }
                 GlassesInput.CLICK_RIGHT -> depart(choices.getOrNull(choiceIndex)?.dest)
-                GlassesInput.CLICK_LEFT -> { ask = Ask.LISTEN; choices = emptyList(); heard = ""; voiceNote = "再说一个地点"; show(); armVoice() }
+                GlassesInput.CLICK_LEFT -> {
+                    nod.reset(); host.main.removeCallbacks(holdStep)
+                    ask = Ask.LISTEN; choices = emptyList(); heard = ""; voiceNote = "再说一个地点"; show(); armVoice()
+                }
                 else -> {}
             }
             return

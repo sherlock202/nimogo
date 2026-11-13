@@ -62,38 +62,29 @@ object VoiceMenu {
     fun columnsFor(count: Int) = if (count <= 9) 3 else 4
 
     /**
-     * 抬头一次再回到正位，算向上一格；低头一次再回到正位，算向下一格。可以连着做。
-     * 眼镜在回到正位时往往再报一次相反的方向，那一下不是新的一格。
-     * 同方向隔得很近的重复也不算（头还没回到正位）。
+     * 抬着头就一直向上，低着头就一直向下，每秒一格；头回到正位就停。
+     * 正位时眼镜报的是和现在相反的方向：正在向上时来了低头，或正在向下时来了抬头，都是回到正位，不是改方向。
+     * 同方向再报一次（头还保持着）不算新的一次。
      */
-    class HeadNod {
-        enum class Step { UP, DOWN, BACK, REPEAT }
+    class HeadHold {
+        enum class Move { UP, DOWN, STOP, SAME }
 
-        private var lastUp: Boolean? = null
-        private var lastAt = 0L
-        private var waitBack = false
+        /** 正在往上（true）、往下（false）、停着（null）。 */
+        var goingUp: Boolean? = null
+            private set
 
-        fun reset() { lastUp = null; lastAt = 0L; waitBack = false }
+        fun reset() { goingUp = null }
 
-        fun take(now: Long, up: Boolean): Step {
-            val prev = lastUp
-            if (waitBack && prev != null && up != prev && now - lastAt <= BACK_MS) {
-                waitBack = false
-                lastUp = null
-                return Step.BACK
-            }
-            if (prev == up && now - lastAt < REPEAT_MS) { lastAt = now; return Step.REPEAT }
-            lastUp = up
-            lastAt = now
-            waitBack = true
-            return if (up) Step.UP else Step.DOWN
+        fun onSignal(up: Boolean): Move {
+            if (goingUp == up) return Move.SAME
+            if (goingUp != null) { goingUp = null; return Move.STOP }
+            goingUp = up
+            return if (up) Move.UP else Move.DOWN
         }
 
         companion object {
-            /** 抬头之后多久以内的低头，当作头回到了正位（抬着头看一会儿菜单再放回去，要留够时间）。 */
-            const val BACK_MS = 6_000L
-            /** 同方向这么近的再来一次，还是同一次抬头或低头。 */
-            const val REPEAT_MS = 280L
+            /** 抬着或低着时，隔这么久再走一格。 */
+            const val STEP_MS = 1_000L
         }
     }
 
@@ -205,7 +196,7 @@ object VoiceMenu {
 
 /**
  * 眼镜上的语音菜单。画在看板所在的导航页上（和提词器无关）：看板显示着时右双击打开。
- * 打开就开始听，说完停一下就匹配。抬头、低头在列里上下选（到头换到旁边一列），右单击启动，左单击返回（在游戏名单上先回到功能名单）。
+ * 打开就开始听，说完停一下就匹配。抬着头一直向上、低着头一直向下（每秒一格，回到正位停下），右单击启动，左单击返回（在游戏名单上先回到功能名单）。
  */
 class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp {
     interface Env {
@@ -227,7 +218,18 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
     override val title = "语音菜单"
     var running = false; private set
     private var page = Page.MAIN
-    private val nod = VoiceMenu.HeadNod()
+    private val nod = VoiceMenu.HeadHold()
+    private val holdStep = object : Runnable {
+        override fun run() {
+            if (!running) return
+            when (nod.goingUp) {
+                true -> remote("up")
+                false -> remote("down")
+                null -> return
+            }
+            host.main.postDelayed(this, VoiceMenu.HeadHold.STEP_MS)
+        }
+    }
     private var index = 0
     private var note = ""
     private var seg: CaptionSegmenter? = null
@@ -262,6 +264,8 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
 
     override fun onClose() {
         running = false
+        nod.reset()
+        host.main.removeCallbacks(holdStep)
         env.holdHead(false)
         host.main.removeCallbacks(idle)
         seg = null
@@ -333,16 +337,26 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
         host.main.postDelayed(idle, 45_000)
     }
 
+    private fun beginHold(up: Boolean) {
+        host.log(if (up) "语音菜单：抬头，每秒向上一格" else "语音菜单：低头，每秒向下一格")
+        remote(if (up) "up" else "down")
+        host.main.removeCallbacks(holdStep)
+        host.main.postDelayed(holdStep, VoiceMenu.HeadHold.STEP_MS)
+    }
+
     private fun close() { closeSelf?.invoke() }
     private fun show() { host.redraw(this); host.changed() }
 
     override fun onInput(input: GlassesInput) {
         when (input) {
-            GlassesInput.HEAD_UP, GlassesInput.HEAD_DOWN -> when (nod.take(System.currentTimeMillis(), input == GlassesInput.HEAD_UP)) {
-                VoiceMenu.HeadNod.Step.UP -> { host.log("语音菜单：抬头，上一格"); remote("up") }
-                VoiceMenu.HeadNod.Step.DOWN -> { host.log("语音菜单：低头，下一格"); remote("down") }
-                VoiceMenu.HeadNod.Step.BACK -> host.log("语音菜单：头回到正位（眼镜报了相反方向，不算一格）")
-                VoiceMenu.HeadNod.Step.REPEAT -> {}
+            GlassesInput.HEAD_UP, GlassesInput.HEAD_DOWN -> when (nod.onSignal(input == GlassesInput.HEAD_UP)) {
+                VoiceMenu.HeadHold.Move.UP -> beginHold(true)
+                VoiceMenu.HeadHold.Move.DOWN -> beginHold(false)
+                VoiceMenu.HeadHold.Move.STOP -> {
+                    host.main.removeCallbacks(holdStep)
+                    host.log("语音菜单：头回到正位，停止")
+                }
+                VoiceMenu.HeadHold.Move.SAME -> {}
             }
             GlassesInput.CLICK_RIGHT -> remote("ok")
             GlassesInput.CLICK_LEFT -> if (page == Page.GAMES) { page = Page.MAIN; index = 0; note = ""; show() } else close()
@@ -356,7 +370,7 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
         val f = Frame(fontPx.coerceAtMost(16))
         val labels = items().map { it.label }
         val cols = VoiceMenu.columnsFor(labels.size)
-        var y = f.header(if (hearing) "语音菜单 · 在听" else "抬头低头选　右键打开") + 4
+        var y = f.header(if (hearing) "语音菜单 · 在听" else "抬着向上　低着向下　右键打开") + 4
         if (note.isNotEmpty()) {
             f.text(f.small.ellipsize(note, f.w - 12), 6, y, Frame.DIM, f.small)
             y += f.small.height + 4
