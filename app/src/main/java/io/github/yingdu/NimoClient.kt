@@ -84,6 +84,8 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         /** 麦克风特征值的属性句柄（实测）。 */
         private const val MIC_HANDLE = 3
         private const val KEEPALIVE_MS = 30_000L
+        /** 发完数据后，多久放回均衡连接间隔。 */
+        private const val LINK_BOOST_MS = 3_000L
         private const val WRITE_WATCHDOG_MS = 1_000L
         private const val RECONNECT_DELAY_MS = 5_000L
         /** 前这么多次每 5 秒重连一次（一次失败本身要等二三十秒，大约 10 分钟），之后每分钟一次。 */
@@ -514,9 +516,10 @@ class NimoClient(private val context: Context, private val listener: NimoListene
                     g.disconnect()
                     return@post
                 }
-                // 服务发现后请求高连接优先级（传图更快）
-                val prio = try { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) } catch (_: Exception) { false }
-                log(if (prio) "已请求高连接优先级" else "请求高连接优先级失败（不影响使用）")
+                // 连上后用均衡连接间隔（省电）；真正发图、发字时才临时提到高优先级，停了几秒再放回来（见 boostLink）
+                linkHigh = false
+                val prio = try { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED) } catch (_: Exception) { false }
+                log(if (prio) "连接间隔：均衡（省电）" else "请求均衡连接间隔失败（不影响使用）")
                 findMic(g)
                 enableNotifications(g, r)
             }
@@ -1323,6 +1326,7 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             return
         }
         if (gatt == null) { writeQueue.clear(); return }
+        boostLink()
         writeInFlight = true
         if (!writeRaw(bytes)) {
             writeInFlight = false
@@ -1331,6 +1335,26 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             return
         }
         armWatchdog()
+    }
+
+    /** 现在的连接优先级是不是高（发图发字时才是）。 */
+    private var linkHigh = false
+    /** 发完一阵子后放回均衡。 */
+    private val linkIdle = Runnable { setLinkPriority(false) }
+
+    /** 有数据要发：临时提到高优先级（连接间隔短，发得快；耗电高）。停下 3 秒后由 linkIdle 放回。 */
+    private fun boostLink() {
+        setLinkPriority(true)
+        main.removeCallbacks(linkIdle)
+        main.postDelayed(linkIdle, LINK_BOOST_MS)
+    }
+
+    private fun setLinkPriority(high: Boolean) {
+        val g = gatt ?: return
+        if (state != LinkState.READY || high == linkHigh) return
+        linkHigh = high
+        val p = if (high) BluetoothGatt.CONNECTION_PRIORITY_HIGH else BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+        runCatching { g.requestConnectionPriority(p) }
     }
 
     private fun armWatchdog() {
@@ -1410,6 +1434,8 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         if (blanked) { needUnblankOnConnect = true; blanked = false; main.removeCallbacks(unblankSafety) }
         if (darkHome) { needUnblankOnConnect = true; darkHome = false }
         twsConnected = false
+        linkHigh = false
+        main.removeCallbacks(linkIdle)
         enteredApp = null
         enteringApp = null
         enterTimeout?.let { main.removeCallbacks(it) }
