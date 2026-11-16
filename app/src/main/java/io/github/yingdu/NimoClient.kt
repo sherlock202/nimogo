@@ -88,9 +88,9 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         private const val LINK_BOOST_MS = 3_000L
         private const val WRITE_WATCHDOG_MS = 1_000L
         private const val RECONNECT_DELAY_MS = 5_000L
-        /** 前这么多次每 5 秒重连一次（一次失败本身要等二三十秒，大约 10 分钟），之后每分钟一次。 */
-        private const val RECONNECT_FAST_TRIES = 20
-        private const val RECONNECT_SLOW_MS = 60_000L
+        /** 连不上时最多试这么多次（每次隔 5 秒，一次失败本身要等二三十秒，大约 10 分钟）。之后停止自动重连，打开 NimoGo 或点连接再试。
+         *  之前之后每分钟一次一直试，蓝牙开着就一直在呼叫眼镜，眼镜耗电很快（2026-11-16）。 */
+        private const val RECONNECT_MAX_TRIES = 20
         private const val SET_TIME_MAX_ATTEMPTS = 3
         /** 打开页面后在这些时间点先发图（不等"已打开"的确认）。 */
         private val EARLY_IMAGE_MS = longArrayOf(100, 500, 900)
@@ -456,25 +456,28 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         }
     }
 
-    /** 连续连不上的次数（连上后清零）：眼镜不在身边时别一直每 5 秒找一次，改成每分钟。 */
+    /** 连续连不上的次数（连上后清零）：超过 RECONNECT_MAX_TRIES 次就停止自动重连。 */
     private var failedAttempts = 0
     private val reconnectRun = Runnable { if (wantConnected && gatt == null) openGatt() }
 
     private fun scheduleReconnect() {
         if (!wantConnected) return
         failedAttempts++
-        val delay = if (failedAttempts <= RECONNECT_FAST_TRIES) RECONNECT_DELAY_MS else RECONNECT_SLOW_MS
-        log(if (failedAttempts == RECONNECT_FAST_TRIES + 1) "一直连不上，改成每 ${RECONNECT_SLOW_MS / 1000} 秒试一次（打开 NimoGo 会马上重试）"
-            else "${delay / 1000} 秒后重连")
+        if (failedAttempts > RECONNECT_MAX_TRIES) {
+            // 停止呼叫眼镜：蓝牙开着时每次呼叫都耗眼镜的电。打开 NimoGo 或点连接再试。
+            main.removeCallbacks(reconnectRun)
+            log("连不上已试 $RECONNECT_MAX_TRIES 次，停止自动重连（打开 NimoGo 或点「连接」再试）")
+            return
+        }
+        log("${RECONNECT_DELAY_MS / 1000} 秒后重连（第 $failedAttempts / $RECONNECT_MAX_TRIES 次）")
         main.removeCallbacks(reconnectRun)
-        main.postDelayed(reconnectRun, delay)
+        main.postDelayed(reconnectRun, RECONNECT_DELAY_MS)
     }
 
-    /** 打开萤读时：如果正在慢慢重试，马上试一次。 */
+    /** 打开 NimoGo 或点「连接」时调用：没在连着、也没在自动重连的话，马上试一次，并重新计次数。 */
     fun reconnectNow() {
         if (!wantConnected || gatt != null || state != LinkState.DISCONNECTED) return
-        if (failedAttempts <= RECONNECT_FAST_TRIES) return
-        failedAttempts = RECONNECT_FAST_TRIES     // 这次再失败，还是慢慢试
+        failedAttempts = 0
         main.removeCallbacks(reconnectRun)
         log("打开了 NimoGo：马上重连一次")
         openGatt()

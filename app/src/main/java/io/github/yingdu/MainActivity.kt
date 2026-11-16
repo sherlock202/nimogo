@@ -1367,7 +1367,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         var shownPreview = ""
         fun preview(s: ReaderService, n: Int?) {
             val pg = (if (n != null) s.pageAt(n) else s.currentPage()) ?: return
-            val key = "${pg.start}|${s.glassesFontPx}|${s.showingImage}|${s.showProgress}|${s.linesPerPage}|${s.charsPerLine}"
+            // 页首位置不够：换一本书常常也从同一位置开始，中身变了也要重画
+            val key = "${s.bookUri}|${pg.start}|${pg.text.hashCode()}|${s.glassesFontPx}|${s.showingImage}|${s.showProgress}|${s.linesPerPage}|${s.charsPerLine}"
             if (key == shownPreview) return
             shownPreview = key
             if (s.showingImage) {
