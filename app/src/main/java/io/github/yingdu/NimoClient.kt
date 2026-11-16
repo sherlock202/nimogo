@@ -178,10 +178,11 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     // ---------- 对外接口 ----------
 
-    fun connect(target: BluetoothDevice) {
+    fun connect(target: BluetoothDevice, background: Boolean = false) {
         wantConnected = true
         failedAttempts = 0
         device = target
+        connectInBackground = background
         openGatt()
     }
 
@@ -445,6 +446,9 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     // ---------- 连接 ----------
 
+    /** 这次连接是后台发起的（通知转发）。直接连接在后台常被系统搁置，要等打开 app 才真正连上。 */
+    private var connectInBackground = false
+
     private fun openGatt() {
         val d = device ?: return
         if (d.bondState != BluetoothDevice.BOND_BONDED) {
@@ -453,8 +457,10 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             return
         }
         setState(LinkState.CONNECTING)
-        log("正在连接 ${d.name ?: d.address}（BR/EDR）")
-        gatt = d.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_BREDR)
+        val bg = connectInBackground
+        log("正在连接 ${d.name ?: d.address}（BR/EDR" + (if (bg) "，后台" else "") + "）")
+        // 后台用自动连接：系统负责找眼镜，不要求 NimoGo 正在前台。前台点「连接」仍直接连。
+        gatt = d.connectGatt(context, bg, callback, BluetoothDevice.TRANSPORT_BREDR)
         if (gatt == null) {
             log("connectGatt 返回空")
             setState(LinkState.DISCONNECTED)

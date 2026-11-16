@@ -89,13 +89,14 @@ class PhoneNotificationService : NotificationListenerService() {
         val bigText = ex.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim() ?: ""
         val text = NotifyText.pick(rawText, bigText, lastText, lastSender, NotifyText.cleanTitle(title))
         val msgTime = lastMsg?.getLong("time") ?: 0L
-        val svc = ReaderService.instance ?: return
+        val svc = ReaderService.instance
         NotifyPrefs.rememberApp(this, pkg)
 
         // AI 代理（Muse）发来的「NimoGo #4：……」：交给 AI 代理处理（替它写回 GitHub、显示到眼镜），不再当普通通知转发
         val appLabel = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
-        val (relayed, verdict) = runCatching { svc.agentRelay(pkg, listOf(bigText, lastText, rawText, title)) }.getOrDefault(false to "")
-        svc.noteSeen(pkg, appLabel, title, listOf(bigText, lastText ?: "", rawText).maxByOrNull { it.length } ?: "", verdict)
+        val (relayed, verdict) = if (svc == null) false to ""
+            else runCatching { svc.agentRelay(pkg, listOf(bigText, lastText, rawText, title)) }.getOrDefault(false to "")
+        svc?.noteSeen(pkg, appLabel, title, listOf(bigText, lastText ?: "", rawText).maxByOrNull { it.length } ?: "", verdict)
         if (relayed) return
 
         // 来电（电话、微信语音/视频）：通话通知是"进行中"的，下面会被当成音乐之类跳过，这里单独处理
@@ -104,7 +105,7 @@ class PhoneNotificationService : NotificationListenerService() {
                 NotifyCall.isIncoming(ex.getInt("android.callType", 0), n.fullScreenIntent != null) &&
                 NotifyCall.firstAlert(sbn.key, android.os.SystemClock.elapsedRealtime())) {
                 val label = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
-                svc.onPhoneNotification(label, title.ifEmpty { "未知号码" }, text.ifEmpty { "来电" }, pkg = pkg)
+                deliver(label, title.ifEmpty { "未知号码" }, text.ifEmpty { "来电" }, pkg)
             }
             return
         }
@@ -115,13 +116,13 @@ class PhoneNotificationService : NotificationListenerService() {
         val sig = "$title|$text"
         val label = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
         if (NotifyDedup.sameAsLast(key, sig)) {                                 // 同一条通知的重复刷新
-            if (NotifyPrefs.slotOf(this, pkg) != 0) svc.log("通知：$label · $title（和这个 app 上一条通知内容一样，跳过）")
+            if (NotifyPrefs.slotOf(this, pkg) != 0) svc?.log("通知：$label · $title（和这个 app 上一条通知内容一样，跳过）")
             return
         }
         if (!NotifyPrefs.shouldForward(this, pkg)) {
             // 选了时段、只是现在不在时段里的，记一笔（排查"为什么没弹"）；没选的 app 不记，免得刷屏
             val mask = NotifyPrefs.slotOf(this, pkg)
-            if (mask != 0 && NotifyPrefs.enabled(this)) { NotifyDedup.remember(key, sig); svc.log("通知：$label（只在「${NotifySlots.label(mask)}」时段转发，现在不转）") }
+            if (mask != 0 && NotifyPrefs.enabled(this)) { NotifyDedup.remember(key, sig); svc?.log("通知：$label（只在「${NotifySlots.label(mask)}」时段转发，现在不转）") }
             return
         }
         NotifyDedup.remember(key, sig)
@@ -129,9 +130,19 @@ class PhoneNotificationService : NotificationListenerService() {
         // 用"消息的时间戳"认——同一条消息时间戳不变；别人又发了一句一样的话是新消息，时间戳不同，照常弹
         val stamp = if (msgTime > 0) msgTime else if (n.`when` > 0) n.`when` else sbn.postTime
         if (NotifyDedup.seenBefore(pkg, text.ifEmpty { title }, stamp, android.os.SystemClock.elapsedRealtime())) {
-            svc.log("通知：$label · $title（同一条消息又送来一次，跳过）"); return
+            svc?.log("通知：$label · $title（同一条消息又送来一次，跳过）"); return
         }
-        svc.onPhoneNotification(label, title, text, pkg = pkg)
+        deliver(label, title, text, pkg)
+    }
+
+    /** 交给阅读服务。服务没在跑（进程被收过）就先把它拉起来，否则这条通知会被丢掉，要等打开 app 才连。 */
+    private fun deliver(label: String, title: String, text: String, pkg: String?) {
+        val svc = ReaderService.instance
+        if (svc != null) { svc.onPhoneNotification(label, title, text, pkg = pkg); return }
+        val i = Intent(this, ReaderService::class.java).setAction(ReaderService.ACTION_NOTIFY)
+            .putExtra("nApp", label).putExtra("nTitle", title).putExtra("nText", text).putExtra("nPkg", pkg)
+        runCatching { startForegroundService(i) }
+            .onFailure { ReaderService.instance?.log("通知来了，但拉不起服务：$it") }
     }
 
 }

@@ -72,6 +72,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         const val ACTION_PREV = "io.github.yingdu.PREV"
         const val ACTION_NEXT = "io.github.yingdu.NEXT"
         const val ACTION_AUTO = "io.github.yingdu.AUTO"
+        /** 通知监听在服务没起来时把一条通知交过来。 */
+        const val ACTION_NOTIFY = "io.github.yingdu.NOTIFY"
     }
 
     private val binder = LocalBinder()
@@ -1776,6 +1778,11 @@ class ReaderService : Service(), NimoListener, AppHost {
             ACTION_PREV -> if (appMode == AppMode.READER) prevPage() else dashFlip(-1)
             ACTION_NEXT -> if (appMode == AppMode.READER) nextPage() else dashFlip(1)
             ACTION_AUTO -> if (appMode == AppMode.READER) { if (glassesPaused) pushPage(); toggleAutoFlip() } else toggleShow()
+            ACTION_NOTIFY -> {
+                val i = intent ?: return START_NOT_STICKY
+                onPhoneNotification(i.getStringExtra("nApp") ?: "", i.getStringExtra("nTitle") ?: "",
+                    i.getStringExtra("nText") ?: "", pkg = i.getStringExtra("nPkg"))
+            }
         }
         return START_NOT_STICKY
     }
@@ -1789,8 +1796,12 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun run() { client.resyncTime("每天一次"); main.postDelayed(this, DAY_MS) }
     }
 
-    /** 打开萤读时调用：眼镜很久没连上、正在慢慢重试的话马上试一次。 */
-    fun onUiShown() = client.reconnectNow()
+    /** 打开 NimoGo 时：还有没推出去的通知就先连上再推；否则按原来的，慢慢重试中的马上试一次。 */
+    fun onUiShown() {
+        if (!holdOff && linkState == LinkState.DISCONNECTED && offlineQueue.isNotEmpty())
+            relink("打开了 NimoGo：还有没发出的通知", quiet = true)
+        else client.reconnectNow()
+    }
 
     /** 系统有没有把萤读从"电池优化"里放出来（没放出来时后台容易被杀，通知和重连会断）。 */
     fun ignoringBatteryOptimizations(): Boolean =
@@ -1900,7 +1911,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         showDashboardOnReady = false
         deviceName = runCatching { dev.name }.getOrNull() ?: dev.address
         log("$why：重新连接眼镜")
-        client.connect(dev)
+        startInForeground()
+        client.connect(dev, background = true)
         return true
     }
 
@@ -2554,6 +2566,10 @@ class ReaderService : Service(), NimoListener, AppHost {
     private val assistOnGlasses get() = activeApp === assist && !glassesPaused && linkState == LinkState.READY
 
     fun onPhoneNotification(app: String, title: String, text: String, litMs0: Long = -1, fit: Boolean = false, pkg: String? = null) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            main.post { onPhoneNotification(app, title, text, litMs0, fit, pkg) }
+            return
+        }
         // 繁体先换成简体再弹。对照是一对一的，换完再进来不会再变
         val appS = notifySimplify.apply(app)
         val titleS = notifySimplify.apply(title)
@@ -2570,7 +2586,8 @@ class ReaderService : Service(), NimoListener, AppHost {
                 offlineQueue.addLast(OfflineNotice(app, title, text, pkg, System.currentTimeMillis()))
                 while (offlineQueue.size > OFFLINE_MAX) offlineQueue.removeFirst()
                 log("眼镜没连着，通知先存着（${offlineQueue.size} 条），连上后再弹")
-                if (powerSave) relink("节电：有通知", quiet = true)
+                // 点了「断开」或交给官方 app（holdOff）就不再自动连。其余断开（节电、连不上停下）来通知就在后台重连再推。
+                if (!holdOff) relink("有通知", quiet = true)
             }
             return
         }
