@@ -1897,8 +1897,10 @@ class ReaderService : Service(), NimoListener, AppHost {
     @SuppressLint("MissingPermission")
     private fun relink(why: String, quiet: Boolean): Boolean {
         if (holdOff) return false
+        if (linkState == LinkState.READY) return true
         if (linkState != LinkState.DISCONNECTED) {
-            if (!quiet) quietLink = false
+            log("$why：正在连接，这条通知等连上再推")
+            if (quiet) quietLink = true
             return true
         }
         val addr = client.deviceAddress() ?: prefs.getString("glassesAddr", null)
@@ -1910,9 +1912,9 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (quiet) client.clearPending()
         showDashboardOnReady = false
         deviceName = runCatching { dev.name }.getOrNull() ?: dev.address
-        log("$why：重新连接眼镜")
+        log("$why：直接连接眼镜")
         startInForeground()
-        client.connect(dev, background = true)
+        client.connect(dev, forNotify = quiet)
         return true
     }
 

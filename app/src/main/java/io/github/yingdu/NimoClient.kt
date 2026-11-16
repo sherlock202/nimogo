@@ -178,11 +178,11 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     // ---------- 对外接口 ----------
 
-    fun connect(target: BluetoothDevice, background: Boolean = false) {
+    fun connect(target: BluetoothDevice, forNotify: Boolean = false) {
         wantConnected = true
         failedAttempts = 0
+        shortRetry = forNotify
         device = target
-        connectInBackground = background
         openGatt()
     }
 
@@ -446,8 +446,19 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     // ---------- 连接 ----------
 
-    /** 这次连接是后台发起的（通知转发）。直接连接在后台常被系统搁置，要等打开 app 才真正连上。 */
-    private var connectInBackground = false
+    /** 通知触发的重连只试几次，避免又变成长时间呼叫眼镜。 */
+    private var shortRetry = false
+    private val connectTimeout = Runnable {
+        if (state != LinkState.CONNECTING && state != LinkState.HANDSHAKING) return@Runnable
+        log("连接超过 20 秒还没完成，断开这次再试")
+        val g = gatt
+        gatt = null
+        resetSession()
+        try { g?.disconnect() } catch (_: Exception) {}
+        try { g?.close() } catch (_: Exception) {}
+        setState(LinkState.DISCONNECTED)
+        scheduleReconnect()
+    }
 
     private fun openGatt() {
         val d = device ?: return
@@ -457,15 +468,23 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             return
         }
         setState(LinkState.CONNECTING)
-        val bg = connectInBackground
-        log("正在连接 ${d.name ?: d.address}（BR/EDR" + (if (bg) "，后台" else "") + "）")
-        // 后台用自动连接：系统负责找眼镜，不要求 NimoGo 正在前台。前台点「连接」仍直接连。
-        gatt = d.connectGatt(context, bg, callback, BluetoothDevice.TRANSPORT_BREDR)
+        log("正在连接 ${d.name ?: d.address}（BR/EDR，直接连接）")
+        // 不用 autoConnect：这条链路是经典蓝牙上的 GATT，自动连接会一直等广播，回调经常不来，通知就永远重连不上。
+        // 服务在前台（connectedDevice）时，直接连接在后台也能发起。
+        gatt = try {
+            d.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_BREDR)
+        } catch (e: Exception) {
+            log("连接失败：$e")
+            null
+        }
         if (gatt == null) {
             log("connectGatt 返回空")
             setState(LinkState.DISCONNECTED)
             scheduleReconnect()
+            return
         }
+        main.removeCallbacks(connectTimeout)
+        main.postDelayed(connectTimeout, 20_000)
     }
 
     /** 连续连不上的次数（连上后清零）：超过 RECONNECT_MAX_TRIES 次就停止自动重连。 */
@@ -475,13 +494,17 @@ class NimoClient(private val context: Context, private val listener: NimoListene
     private fun scheduleReconnect() {
         if (!wantConnected) return
         failedAttempts++
-        if (failedAttempts > RECONNECT_MAX_TRIES) {
-            // 停止呼叫眼镜：蓝牙开着时每次呼叫都耗眼镜的电。打开 NimoGo 或点连接再试。
+        val cap = if (shortRetry) 3 else RECONNECT_MAX_TRIES
+        if (failedAttempts > cap) {
+            val why = if (shortRetry) "通知触发的重连" else "自动重连"
+            shortRetry = false
+            wantConnected = false
             main.removeCallbacks(reconnectRun)
-            log("连不上已试 $RECONNECT_MAX_TRIES 次，停止自动重连（打开 NimoGo 或点「连接」再试）")
+            main.removeCallbacks(connectTimeout)
+            log("$why 试了 $cap 次还没连上，停下。打开 NimoGo 或点「连接」再试")
             return
         }
-        log("${RECONNECT_DELAY_MS / 1000} 秒后重连（第 $failedAttempts / $RECONNECT_MAX_TRIES 次）")
+        log("${RECONNECT_DELAY_MS / 1000} 秒后重连（第 $failedAttempts / $cap 次）")
         main.removeCallbacks(reconnectRun)
         main.postDelayed(reconnectRun, RECONNECT_DELAY_MS)
     }
@@ -504,6 +527,7 @@ class NimoClient(private val context: Context, private val listener: NimoListene
                     // 不主动申请大 MTU：部分 Nimo 固件会因此报错并反复重连
                     g.discoverServices()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    main.removeCallbacks(connectTimeout)
                     log("连接断开 status=$status")
                     try { g.close() } catch (_: Exception) {}
                     gatt = null
@@ -638,6 +662,8 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         if (state != LinkState.HANDSHAKING) return
         log("握手完成")
         failedAttempts = 0
+        shortRetry = false
+        main.removeCallbacks(connectTimeout)
         sendFrame(NimoFrameCodec.encodeFrame(
             NimoProtocol.CMD_SET_PARAMETER, NimoProtocol.SET_PHONE_TYPE,
             byteArrayOf(NimoProtocol.PHONE_TYPE_OTHER.toByte()), needsAck = false))
