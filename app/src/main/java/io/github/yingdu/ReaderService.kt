@@ -1966,6 +1966,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     @SuppressLint("MissingPermission")
     private fun relink(why: String, quiet: Boolean): Boolean {
         if (holdOff) return false
+        if (quiet && client.skipAutoConnect(why)) return false
         if (linkState == LinkState.READY) return true
         if (linkState != LinkState.DISCONNECTED) {
             log("$why：正在连接，这条通知等连上再推")

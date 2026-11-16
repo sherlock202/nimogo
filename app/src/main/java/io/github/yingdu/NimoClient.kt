@@ -179,11 +179,31 @@ class NimoClient(private val context: Context, private val listener: NimoListene
     // ---------- 对外接口 ----------
 
     fun connect(target: BluetoothDevice, forNotify: Boolean = false) {
+        if (forNotify && gaveUp) {
+            noteGaveUp("有通知")
+            return
+        }
+        // 用户点「连接」或在手机上打开功能：清掉「眼镜没回应」。通知不能清，否则关机后每条通知又开始呼叫。
+        if (!forNotify) {
+            gaveUp = false
+            gaveUpNoted = false
+            noAnswer = 0
+            failedAttempts = 0
+        }
         wantConnected = true
-        failedAttempts = 0
         shortRetry = forNotify
         device = target
         openGatt()
+    }
+
+    /**
+     * 通知之类的自动连接要不要停。连续两次呼叫都没有连上（超时、或还在连接中就被断开）就为 true：
+     * 眼镜多半关了机或不在旁边。打开 NimoGo 或点「连接」再清掉。
+     */
+    fun skipAutoConnect(why: String): Boolean {
+        if (!gaveUp) return false
+        noteGaveUp(why)
+        return true
     }
 
     /** 上次连接的眼镜地址（节电断开后，通知或手机上打开功能时用来再连）。 */
@@ -452,16 +472,43 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     /** 通知触发的重连只试几次，避免又变成长时间呼叫眼镜。 */
     private var shortRetry = false
+    /** 呼叫了但一直没连上的次数。连上后清零。 */
+    private var noAnswer = 0
+    /** 连续不回应之后停止自动连接（含通知）。 */
+    private var gaveUp = false
+    private var gaveUpNoted = false
     private val connectTimeout = Runnable {
         if (state != LinkState.CONNECTING && state != LinkState.HANDSHAKING) return@Runnable
-        log("连接超过 20 秒还没完成，断开这次再试")
+        val neverUp = state == LinkState.CONNECTING
+        log(if (neverUp) "连接超过 20 秒，眼镜没有回应" else "连接超过 20 秒还没完成，断开这次再试")
         val g = gatt
         gatt = null
         resetSession()
         try { g?.disconnect() } catch (_: Exception) {}
         try { g?.close() } catch (_: Exception) {}
         setState(LinkState.DISCONNECTED)
+        if (neverUp) markNoAnswer() else scheduleReconnect()
+    }
+
+    /** 还在「正在连接」、眼镜根本没应。连着两次就当关了机或不在旁边，停止自动重连。 */
+    private fun markNoAnswer() {
+        noAnswer++
+        if (noAnswer >= 2) {
+            gaveUp = true
+            wantConnected = false
+            shortRetry = false
+            main.removeCallbacks(reconnectRun)
+            main.removeCallbacks(connectTimeout)
+            noteGaveUp("重连")
+            return
+        }
         scheduleReconnect()
+    }
+
+    private fun noteGaveUp(why: String) {
+        if (gaveUpNoted) return
+        gaveUpNoted = true
+        log("$why：眼镜没有回应，停止重连（多半关了机或不在旁边）。打开 NimoGo 或点「连接」再试")
     }
 
     private fun openGatt() {
@@ -484,7 +531,7 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         if (gatt == null) {
             log("connectGatt 返回空")
             setState(LinkState.DISCONNECTED)
-            scheduleReconnect()
+            markNoAnswer()
             return
         }
         main.removeCallbacks(connectTimeout)
@@ -503,9 +550,10 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             val why = if (shortRetry) "通知触发的重连" else "自动重连"
             shortRetry = false
             wantConnected = false
+            gaveUp = true
             main.removeCallbacks(reconnectRun)
             main.removeCallbacks(connectTimeout)
-            log("$why 试了 $cap 次还没连上，停下。打开 NimoGo 或点「连接」再试")
+            noteGaveUp(why)
             return
         }
         log("${RECONNECT_DELAY_MS / 1000} 秒后重连（第 $failedAttempts / $cap 次）")
@@ -513,10 +561,16 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         main.postDelayed(reconnectRun, RECONNECT_DELAY_MS)
     }
 
-    /** 打开 NimoGo 或点「连接」时调用：没在连着、也没在自动重连的话，马上试一次，并重新计次数。 */
+    /** 打开 NimoGo 或点「连接」时调用：没在连着的话马上试一次。已经判定眼镜没回应时，打开 app 也再试一次。 */
     fun reconnectNow() {
-        if (!wantConnected || gatt != null || state != LinkState.DISCONNECTED) return
+        if (gatt != null || state != LinkState.DISCONNECTED) return
+        if (!wantConnected && !gaveUp) return
+        gaveUp = false
+        gaveUpNoted = false
+        noAnswer = 0
         failedAttempts = 0
+        shortRetry = false
+        wantConnected = true
         main.removeCallbacks(reconnectRun)
         log("打开了 NimoGo：马上重连一次")
         openGatt()
@@ -531,13 +585,15 @@ class NimoClient(private val context: Context, private val listener: NimoListene
                     // 不主动申请大 MTU：部分 Nimo 固件会因此报错并反复重连
                     g.discoverServices()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    val neverUp = state == LinkState.CONNECTING
                     main.removeCallbacks(connectTimeout)
                     log("连接断开 status=$status")
                     try { g.close() } catch (_: Exception) {}
                     gatt = null
                     resetSession()
                     setState(LinkState.DISCONNECTED)
-                    scheduleReconnect()
+                    // 还没连上就断：眼镜没有应。已经连上之后断了，按原来的次数再试。
+                    if (neverUp) markNoAnswer() else scheduleReconnect()
                 }
             }
         }
@@ -666,6 +722,9 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         if (state != LinkState.HANDSHAKING) return
         log("握手完成")
         failedAttempts = 0
+        noAnswer = 0
+        gaveUp = false
+        gaveUpNoted = false
         shortRetry = false
         main.removeCallbacks(connectTimeout)
         sendFrame(NimoFrameCodec.encodeFrame(
