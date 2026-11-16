@@ -49,6 +49,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         private const val DAY_MS = 24 * 3600_000L
         /** 关屏收起时，眼镜上待机的第一屏多久检查一次要不要更新。 */
         const val STANDBY_REFRESH_MS = 30_000L
+        /** 节电模式：连续这么久眼镜上没有任何显示，就断开蓝牙。 */
+        const val POWER_SAVE_IDLE_MS = 5 * 60_000L
         const val OFFLINE_MAX_AGE_MS = 120_000L
         /** 全天记忆：一直没转成文字的录音最多留多久（之后删掉，不在手机上长期留录音）。 */
         const val PENDING_KEEP_MS = 24 * 3600_000L
@@ -965,6 +967,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
         glassesPaused = false
         log("打开：${app.title}")
+        wakeForShow("节电：打开${app.title}")
         pushPage()
     }
 
@@ -1084,6 +1087,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
         glassesPaused = false; lastPushedDash = ""; dashPage = 0
         activeApp?.onResume()
+        wakeForShow("节电：恢复显示")
         pushPage()
     }
 
@@ -1492,6 +1496,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         headHidden = false
         stopAutoFlip()
         log(if (mode == AppMode.DASHBOARD) "切换到看板" else "切换到阅读")
+        wakeForShow(if (mode == AppMode.DASHBOARD) "节电：打开看板" else "节电：打开阅读")
         if (appMode == AppMode.DASHBOARD) { dashPage = 0; refreshDashboard(forceWeather = weather == null) }
         restartDashTimer()
         pushPage()
@@ -1823,15 +1828,87 @@ class ReaderService : Service(), NimoListener, AppHost {
     @SuppressLint("MissingPermission")
     fun connect(device: BluetoothDevice) {
         deviceName = runCatching { device.name }.getOrNull() ?: device.address
+        prefs.edit().putString("glassesAddr", device.address).apply()
+        holdOff = false
         showDashboardOnReady = true
         startForegroundService(Intent(this, ReaderService::class.java))
         client.connect(device)
     }
 
-    fun disconnect() = client.disconnect()
+    fun disconnect() {
+        holdOff = true
+        main.removeCallbacks(powerSaveCut)
+        powerIdleArmed = false
+        client.disconnect()
+    }
+
+    /**
+     * 节电：开着时，眼镜上连续 5 分钟没有任何显示就真正断开（不再自动重连）。
+     * 有要转发的通知时再连上、推送；在手机上打开功能也会再连。镜腿按键在断开后到不了手机。
+     * 点了「断开」或交给官方 app（holdOff）之后，通知也不再自动连上。
+     */
+    var powerSave: Boolean
+        get() = prefs.getBoolean("powerSave", false)
+        set(v) {
+            prefs.edit().putBoolean("powerSave", v).apply()
+            log(if (v) "节电模式开：5 分钟没有任何显示就断开蓝牙" else "节电模式关")
+            watchPowerSave()
+            notifyUi()
+        }
+
+    /** 用户主动断开（或交给官方 app）。为 true 时节电不再自动重连。 */
+    private var holdOff = false
+    /** 这次重连只为了推通知，连上后不要把上次的画面打开。 */
+    private var quietLink = false
+    private var powerIdleArmed = false
+    private val powerSaveCut = Runnable {
+        powerIdleArmed = false
+        if (!powerSave || holdOff || linkState != LinkState.READY || showingOnGlasses()) return@Runnable
+        log("节电：5 分钟没有任何显示，断开蓝牙。有通知会再连上再推送；要在眼镜上打开功能，请在手机上操作")
+        client.disconnect()
+    }
+
+    /** 眼镜上现在有没有画面（看板、阅读、全屏功能，或一条还没消失的通知）。 */
+    private fun showingOnGlasses() = notifyLit || notifyOver || notifyOverReader || !glassesPaused
+
+    private fun watchPowerSave() {
+        if (!powerSave || holdOff || linkState != LinkState.READY || showingOnGlasses()) {
+            powerIdleArmed = false
+            main.removeCallbacks(powerSaveCut)
+            return
+        }
+        if (powerIdleArmed) return
+        powerIdleArmed = true
+        main.postDelayed(powerSaveCut, POWER_SAVE_IDLE_MS)
+    }
+
+    /** 节电断开之后再连上。quiet：只为通知，连上后不打开原来的画面。已经在连或已连上时返回 true。 */
+    @SuppressLint("MissingPermission")
+    private fun relink(why: String, quiet: Boolean): Boolean {
+        if (holdOff) return false
+        if (linkState != LinkState.DISCONNECTED) {
+            if (!quiet) quietLink = false
+            return true
+        }
+        val addr = client.deviceAddress() ?: prefs.getString("glassesAddr", null)
+        if (addr.isNullOrEmpty()) { log("$why：还没连过眼镜，无法重连"); return false }
+        val adapter = getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter
+        if (adapter == null || !adapter.isEnabled) { log("$why：手机蓝牙关着，连不上"); return false }
+        val dev = runCatching { adapter.getRemoteDevice(addr) }.getOrNull() ?: return false
+        quietLink = quiet
+        if (quiet) client.clearPending()
+        showDashboardOnReady = false
+        deviceName = runCatching { dev.name }.getOrNull() ?: dev.address
+        log("$why：重新连接眼镜")
+        client.connect(dev)
+        return true
+    }
 
     /** 把眼镜交给官方 app：停掉翻译、收起画面、断开连接（不自动重连）。 */
     fun handOffToOfficial() {
+        holdOff = true
+        main.removeCallbacks(powerSaveCut)
+        powerIdleArmed = false
         stopAutoFlip()
         client.quitCurrent()
         main.postDelayed({ client.disconnect(); log("已断开，眼镜交给官方 app 使用") }, 300)
@@ -2372,6 +2449,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private fun setTop(line: Int, byFollow: Boolean = false) {
         val p = paginator ?: return
         topLine = line.coerceIn(0, p.lineCount - 1)
+        wakeForShow("节电：翻页")
         if (followOn && !byFollow) {
             // 跟读时手动翻了（戒指、镜腿、音量键、手机上的按钮）：从眼镜上这一屏的开头重新找。
             // 翻页前念的话（还在 4 秒的声音里）不能再把位置拉回去：丢掉留着的声音，翻页前的识别结果也不要
@@ -2390,6 +2468,11 @@ class ReaderService : Service(), NimoListener, AppHost {
     private fun savedOffset(): Int = bookUri?.let { prefs.getInt("pos:$it", 0) } ?: 0
 
     /** 把当前页推到眼镜上，同时保存进度。 */
+    /** 手机上要在眼镜显示内容：节电断开后先连上。服务自己恢复上次的书时不走这里，避免一启动就连。 */
+    private fun wakeForShow(why: String) {
+        if (powerSave && !holdOff && linkState != LinkState.READY) relink(why, quiet = false)
+    }
+
     private fun pushPage() {
         if (android.os.SystemClock.uptimeMillis() < exitLockUntil) {
             log("刚长按退出，先不把页面打开")
@@ -2487,6 +2570,7 @@ class ReaderService : Service(), NimoListener, AppHost {
                 offlineQueue.addLast(OfflineNotice(app, title, text, pkg, System.currentTimeMillis()))
                 while (offlineQueue.size > OFFLINE_MAX) offlineQueue.removeFirst()
                 log("眼镜没连着，通知先存着（${offlineQueue.size} 条），连上后再弹")
+                if (powerSave) relink("节电：有通知", quiet = true)
             }
             return
         }
@@ -2637,6 +2721,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         notifyOver = false
         log("通知显示完，回到看板")
         if (appMode == AppMode.DASHBOARD && !glassesPaused && linkState == LinkState.READY) pushDashboard(force = false, restartTimers = false)
+        watchPowerSave()
     }
 
     /** 通知正画在阅读的这一页上。 */
@@ -2646,6 +2731,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         notifyOverReader = false
         log("通知显示完，回到阅读")
         if (appMode == AppMode.READER && !glassesPaused && linkState == LinkState.READY) pushPage()
+        watchPowerSave()
     }
 
     /** 按右镜腿：关掉正显示着的通知（NimoGo 画的；眼镜自带的弹窗关不掉）。关掉了返回 true。 */
@@ -2670,6 +2756,7 @@ class ReaderService : Service(), NimoListener, AppHost {
             main.postDelayed(standbyRefresh, 300)
         }
         restoreHeadUp()
+        watchPowerSave()
     }
 
     /** 语音菜单正用抬头低头选着：这段时间里不把抬头显示开回去，否则一低头屏幕就灭。 */
@@ -3016,6 +3103,14 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (state == LinkState.DISCONNECTED) { memEngine.onGlassesLost(); headUpSuspended = false; notifyLit = false; autoBrightFilter.reset() }
         if (state == LinkState.READY && memEnabled && !memEngine.running) main.postDelayed({ memStartIfEnabled() }, 3_000)
         if (state == LinkState.READY) {
+            val quiet = quietLink
+            quietLink = false
+            if (quiet) {
+                // 只为推通知连上：不把上次的看板 / 阅读打开
+                log("节电：为通知连上，不打开原来的画面")
+                main.postDelayed({ if (linkState == LinkState.READY) replayOffline() }, 2_000)
+                updateNotification(); notifyUi(); return
+            }
             // 刚连上时眼镜还在初始化，立刻打开页面容易被忽略：
             // 等 1.2 秒再推送，4 秒后再强制补推一次，保证画面一定出来，不用手动刷新
             val toDash = showDashboardOnReady
@@ -3607,6 +3702,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         // 通知里显示页码；只在内容变化时更新，避免频繁刷新
         val t = "$pageNumber/$autoFlip/$glassesPaused/$appMode/$linkState/${activeApp?.status()}"
         if (t != lastNotifText) { lastNotifText = t; updateNotification() }
+        watchPowerSave()
     }
 
     // ---------- 前台通知 ----------

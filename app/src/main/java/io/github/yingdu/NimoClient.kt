@@ -185,6 +185,12 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         openGatt()
     }
 
+    /** 上次连接的眼镜地址（节电断开后，通知或手机上打开功能时用来再连）。 */
+    fun deviceAddress(): String? = device?.address
+
+    /** 丢掉还没发出去的画面。节电模式只为通知重连时用，免得一连上就把上次的看板又打开。 */
+    fun clearPending() { pending = null }
+
     fun disconnect() {
         wantConnected = false
         main.removeCallbacksAndMessages(null)
