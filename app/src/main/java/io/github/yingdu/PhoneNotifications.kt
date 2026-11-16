@@ -139,7 +139,7 @@ class PhoneNotificationService : NotificationListenerService() {
     private fun deliver(label: String, title: String, text: String, pkg: String?) {
         val svc = ReaderService.instance
         if (svc != null) { svc.onPhoneNotification(label, title, text, pkg = pkg); return }
-        val i = Intent(this, ReaderService::class.java).setAction(ReaderService.ACTION_NOTIFY)
+        val i = android.content.Intent(this, ReaderService::class.java).setAction(ReaderService.ACTION_NOTIFY)
             .putExtra("nApp", label).putExtra("nTitle", title).putExtra("nText", text).putExtra("nPkg", pkg)
         runCatching { startForegroundService(i) }
             .onFailure { ReaderService.instance?.log("通知来了，但拉不起服务：$it") }
