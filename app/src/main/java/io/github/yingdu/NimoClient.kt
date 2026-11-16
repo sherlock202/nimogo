@@ -192,10 +192,14 @@ class NimoClient(private val context: Context, private val listener: NimoListene
     /** 丢掉还没发出去的画面。节电模式只为通知重连时用，免得一连上就把上次的看板又打开。 */
     fun clearPending() { pending = null }
 
-    fun disconnect() {
+    /** displayOff：断开前先把息屏设成这个值（节电临时息屏要还回用户原来的开关）。null = 不额外改。 */
+    fun disconnect(displayOff: Boolean? = null) {
         wantConnected = false
         main.removeCallbacksAndMessages(null)
-        if (state == LinkState.READY && (blanked || darkHome)) {
+        if (displayOff != null && state == LinkState.READY) {
+            writeRaw(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_SET_PARAMETER, NimoProtocol.SET_DISPLAY_OFF, byteArrayOf(if (displayOff) 1 else 0), needsAck = false))
+            reportDisplayOff(displayOff)
+        } else if (state == LinkState.READY && (blanked || darkHome)) {
             blanked = false; darkHome = false
             writeRaw(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_SET_PARAMETER, NimoProtocol.SET_DISPLAY_OFF, byteArrayOf(0), needsAck = false))
             reportDisplayOff(false)

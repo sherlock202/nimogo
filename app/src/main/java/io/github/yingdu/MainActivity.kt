@@ -1815,7 +1815,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val s = service ?: return@Toggle
             s.powerSave = !s.powerSave
         }
-        c.addRow(Row("节电模式", "5 分钟没有任何显示就断开蓝牙。有通知再连上推送；断开后要在手机上打开功能才会再连").apply { accessory(saveToggle.root) }.root)
+        c.addRow(Row("节电模式", "没有显示就息屏，用的时候再亮。5 分钟后断开蓝牙，有通知再连上推送").apply { accessory(saveToggle.root) }.root)
         c.addRow(Row("和官方 app 切换", "眼镜同时只能连一个 app", chevron = true) { openSub(Sub.OFFICIAL) }.root)
         val bg = Row("后台运行", chevron = true) {
             val s = service ?: return@Row
