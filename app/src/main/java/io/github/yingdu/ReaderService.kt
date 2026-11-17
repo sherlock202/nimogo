@@ -353,7 +353,7 @@ class ReaderService : Service(), NimoListener, AppHost {
      */
     fun agentRelay(pkg: String, texts: List<String?>): Pair<Boolean, String> {
         if (pkg != agentRelayPkg.trim()) return false to ""
-        if (!agentEnabled || !agentRelayOn) return false to "是$agentName，但没开「收$agentName 的通知」"
+        if (!agentRelayOn) return false to "是$agentName，但没开「收$agentName 的通知」"
         val (n, body) = AgentInbox.parseRelay(*texts.toTypedArray()) ?: return false to "是$agentName，不是「NimoGo #编号：」开头，按普通通知处理"
         val c = agentCommands.firstOrNull { it.number == n } ?: return false to "#$n 不是这台手机发的命令，按普通通知处理"
         if (!agentReady) return false to "#$n：还没填仓库和令牌，写不回去"
@@ -394,7 +394,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         AgentMessageApp(this, object : AgentMessageApp.Env {
             override fun name() = agentName
             // 左单击回复等确认的那条：直接叫出「对 AI 代理说话」（它会先显示要确认的事）
-            override fun reply(number: Int) { if (agentEnabled && agentReady) openApp(agent) else closeApp() }
+            override fun reply(number: Int) { if (agentReady) openApp(agent) else closeApp() }
         }).also { m -> m.closeSelf = { if (activeApp === m) closeApp() } }
     }
 
@@ -446,7 +446,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     /** 查还开着的命令有没有新评论（有开着的命令时每分钟一次）。 */
     fun agentPollNow() {
         main.removeCallbacks(agentPoll)
-        if (!agentEnabled || !agentReady || agentPolling) return
+        if (!agentReady || agentPolling) return
         val now = System.currentTimeMillis()
         val todo = agentCommands.filter { it.open && now - it.at < AGENT_KEEP_MS }.map { it.number }
         if (todo.isEmpty()) return
@@ -494,19 +494,17 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     fun agentForget(n: Int) { agentCommands.removeAll { it.number == n }; agentSave(); notifyUi() }
 
-    /** 长按左镜腿：看书、NimoGo 看板上叫 AI 代理。官方主界面上没有长按。 */
+    /** 左长按：语音菜单里是上一项。不再用来叫 AI 代理（用语音菜单说「代理」）。 */
     override fun onLongPressLeft(): Boolean {
-        // 语音菜单开着：左长按是上一项（不叫 AI 代理，也不关菜单）
         if (activeApp === voiceMenu) { voiceMenu.previous(); return true }
         if (onOfficialHome()) { log("主界面上左长按：没有这个操作"); return true }
-        return callAgent("长按左镜腿")
+        return false
     }
 
     private fun callAgent(how: String): Boolean {
-        if (!agentEnabled) return false
+        if (!agentReady) { log("$agentName：还没填仓库和令牌（「AI 代理」）"); return false }
         if (prompting || activeApp === assist || activeApp === chat) { log("提词 / 场景助手 / 聊天开着：$how 不叫 $agentName"); return true }
         if (activeApp === agent) return true
-        if (!agentReady) { log("$agentName：还没填仓库和令牌（「AI 代理」）"); return false }
         log("$how：对 $agentName 说命令")
         openApp(agent)
         return true
@@ -711,7 +709,7 @@ class ReaderService : Service(), NimoListener, AppHost {
             assistGet("key").isEmpty() -> "先在场景助手设置里填大模型的 Key"
             else -> { openApp(chat); null }
         }
-        "agent" -> if (!agentEnabled || !agentReady) "先在手机上打开 AI 代理，并填好仓库和令牌" else { callAgent("语音菜单"); null }
+        "agent" -> if (!agentReady) "先在「AI 代理」里填好仓库和令牌" else { callAgent("语音菜单"); null }
         "memory" -> { memSetEnabled(true); closeApp(); popup("全天记忆", "已开始记"); null }
         "sights" -> { closeApp(); sightsCheck(manual = true); popup("景点介绍", "正在查附近"); null }
         "party" -> { openApp(party); null }
@@ -1266,7 +1264,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun run() {
             // 通知正盖在看板上：等它显示完再收起
             if (notifyOver) { main.postDelayed(this, 1_000); return }
-            hideDashboard("看板已自动收起")
+            // 到时间只收起看板，不关屏。关屏之后点镜腿会把看板亮回来，语音菜单就开不了。
+            hideDashboard("看板已自动收起", keepScreen = true)
         }
     }
     private val headDownHide: Runnable = object : Runnable {
@@ -1288,18 +1287,19 @@ class ReaderService : Service(), NimoListener, AppHost {
         get() = prefs.getBoolean("dashHomeDarkTest", false)
         set(v) { prefs.edit().putBoolean("dashHomeDarkTest", v).apply(); if (!v) client.lightHome(); notifyUi() }
 
-    private fun hideDashboard(why: String, headDown: Boolean = headIsDown) {
+    private fun hideDashboard(why: String, headDown: Boolean = headIsDown, keepScreen: Boolean = false) {
         if (appMode != AppMode.DASHBOARD || glassesPaused || linkState != LinkState.READY) return
         cancelDashTimers()
         glassesPaused = true
         headHidden = true
         notifyLit = false; main.removeCallbacks(reOffAfterNotify); restoreHeadUp()
         notifyOver = false; main.removeCallbacks(endNotifyOver)
-        if (dashHideMode == HIDE_HOME) {
-            // 退回主界面后就交给眼镜。抬头显示开着时，主界面被点亮会再叫回 NimoGo 的看板。
+        if (keepScreen || dashHideMode == HIDE_HOME) {
+            // 退回主界面，屏幕保持亮着。到时间收起走这里：关屏的话，下一次点镜腿会把看板亮回来，开不了语音菜单。
+            // 刚退出时眼镜会顺手报一次「主界面被点亮」，quitHomeAt 用来忽略那一次，避免看板马上又出现。
             quitHomeAt = android.os.SystemClock.uptimeMillis()
-            if (headDown && dashHomeDark) { client.quitToDarkHome(); log("$why（回主界面，低着头所以关屏；抬头再看）【测试】") }
-            else { client.quitCurrent(); log("$why（回主界面；抬头再看 NimoGo 看板）") }
+            if (!keepScreen && headDown && dashHomeDark) { client.quitToDarkHome(); log("$why（回主界面，低着头所以关屏；抬头再看）【测试】") }
+            else { client.quitCurrent(); log(if (keepScreen) "$why（看板收起，屏幕保持亮着）" else "$why（回主界面；抬头再看 NimoGo 看板）") }
         } else {
             screenOffByUs = true; client.screenOff(true)
             main.postDelayed(standbyRefresh, 300)
@@ -3539,9 +3539,10 @@ class ReaderService : Service(), NimoListener, AppHost {
         }
         if (appMode == AppMode.DASHBOARD) {
             when (input) {
-                // 抬头显示开着：左单击打开语音菜单（不用回到原生看板，也不用双击）。右单击翻到下一屏，左双击上一屏。
+                // 抬头显示开着：左单击打开语音菜单。右镜腿在这块看板上常常没反应，不靠它开菜单。
+                // 右单击仍翻到下一屏；抬头显示关着时右单击收起（关屏），左单击翻屏。
                 GlassesInput.CLICK_RIGHT -> if (!dashHeadWake) hideDashboard("右镜腿：收起看板") else dashFlip(1)
-                GlassesInput.DOUBLE_RIGHT -> callVoiceMenu("看板上右双击")
+                GlassesInput.DOUBLE_RIGHT -> if (!dashHeadWake) callVoiceMenu("看板上右双击") else dashFlip(1)
                 GlassesInput.CLICK_LEFT -> if (dashHeadWake) callVoiceMenu("看板上左单击") else dashFlip(1)
                 // 看板模式关着时左双击已经在上面打开场景助手；看板模式开着时这里按以前的：上一屏
                 GlassesInput.DOUBLE_LEFT -> dashFlip(-1)

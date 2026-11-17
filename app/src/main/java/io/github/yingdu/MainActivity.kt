@@ -1767,8 +1767,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val home = s.dashHideMode == ReaderService.HIDE_HOME
             howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时直接关屏，不回官方主界面。再按一下镜腿亮回来。看板显示时右单击关屏，左单击翻屏，左双击上一屏，右双击打开语音菜单。已经在官方主界面上时，点一下左镜腿（主界面被点亮也算）打开语音菜单。菜单里的项目在「我的 → 菜单设置」。" +
                 "官方 app 连着时眼镜的报告会发给官方 app，NimoGo 收不到，要先停止官方 app（「我的 › 和官方 app 切换」）。"
-                else if (home) "抬头显示开着：抬头显示 NimoGo 看板，不在原生看板上停留。看板显示时左单击打开语音菜单，右单击翻到下一屏，左双击上一屏。"
-                else "抬头显示开着：抬头亮起 NimoGo 看板，低头关屏。看板显示时左单击打开语音菜单，右单击翻到下一屏。"
+                else if (home) "抬头显示开着：抬头显示 NimoGo 看板。看板上左单击打开语音菜单，右单击翻到下一屏。到时间后看板退出，屏幕保持亮着，这时点左镜腿就能开语音菜单。"
+                else "抬头显示开着：抬头亮起 NimoGo 看板，低头关屏。看板上左单击打开语音菜单，右单击翻到下一屏。到时间后看板退出，屏幕保持亮着。"
             headToggle.set(s.dashHeadWake)
             headRow.titleV.text = "眼镜的抬头显示"
             headRow.desc(when {
@@ -3282,9 +3282,6 @@ class MainActivity : Activity(), ReaderService.UiListener {
         page.addView(state, lp(bottom = 8))
 
         val sw = listBox()
-        val onToggle = Toggle { service?.let { it.agentEnabled = !it.agentEnabled }; refreshNow() }
-        val onRow = Row("左镜腿叫出 AI 代理", "看书、NimoGo 看板上长按左镜腿。官方主界面上用语音菜单说「代理」").apply { accessory(onToggle.root) }
-        sw.addRow(onRow.root)
         val stickyToggle = Toggle { service?.let { it.agentSticky = !it.agentSticky }; refreshNow() }
         val stickyRow = Row("代理的消息一直显示", "不自动消失，按右镜腿才关；等确认的左单击直接回复").apply { accessory(stickyToggle.root) }
         sw.addRow(stickyRow.root)
@@ -3389,14 +3386,12 @@ class MainActivity : Activity(), ReaderService.UiListener {
                     })
                 }
             }
-            onToggle.set(s.agentEnabled)
             nameRow.value(s.agentName)
             repoRow.value(s.agentGet("repo").ifEmpty { "未填" })
             val t = s.agentGet("token"); tokenRow.value(if (t.isEmpty()) "未填" else "••••" + t.takeLast(4))
             labelRow.value(s.agentLabel)
             state.text = when {
-                !s.agentEnabled -> "没开。打开后，看书或 NimoGo 看板上长按左镜腿，或语音菜单说「代理」，就能对${s.agentName}说命令"
-                !s.agentReady -> "先填仓库和令牌"
+                !s.agentReady -> "填好仓库和令牌之后，语音菜单里说「代理」就能对${s.agentName}说命令"
                 s.agentError.isNotEmpty() -> "出错：${s.agentError}"
                 else -> "准备好了" + (if (s.agentCheckedAt > 0) "，上次查回复 " + java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date(s.agentCheckedAt)) else "")
             }
