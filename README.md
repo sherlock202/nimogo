@@ -80,8 +80,8 @@ Nimo 智能眼镜的非官方海外版伴侣 app：**场景助手**在面试、�
 
 **发布新版本（自动发到 Releases）**
 1. 改 `app/build.gradle.kts` 里的 `versionName`（和 `versionCode` 加一），在 `docs/release-notes.md` 里写这一版的说明，提交。
-2. 打标签并推送：`git tag v1.6.18 && git push origin main v1.6.18`。
-3. Actions 编好后会自动建一个 Release，附上 `NimoGo-v1.6.18.apk`。发布版必须用固定签名（上面第 4 步的 Secrets），没设置会报错停止。
+2. 打标签并推送：`git tag v1.6.19 && git push origin main v1.6.19`。
+3. Actions 编好后会自动建一个 Release，附上 `NimoGo-v1.6.19.apk`。发布版必须用固定签名（上面第 4 步的 Secrets），没设置会报错停止。
 
 **方法二：Android Studio**（必须用 Android Studio / Gradle）
 
@@ -251,7 +251,7 @@ releases/                   发布的安装包（下载请到 GitHub 的 Release
 - 全天记忆：转文字和总结由用户自己选择服务、填自己的 API Key；录音转好文字就删，手机上只留文字。
 - 景点介绍：默认关闭；打开后查询时把当前坐标发给你选的地图服务（高德或 Google）、把景点名发给百度百科 / 维基百科，不发给其他地方。
 - 检查更新：每天一次访问 GitHub API 和 jsDelivr 查版本、下载安装包（可以在「关于」里关掉），不带任何个人信息。
-- 数据来源：雅虎财经（行情、搜索，非官方接口）、微牛 Webull（美股盘前 / 盘后 / 夜盘，非官方接口）、Open-Meteo（天气、城市搜索）、BigDataCloud（反向地理编码）。
+- 数据来源：雅虎财经（行情、搜索，非官方接口）、微牛 Webull（美股盘前 / 盘后 / 夜盘，非官方接口）、Open-Meteo（日本气象厅天气预报、城市搜索）、BigDataCloud（反向地理编码）。
 
 ### 许可证
 

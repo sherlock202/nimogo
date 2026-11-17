@@ -174,8 +174,8 @@ object DashboardFormatter {
 }
 
 /**
- * 联网取数据。股票用雅虎财经的公开行情接口（非官方，可能延迟或偶尔失效），
- * 天气和城市坐标用 Open-Meteo（免费，不需要 API Key）。都在后台线程调用。
+ * 联网取数据。股票用雅虎财经的公开行情接口（非官方，可能延迟或偶尔失效）。
+ * 城市坐标用 Open-Meteo 地理编码。天气用同一家转的日本气象厅（JMA）预报，免费、不需要 API Key。都在后台线程调用。
  */
 object DashboardData {
     private fun get(url: String): String {
@@ -210,7 +210,7 @@ object DashboardData {
     /** 现在的天气 + 接下来 12 小时 + 今明后三天（给「天气预报」卡片用）。 */
     fun weather(lat: Double, lon: Double): Weather {
         val j = org.json.JSONObject(get(
-            "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon" +
+            "https://api.open-meteo.com/v1/jma?latitude=$lat&longitude=$lon" +
                 "&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code" +
                 "&hourly=temperature_2m,weather_code&timezone=auto&forecast_days=3"))
         val cur = j.getJSONObject("current")

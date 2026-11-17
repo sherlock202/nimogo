@@ -49,10 +49,10 @@ class ReaderService : Service(), NimoListener, AppHost {
         private const val DAY_MS = 24 * 3600_000L
         /** 关屏收起时，眼镜上待机的第一屏多久检查一次要不要更新。 */
         const val STANDBY_REFRESH_MS = 30_000L
-        /** 节电模式：连续这么久眼镜上没有任何显示，就断开蓝牙。 */
-        const val POWER_SAVE_IDLE_MS = 5 * 60_000L
-        /** 节电模式：没有显示后多久息屏（退出页面时会先关再开，要等那一下结束）。 */
-        const val POWER_SAVE_BLANK_MS = 2_000L
+        /** 节电模式：没有显示后多久息屏。不断开蓝牙，来通知或按左镜腿再亮。 */
+        const val POWER_SAVE_BLANK_MS = 2 * 60_000L
+        /** 看板开着时，天气最多这么久取一次。 */
+        const val WEATHER_INTERVAL_MS = 4 * 60 * 60_000L
         const val OFFLINE_MAX_AGE_MS = 120_000L
         /** 全天记忆：一直没转成文字的录音最多留多久（之后删掉，不在手机上长期留录音）。 */
         const val PENDING_KEEP_MS = 24 * 3600_000L
@@ -1043,6 +1043,7 @@ class ReaderService : Service(), NimoListener, AppHost {
                 if (v) {
                     // 没连着眼镜时打开：不能停在"收起"状态（那样连上后不显示、抬头也叫不回来），连上时自然会显示
                     if (linkState == LinkState.READY) resumeGlasses() else { glassesPaused = false; headHidden = false }
+                    refreshDashboard(forceWeather = true)
                 }
                 else if (!glassesPaused) pauseGlasses()
             }
@@ -1382,6 +1383,8 @@ class ReaderService : Service(), NimoListener, AppHost {
     var dashUpdated = ""; private set
     private var dashPage = 0
     private var lastWeatherAt = 0L
+    /** 上次尝试取天气的时间。失败也记下，避免看板每分钟刷新时反复请求。 */
+    private var lastWeatherTry = 0L
     private var lastPushedDash = ""
     private var refreshing = false
 
@@ -1408,7 +1411,7 @@ class ReaderService : Service(), NimoListener, AppHost {
                 CardContent.stocks(stockList().map { bySym[it] ?: Quote(it, null, null) })
             }
             CardType.AGENDA -> CardContent.agenda(calendarEvents, todos.items, now, agendaLimit)
-            CardType.FORECAST -> weather?.let { CardContent.forecast(it.hours, it.days) } ?: emptyList()
+            CardType.FORECAST -> shownWeather()?.let { CardContent.forecast(it.hours, it.days) } ?: emptyList()
             CardType.COUNTDOWN -> CardContent.countdown(c.text, now)
             CardType.CLOCKS -> CardContent.clocks(c.text, now)
             CardType.FACE -> java.util.Calendar.getInstance().let {
@@ -1438,7 +1441,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         // 不显示更新时间：眼镜顶部的状态栏已经有时间了
         CardType.STOCKS -> CardHead("stock", c.name, if (stocksOnly && rows.size > DashboardImage.ROWS) "${rows.size} 只" else "")
         CardType.AGENDA -> CardHead("cal", c.name, if (rows.isEmpty()) "" else "${rows.size} 项")
-        CardType.FORECAST -> CardHead(DashboardImage.weatherIcon(weather?.desc), c.name, dashCity)
+        CardType.FORECAST -> CardHead(DashboardImage.weatherIcon(shownWeather()?.desc), c.name, if (dashEnabled) dashCity else "")
         CardType.COUNTDOWN -> CardHead("flag", c.name)
         CardType.CLOCKS -> CardHead("globe", c.name)
         CardType.FACE -> CardHead("clock", c.name)
@@ -1534,8 +1537,17 @@ class ReaderService : Service(), NimoListener, AppHost {
         }
     }
 
-    /** 后台刷新行情（每次）和天气（最多 30 分钟一次）。 */
-    /** 后台刷新行情（每次）和天气（最多 30 分钟一次；开了自动定位会先重新定位）。 */
+    /** 看板开着才取天气。打开时取一次，之后最多 4 小时一次；手动刷新不受这个间隔限制。 */
+    private fun weatherDue(force: Boolean): Boolean {
+        if (!dashEnabled) return false
+        if (force) return true
+        return System.currentTimeMillis() - lastWeatherTry >= WEATHER_INTERVAL_MS
+    }
+
+    /** 使用看板关着时不显示天气。 */
+    private fun shownWeather(): Weather? = if (dashEnabled) weather else null
+
+    /** 后台刷新行情（每次）。天气只在看板开着、而且到了 4 小时间隔（或手动刷新）时取。 */
     fun refreshDashboard(forceWeather: Boolean = false) {
         steps.refresh()
         sightsCardRefresh(force = forceWeather)
@@ -1544,8 +1556,7 @@ class ReaderService : Service(), NimoListener, AppHost {
             val ev = runCatching { CalendarReader.upcoming(this) }.getOrDefault(emptyList())
             main.post { if (ev != calendarEvents) { calendarEvents = ev; if (appMode == AppMode.DASHBOARD) pushDashboard(force = false) } }
         }
-        val weatherDue = forceWeather || System.currentTimeMillis() - lastWeatherAt > 30 * 60_000L
-        if (weatherDue) {
+        if (weatherDue(forceWeather)) {
             if (autoLocate) locate() else if (!dashLat.isNaN()) fetchWeather(dashLat, dashLon)
         }
         if (refreshing) return
@@ -1566,13 +1577,19 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     private fun fetchWeather(lat: Double, lon: Double) {
+        if (!dashEnabled) return
+        lastWeatherTry = System.currentTimeMillis()
         io.execute {
-            val w = runCatching { DashboardData.weather(lat, lon) }.getOrNull()
+            val result = runCatching { DashboardData.weather(lat, lon) }
             main.post {
-                if (w == null) { log("天气获取失败"); return@post }
+                val w = result.getOrNull()
+                if (w == null) {
+                    log("天气获取失败：${result.exceptionOrNull()?.message ?: "没有数据"}")
+                    return@post
+                }
                 weather = w
                 lastWeatherAt = System.currentTimeMillis()
-                if (appMode == AppMode.DASHBOARD) pushDashboard(force = false)
+                if (appMode == AppMode.DASHBOARD && dashEnabled) pushDashboard(force = false)
                 notifyUi()
             }
         }
@@ -1672,7 +1689,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     fun dashboardPreview(): Pair<String, String> {
         val screens = dashScreens()
         if (dashPage >= screens.size) dashPage = 0
-        val head = DashboardImage.header(java.util.Calendar.getInstance(), steps.steps, dashCity, weather,
+        val head = DashboardImage.header(java.util.Calendar.getInstance(), steps.steps, dashCity, shownWeather(),
             GlassesFonts.text(glassesFontPx), 10_000)
         val status = head + if (screens.size > 1) "  ${dashPage + 1}/${screens.size}" else ""
         return status to DashboardFormatter.body(screens[dashPage], charsPerLine)
@@ -1687,7 +1704,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     fun dashboardBitmap(): android.graphics.Bitmap {
         val screens = dashScreens()
         val p = dashPage.coerceIn(0, screens.size - 1)
-        return DashboardImage.renderBitmap(java.util.Calendar.getInstance(), steps.steps, dashCity, weather, screens[p], p, screens.size, glassesFontPx)
+        return DashboardImage.renderBitmap(java.util.Calendar.getInstance(), steps.steps, dashCity, shownWeather(), screens[p], p, screens.size, glassesFontPx)
     }
 
     private fun pushDashboard(force: Boolean, restartTimers: Boolean = true) {
@@ -1725,7 +1742,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private fun renderDash(): ByteArray {
         val screens = dashScreens()
         val sc = screens[dashPage.coerceIn(0, screens.size - 1)]
-        return DashboardImage.render(java.util.Calendar.getInstance(), steps.steps, dashCity, weather,
+        return DashboardImage.render(java.util.Calendar.getInstance(), steps.steps, dashCity, shownWeather(),
             sc, dashPage, screens.size, glassesFontPx)
     }
 
@@ -1758,7 +1775,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         client.page = displayPage
         powerSaveBlanked = prefs.getBoolean("powerSaveBlanked", false)
         if (prefs.contains("displayOffUser")) userDisplayOff = prefs.getBoolean("displayOffUser", false)
-        if (appMode == AppMode.DASHBOARD) { refreshDashboard(forceWeather = true); restartDashTimer() }
+        if (appMode == AppMode.DASHBOARD) { refreshDashboard(forceWeather = dashEnabled); restartDashTimer() }
         prefs.getString("lastBook", null)?.let { openBook(Uri.parse(it), fromRestore = true) }
         pomodoro.restore()
         workout.restore()
@@ -1858,17 +1875,15 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     /**
-     * 节电：开着时，眼镜上没有显示就息屏（使用或关掉节电时还回原来的息屏开关）。
-     * 连续 5 分钟仍然没有任何显示就真正断开（不再自动重连）。
-     * 有要转发的通知时再连上、推送；在手机上打开功能也会再连。镜腿按键在断开后到不了手机。
-     * 点了「断开」或交给官方 app（holdOff）之后，通知也不再自动连上。
+     * 节电：开着时不断开蓝牙。眼镜上没有显示大约 2 分钟后息屏，来通知或按左镜腿再亮回原来的息屏开关。
+     * 点了「断开」或交给官方 app（holdOff）之后，通知不再自动连上。
      */
     var powerSave: Boolean
         get() = prefs.getBoolean("powerSave", false)
         set(v) {
             prefs.edit().putBoolean("powerSave", v).apply()
             if (v) userSkipBlank = false
-            log(if (v) "节电模式开：没有显示就息屏，5 分钟后断开蓝牙" else "节电模式关")
+            log(if (v) "节电模式开：没有显示 2 分钟后息屏，不断开蓝牙" else "节电模式关")
             watchPowerSave()
             notifyUi()
         }
@@ -1877,13 +1892,6 @@ class ReaderService : Service(), NimoListener, AppHost {
     private var holdOff = false
     /** 这次重连只为了推通知，连上后不要把上次的画面打开。 */
     private var quietLink = false
-    private var powerIdleArmed = false
-    private val powerSaveCut = Runnable {
-        powerIdleArmed = false
-        if (!powerSave || holdOff || linkState != LinkState.READY || showingOnGlasses()) return@Runnable
-        log("节电：5 分钟没有任何显示，断开蓝牙。有通知会再连上再推送；要在眼镜上打开功能，请在手机上操作")
-        endLink(keepPowerSaveScreen = true)
-    }
 
     /** 眼镜上现在有没有画面（看板、阅读、全屏功能，或一条还没消失的通知）。 */
     private fun showingOnGlasses() = powerWake || notifyLit || notifyOver || notifyOverReader || !glassesPaused
@@ -1908,23 +1916,17 @@ class ReaderService : Service(), NimoListener, AppHost {
         applyingPowerSaveScreen = true
         client.screenOff(true)
         applyingPowerSaveScreen = false
-        log("节电：没有显示，息屏。打开功能或来通知时再亮")
+        log("节电：没有显示，息屏。来通知或按左镜腿再亮")
     }
 
     private fun watchPowerSave() {
         val idle = powerSave && !holdOff && linkState == LinkState.READY && !showingOnGlasses()
         if (!idle) {
-            powerIdleArmed = false
             powerBlankArmed = false
-            main.removeCallbacks(powerSaveCut)
             main.removeCallbacks(powerSaveBlank)
             if (showingOnGlasses() || !powerSave || holdOff) userSkipBlank = false
             if (powerSaveBlanked && (showingOnGlasses() || !powerSave || holdOff)) releasePowerSaveScreen()
             return
-        }
-        if (!powerIdleArmed) {
-            powerIdleArmed = true
-            main.postDelayed(powerSaveCut, POWER_SAVE_IDLE_MS)
         }
         if (powerSaveBlanked && displayOff == false && !powerBlankArmed) {
             powerBlankArmed = true
@@ -1948,13 +1950,11 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     /**
-     * 断开。keepPowerSaveScreen：节电到点断开时屏幕保持息屏（省着显示）。
-     * 用户点断开、交给官方 app、服务退出时，先把息屏还回用户原来的开关。
+     * 断开。keepPowerSaveScreen 为 false 时，先把节电临时息屏还回用户原来的开关。
+     * 用户点断开、交给官方 app、服务退出都走这条。
      */
     private fun endLink(keepPowerSaveScreen: Boolean) {
-        main.removeCallbacks(powerSaveCut)
         main.removeCallbacks(powerSaveBlank)
-        powerIdleArmed = false
         powerBlankArmed = false
         if (!keepPowerSaveScreen && powerSaveBlanked) {
             val off = userDisplayOff == true
@@ -2010,9 +2010,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     /** 把眼镜交给官方 app：停掉翻译、收起画面、断开连接（不自动重连）。 */
     fun handOffToOfficial() {
         holdOff = true
-        main.removeCallbacks(powerSaveCut)
         main.removeCallbacks(powerSaveBlank)
-        powerIdleArmed = false
         powerBlankArmed = false
         stopAutoFlip()
         client.quitCurrent()
@@ -2684,7 +2682,7 @@ class ReaderService : Service(), NimoListener, AppHost {
                 offlineQueue.addLast(OfflineNotice(app, title, text, pkg, System.currentTimeMillis()))
                 while (offlineQueue.size > OFFLINE_MAX) offlineQueue.removeFirst()
                 log("眼镜没连着，通知先存着（${offlineQueue.size} 条），连上后再弹")
-                // 点了「断开」或交给官方 app（holdOff）就不再自动连。其余断开（节电、连不上停下）来通知就在后台重连再推。
+                // 点了「断开」或交给官方 app（holdOff）就不再自动连。其余断开（连不上停下）来通知就在后台重连再推。
                 if (!holdOff) relink("有通知", quiet = true)
             }
             return
@@ -3339,6 +3337,12 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     override fun onInput(input: GlassesInput) {
+        if (powerSaveBlanked && input == GlassesInput.CLICK_LEFT) {
+            log("节电：左镜腿，恢复显示")
+            releasePowerSaveScreen()
+            notifyUi()
+            return
+        }
         // 排查"抬头不显示看板"：收起状态下抬头时，把当时的状态记下来
         if (input == GlassesInput.HEAD_UP && glassesPaused)
             log("抬头时：" + (activeApp?.let { "全屏功能「${it.title}」开着，" } ?: "") + "模式 ${appMode.name}，" +
