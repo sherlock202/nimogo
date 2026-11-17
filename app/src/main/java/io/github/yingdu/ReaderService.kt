@@ -144,11 +144,11 @@ class ReaderService : Service(), NimoListener, AppHost {
         notifyUi()
     }
 
-    /** 提词器上的场景助手、代理消息：长按右镜腿不退出。阅读长按就是退出，不再把这一页发回去。 */
-    override fun keepPrompterOnLongPress(): Boolean = !glassesPaused && holdsPrompter
+    /** 代理消息：长按右镜腿不退出，退出后会再打开。场景助手的长按就是退出，并结束这一场。阅读长按也是退出。 */
+    override fun keepPrompterOnLongPress(): Boolean = !glassesPaused && activeApp === agentMsg
 
-    /** 只能用镜腿单击操作、长按也不退出的全屏功能：场景助手、代理的消息（都在提词器上）。语音菜单在看板上，不在这里。 */
-    private val holdsPrompter get() = activeApp.let { it != null && (it === assist || it === agentMsg) }
+    /** 只能用提词器的全屏功能：场景助手、聊天、代理的消息。语音菜单在看板上，不在这里。 */
+    private val holdsPrompter get() = activeApp.let { it != null && (it === assist || it === chat || it === agentMsg) }
 
     override fun onPrompterRestore() {
         if (!glassesPaused && (appMode == AppMode.READER || holdsPrompter)) {
@@ -438,7 +438,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     /** 提词（演讲模式、语音跟读）、场景助手开着时不打扰：代理的回复先不显示、也不算看过，结束后再提醒。 */
-    private val agentQuiet get() = quietWhileReading && (prompting || assistOnGlasses)
+    private val agentQuiet get() = quietWhileReading && (prompting || assistOnGlasses || chatOnGlasses)
     private var agentPolling = false
     private val agentPoll = Runnable { agentPollNow() }
     fun agentPollSoon(delayMs: Long = 3_000) { main.removeCallbacks(agentPoll); main.postDelayed(agentPoll, delayMs) }
@@ -505,7 +505,7 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     private fun callAgent(how: String): Boolean {
         if (!agentEnabled) return false
-        if (prompting || activeApp === assist) { log("提词 / 场景助手开着：$how 不叫 $agentName"); return true }
+        if (prompting || activeApp === assist || activeApp === chat) { log("提词 / 场景助手 / 聊天开着：$how 不叫 $agentName"); return true }
         if (activeApp === agent) return true
         if (!agentReady) { log("$agentName：还没填仓库和令牌（「AI 代理」）"); return false }
         log("$how：对 $agentName 说命令")
@@ -666,6 +666,11 @@ class ReaderService : Service(), NimoListener, AppHost {
         "clock" -> { openApp(clock); null }
         "captions" -> if (linkState != LinkState.READY || !asrReady()) "字幕还不能开：先设好转文字" else { openApp(captions); null }
         "assist" -> if (linkState != LinkState.READY || !assistAsrReady()) "场景助手还不能开始" else { callAssist("语音菜单"); null }
+        "chat" -> when {
+            linkState != LinkState.READY -> "先连上眼镜"
+            assistGet("key").isEmpty() -> "先在场景助手设置里填大模型的 Key"
+            else -> { openApp(chat); null }
+        }
         "agent" -> if (!agentEnabled || !agentReady) "先在手机上打开 AI 代理，并填好仓库和令牌" else { callAgent("语音菜单"); null }
         "memory" -> { memSetEnabled(true); closeApp(); popup("全天记忆", "已开始记"); null }
         "sights" -> { closeApp(); sightsCheck(manual = true); popup("景点介绍", "正在查附近"); null }
@@ -745,6 +750,73 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun translateTo(): String? = if (assistTranslateOn(assist.session?.scene?.id ?: assistSceneId)) assistTrTo else null
         override fun translate(text: String, from: String, to: String, done: (Result<String>) -> Unit) = assistTranslate(text, from, to, done)
     }) }
+
+    private var chatWantsMic = false
+    val chat: ChatApp by lazy { ChatApp(this, object : ChatApp.Env {
+        override fun llm() = listOf(assistPreset.id, assistBase(), assistGet("key"), assistLiveModel())
+        override fun setMic(on: Boolean) { chatWantsMic = on; glassesMic(on) }
+        override fun asrReady() = assistAsrReady()
+        override fun transcribe(pcm: ShortArray, done: (Result<String>) -> Unit) {
+            val scene = assistScene
+            val online = assistOnlineAsr(scene)
+            val lang = scene.lang
+            val localLang = if (lang == "auto" || (assistGet("asrAuto") == "1" && lang == "zh")) "" else lang
+            val useJa = localLang == "ja" && assistJaOn && JaAsr.ready()
+            io.execute {
+                val notes = ArrayList<String>()
+                val r = runCatching {
+                    val loud = AudioClean.process(pcm, AudioClean.Mode.NONE, floor = 0.2f, boost = true)
+                    fun offline() = if (useJa) JaAsr.transcribe(loud) else LocalAsr.transcribe(loud, localLang)
+                    if (online != null) {
+                        try {
+                            SpeechToText.transcribe(online.first, online.second, online.third, if (lang == "auto") "" else lang,
+                                "chat.wav", "audio/wav", OggOpus.wav(loud), null)
+                        } catch (e: Exception) {
+                            if (!useJa && !LocalAsr.ready()) throw e
+                            notes.add("聊天：在线转文字失败（${e.message?.take(80)}），这句改用离线")
+                            offline()
+                        }
+                    } else offline()
+                }
+                main.post {
+                    notes.forEach { log(it) }
+                    done(r)
+                }
+            }
+        }
+    }) }
+
+    /** 录音用的转文字：和场景助手同一套（离线或在线），在后台线程里一直等到转完。 */
+    fun recTranscribePcm(pcm: ShortArray): String {
+        val scene = assistScene
+        val online = assistOnlineAsr(scene)
+        val lang = scene.lang
+        val localLang = if (lang == "auto" || (assistGet("asrAuto") == "1" && lang == "zh")) "" else lang
+        val useJa = localLang == "ja" && assistJaOn && JaAsr.ready()
+        val loud = AudioClean.process(pcm, AudioClean.Mode.NONE, floor = 0.2f, boost = true)
+        fun offline() = if (useJa) JaAsr.transcribe(loud) else LocalAsr.transcribe(loud, localLang)
+        if (online == null) return offline()
+        return try {
+            SpeechToText.transcribe(online.first, online.second, online.third, if (lang == "auto") "" else lang,
+                "rec.wav", "audio/wav", OggOpus.wav(loud), null)
+        } catch (e: Exception) {
+            if (!useJa && !LocalAsr.ready()) throw e
+            offline()
+        }
+    }
+
+    var recSource: String
+        get() = prefs.getString("recSource", "phone") ?: "phone"
+        set(v) { prefs.edit().putString("recSource", if (v == "glasses") "glasses" else "phone").apply(); notifyUi() }
+    private var recWantsMic = false
+    var recPhoneOn = false
+    val tape: Tape by lazy {
+        Tape(java.io.File(filesDir, "recordings"), main, { log(it) }, { notifyUi() },
+            { linkState == LinkState.READY },
+            { on -> recWantsMic = on; glassesMic(on) },
+            { on -> recPhoneOn = on; if (inForeground) startInForeground() },
+            { pcm -> recTranscribePcm(pcm) })
+    }
 
     // ---- 即时翻译（场景助手的加强功能；每个场景单独开关，翻成什么语言是共用的设置） ----
 
@@ -1053,7 +1125,7 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     /**
      * 系统看板（官方主界面）上、并且看板模式开着：左镜腿按以前的（左单击叫回看板，看板上左双击上一屏）。
-     * 看板模式关着时，只有系统看板本身用新的：左单击语音菜单，左双击场景助手，左三击 AI 代理。
+     * 看板模式关着时，只有系统看板本身用新的：左单击语音菜单，左双击场景助手。
      * 锻炼、番茄钟等功能一旦打开，按键只跟那个功能，这里不再插手。
      */
     private val dashLegacyLeft get() = dashEnabled && baseMode == AppMode.DASHBOARD
@@ -1078,8 +1150,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         glassesPaused = true
         headHidden = false
         if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
-        // 收起时眼镜有时一直挂着「正在退出」，要关一下屏再开才好（2026-10-26）：退出后自己关屏、再开屏一次（息屏模式开着时不动）
-        client.quitCurrent(flash = displayOff != true)
+        // 回到官方主界面，屏幕保持亮着。
+        client.quitCurrent(flash = false)
         client.lightHome()
         log("已收起眼镜上的显示")
         updateNotification()
@@ -1872,6 +1944,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         runCatching { unregisterReceiver(timeReceiver) }
         main.removeCallbacks(dailyTimeSync)
         instance = null
+        if (recWantsMic || recPhoneOn) tape.stop()
         activeApp?.onClose()
         assistMediaOff()
         OfflineTranslate.closeAll()
@@ -2614,6 +2687,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private val prompting get() = readingOnGlasses && (speechModeOn || followOn)
     /** 场景助手开着（和提词一样不打扰）。 */
     private val assistOnGlasses get() = activeApp === assist && !glassesPaused && linkState == LinkState.READY
+    private val chatOnGlasses get() = activeApp === chat && !glassesPaused && linkState == LinkState.READY
 
     fun onPhoneNotification(app: String, title: String, text: String, litMs0: Long = -1, fit: Boolean = false, pkg: String? = null) {
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
@@ -2629,7 +2703,14 @@ class ReaderService : Service(), NimoListener, AppHost {
             return
         }
         val litMs = if (litMs0 > 0) litMs0 else notifySeconds * 1000L
-        if (quietWhileReading && (prompting || assistOnGlasses)) { log((if (prompting) "提词中" else "场景助手开着") + "，不弹通知：$app" + if (title.isNotEmpty() && title != app) " · $title" else ""); return }
+        if (quietWhileReading && (prompting || assistOnGlasses || chatOnGlasses)) {
+            log((when {
+                prompting -> "提词中"
+                chatOnGlasses -> "聊天开着"
+                else -> "场景助手开着"
+            }) + "，不弹通知：$app" + if (title.isNotEmpty() && title != app) " · $title" else "")
+            return
+        }
         if (linkState != LinkState.READY) {
             // 眼镜重连期间来的通知先存着，连上后再弹（只留最近 5 条、2 分钟内的）
             if (!fit) {
@@ -3256,28 +3337,44 @@ class ReaderService : Service(), NimoListener, AppHost {
     private fun onOfficialHome() = glassesPaused && activeApp == null && client.enteredAppId() == null
 
     /**
-     * 主界面上左镜腿只报单击和双击，不报长按。点一下等 400ms：没有后续就是单击（语音菜单）；
-     * 再点一次再等 400ms，没有第三次就是双击（场景助手）；400ms 内第三下打开 AI 代理。
+     * 主界面上左镜腿：点一下等 400ms 是单击（语音菜单）；再点一下马上打开场景助手。
+     * 同一次点按会先报「主界面被点亮」再报左单击，这两下只算一次。
      */
     private var homeLeftClicks = 0
+    private var homeTapAt = 0L
     private val homeLeftFire = Runnable {
-        val n = homeLeftClicks
         homeLeftClicks = 0
         val app = activeApp
         if (app != null) {
             log("${app.title} 已打开，左键交给这个功能，不叫菜单")
-            app.onInput(if (n >= 2) GlassesInput.DOUBLE_LEFT else GlassesInput.CLICK_LEFT)
+            app.onInput(GlassesInput.CLICK_LEFT)
             return@Runnable
         }
         if (!onOfficialHome()) {
             log("已经不在系统看板，左键不叫菜单")
             return@Runnable
         }
-        when {
-            n >= 3 -> callAgent("主界面上左三击")
-            n == 2 -> callAssist("主界面上左双击")
-            n == 1 -> callVoiceMenu("主界面上左单击")
+        callVoiceMenu("主界面上左单击")
+    }
+
+    /** 主界面上的一次点按。fromDouble：眼镜直接报了左双击，马上打开场景助手。紧挨着的「点亮」和「单击」只算一下。 */
+    private fun noteHomeTap(fromDouble: Boolean) {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (!fromDouble && homeLeftClicks > 0 && now - homeTapAt < 160) {
+            log("主界面：同一次点按，不重复计数")
+            return
         }
+        homeTapAt = now
+        main.removeCallbacks(homeLeftFire)
+        if (fromDouble || homeLeftClicks >= 1) {
+            homeLeftClicks = 0
+            log("主界面左键第 2 下：打开场景助手")
+            callAssist("主界面上左双击")
+            return
+        }
+        homeLeftClicks = 1
+        log("主界面左键第 1 下")
+        main.postDelayed(homeLeftFire, 400)
     }
 
     override fun onInput(input: GlassesInput) {
@@ -3298,11 +3395,18 @@ class ReaderService : Service(), NimoListener, AppHost {
             stopAutoFlip()
             if (followOn) stopFollow("眼镜上长按退出了", push = false)
             if (appMode == AppMode.DASHBOARD) cancelDashTimers()
+            val ending = activeApp
+            val endTalk = ending === assist || ending === chat
+            if (endTalk) {
+                ending?.onClose()
+                activeApp = null
+                log(if (ending === assist) "场景助手：右镜腿长按退出，这一场结束" else "聊天：右镜腿长按退出")
+            }
             glassesPaused = true
             main.removeCallbacks(restoreCheck)
             quitHomeAt = android.os.SystemClock.uptimeMillis()
             exitLockUntil = quitHomeAt + 2_000
-            val reading = baseMode == AppMode.READER && activeApp == null && !readFromMenu
+            val reading = !endTalk && baseMode == AppMode.READER && activeApp == null && !readFromMenu
             readFromMenu = false
             if (reading) {
                 screenOffByUs = true
@@ -3311,10 +3415,14 @@ class ReaderService : Service(), NimoListener, AppHost {
                 log("阅读已退出：关屏。开屏后停在主界面，要接着读在手机上点「恢复显示」")
             } else {
                 if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
+                else if (displayOff != true) main.postDelayed({
+                    if (linkState == LinkState.READY && glassesPaused && displayOff != true && !screenOffByUs) client.screenOff(false)
+                }, 700)
                 headHidden = appMode == AppMode.DASHBOARD
-                if (displayOff != true) client.clearExitOverlay()
-                log(if (headHidden) "眼镜上已退出，清掉「正在退出」。" + (if (headWakeOn) "抬头、" else "") + "点一下镜腿或在手机上点「显示看板」再看"
-                    else "眼镜上已退出${activeApp?.title ?: "显示"}，清掉「正在退出」。要再看在手机上点「恢复显示」")
+                log(if (ending === assist) "场景助手已结束，回到主界面，屏幕保持亮着"
+                    else if (ending === chat) "聊天已结束，回到主界面，屏幕保持亮着"
+                    else if (headHidden) "眼镜上已退出，回到主界面，屏幕保持亮着。" + (if (headWakeOn) "抬头、" else "") + "点一下镜腿或在手机上点「显示看板」再看"
+                    else "眼镜上已退出${activeApp?.title ?: "显示"}，回到主界面，屏幕保持亮着。要再看在手机上点「恢复显示」")
             }
             updateNotification()
             notifyUi()
@@ -3327,16 +3435,14 @@ class ReaderService : Service(), NimoListener, AppHost {
             app.onInput(input)
             return
         }
-        // 系统看板（官方主界面）：抬头显示关着时，左单击打开语音菜单（第一项就是看板），左长按打开看板。
-        // 抬头显示开着、并且使用看板：左单击仍叫回看板。左双击打开场景助手，左三击打开 AI 代理。
-        // 左长按和右镜腿在主界面上眼镜常常不上报。
-        if ((!dashLegacyLeft || !dashHeadWake) && onOfficialHome() && (input == GlassesInput.CLICK_LEFT || input == GlassesInput.DOUBLE_LEFT)) {
-            homeLeftClicks = if (input == GlassesInput.DOUBLE_LEFT) maxOf(homeLeftClicks, 2) else homeLeftClicks + 1
-            main.removeCallbacks(homeLeftFire)
-            if (homeLeftClicks >= 3) {
-                homeLeftClicks = 0
-                callAgent("主界面上左三击")
-            } else main.postDelayed(homeLeftFire, 400)
+        // 系统看板（官方主界面）：左双击打开场景助手。抬头显示关着时，左单击打开语音菜单（第一项就是看板），左长按打开看板。
+        // 抬头显示开着、并且使用看板：左单击仍叫回看板。左长按和右镜腿在主界面上眼镜常常不上报。
+        if (onOfficialHome() && input == GlassesInput.DOUBLE_LEFT) {
+            noteHomeTap(true)
+            return
+        }
+        if ((!dashLegacyLeft || !dashHeadWake) && onOfficialHome() && input == GlassesInput.CLICK_LEFT) {
+            noteHomeTap(false)
             return
         }
         // 看书、看板上眼镜会单独报左双击（单击仍翻页 / 上一页）：双击打开场景助手
@@ -3347,8 +3453,12 @@ class ReaderService : Service(), NimoListener, AppHost {
             GlassesInput.HOME_WAKE -> {
                 headIsDown = false
                 if (dashAtHome) { client.lightHome(); return }
-                // 抬头显示关着：短按是菜单，长按才开看板。主界面被点亮不要再把看板叫出来。
-                if (!dashHeadWake) { log("抬头显示关着：主界面亮起不自动打开看板"); return }
+                // 抬头显示关着：点一下主界面就是单击（眼镜常常不另报左单击）。用来开菜单。
+                if (!dashHeadWake) {
+                    if (onOfficialHome()) noteHomeTap(false)
+                    else log("抬头显示关着：主界面亮起，不在系统看板上")
+                    return
+                }
                 // 官方主界面被点亮了（点了一下镜腿）：看板是自动收起/被眼镜退出的，就叫回来
                 // 弹通知时是我们自己在主界面上开的屏（眼镜自带弹窗方式），不算用户点亮
                 if (notifyLit) { log("弹通知时主界面亮了，不叫回看板"); return }
@@ -3383,8 +3493,10 @@ class ReaderService : Service(), NimoListener, AppHost {
                 return
             }
             else -> if (glassesPaused) {
-                // 抬头显示关着、人在官方主界面：单击已经交给菜单，不要再因点亮主界面把看板打开。
-                if (!dashHeadWake && onOfficialHome()) return
+                if (!dashHeadWake && onOfficialHome()) {
+                    if (input == GlassesInput.LONG_PRESS) showNimoDashboard("主界面上长按：显示看板")
+                    return
+                }
                 // 官方主界面上的左单击、左双击已经在上面交给语音菜单和场景助手，不会走到这里。
                 // 这里是页面还开着、只是关了屏：点镜腿直接把看板亮回来（右镜腿在主界面上通常不报）。
                 val click = input == GlassesInput.CLICK_LEFT || input == GlassesInput.CLICK_RIGHT ||
@@ -3527,14 +3639,16 @@ class ReaderService : Service(), NimoListener, AppHost {
     private var captionsWantMic = false
     private fun glassesMic(on: Boolean) {
         if (on) client.micStart()
-        else if (!memWantsMic && !captionsWantMic && !followWantsMic && !assistWantsMic && !agentWantsMic && !menuWantsMic && !navWantsMic) client.micStop()
+        else if (!memWantsMic && !captionsWantMic && !followWantsMic && !assistWantsMic && !chatWantsMic && !agentWantsMic && !menuWantsMic && !navWantsMic && !recWantsMic) client.micStop()
     }
 
     override fun onMicFrames(frames: List<NimoMic.Frame>) {
+        if (recWantsMic) tape.onGlasses(frames)
         if (followOn) followFrames(frames)
         if (memEngine.running) { memEngine.onGlassesFrames(frames); memUi() }
         if (captions.running) captions.onFrames(frames)
         if (assist.running) assist.onFrames(frames)
+        if (chat.running) chat.onFrames(frames)
         if (agent.running) agent.onFrames(frames)
         if (voiceMenu.running) voiceMenu.onFrames(frames)
         if (navCreated && nav.hearing) nav.onFrames(frames)
@@ -3850,7 +3964,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         }
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        val text = when {
+        val text = (if (recPhoneOn || recWantsMic) "正在录音 · " else "") + when {
             linkState == LinkState.DISCONNECTED -> "眼镜未连接"
             linkState != LinkState.READY -> "正在连接眼镜…"
             activeApp != null && glassesPaused -> (activeApp?.title ?: "") + "（眼镜上已收起）"
@@ -3880,6 +3994,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         // 景点介绍：带上"定位"类型，萤读在后台时也能按时定位
         val loc = sightsOn && hasLocation()
         if (loc) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        if (recPhoneOn && Build.VERSION.SDK_INT >= 30) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         try { startForeground(NOTIF_ID, n, type) }
         catch (e: Exception) {
             if (!loc) throw e

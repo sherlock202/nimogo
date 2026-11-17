@@ -49,6 +49,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         private const val REQ_OPEN = 1
         private const val REQ_PERMS = 2
         private const val REQ_NAV_LOC = 3
+        private const val REQ_MIC = 4
 
         // 配色
         private const val BG = 0xFFF6F0E9.toInt()
@@ -81,7 +82,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
     private enum class Sub {
         READ, STOCKS, AGENDA, NOTIFY, GAMES, GAME, CLOCK, POMO, POMO_SET, WORKOUT, WORKOUT_GROUP, EYES, PARTY,
         DASH_SET, FONT, READ_SET, ALIGN, OFFICIAL, LOG, ABOUT, LICENSES, MEMORY, MEMORY_SET, MEMORY_LISTEN, MEMORY_API, CAPTIONS, SIGHTS, MANUAL, MANUAL_TOPIC,
-        NAV, NAV_SET, ASSIST, ASSIST_SET, ASSIST_SESSION, AGENT
+        NAV, NAV_SET, ASSIST, ASSIST_SET, ASSIST_SESSION, CHAT, RECORD, AGENT
     }
 
     private var service: ReaderService? = null
@@ -776,6 +777,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         subPages[Sub.ASSIST] = buildAssist()
         subPages[Sub.ASSIST_SET] = buildAssistSettings()
         subPages[Sub.ASSIST_SESSION] = buildAssistSession()
+        subPages[Sub.CHAT] = buildChat()
+        subPages[Sub.RECORD] = buildRecord()
         subPages[Sub.AGENT] = buildAgent()
         subPages[Sub.ABOUT] = buildAbout()
         subPages[Sub.MANUAL] = buildManual()
@@ -1010,6 +1013,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.MANUAL -> "使用手册"; Sub.MANUAL_TOPIC -> manualTopic.title
         Sub.NAV -> "导航"; Sub.NAV_SET -> "导航设置"
         Sub.ASSIST -> "场景助手"; Sub.ASSIST_SET -> "场景助手设置"; Sub.ASSIST_SESSION -> "记录和复盘"
+        Sub.CHAT -> "聊天"
+        Sub.RECORD -> "录音"
         Sub.AGENT -> "AI 代理"
     }
 
@@ -1021,6 +1026,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.NAV -> "⚙ 设置" to { openSub(Sub.NAV_SET) }
         Sub.ASSIST -> "⚙ 设置" to { openSub(Sub.ASSIST_SET) }
         Sub.ASSIST_SET -> "说明" to { openManual("assist") }
+        Sub.CHAT -> "说明" to { openManual("chat") }
+        Sub.RECORD -> "说明" to { openManual("record") }
         Sub.AGENT -> "说明" to { openManual("agent") }
         Sub.GAME -> "说明" to { (service?.activeApp as? GameApp)?.let { message(it.title, it.help) }; Unit }
         // 设置页只留一行字，详细说明在使用手册里：右上角「说明」直接跳到对应的一页
@@ -1044,6 +1051,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.NAV -> if (s.nav.phase == NavApp.Phase.IDLE) null else glassesButton(s, s.nav, "在眼镜上显示导航")
         Sub.CAPTIONS -> if (s.activeApp === s.captions && !s.glassesPaused) "关掉字幕" else glassesButton(s, s.captions, "在眼镜上开字幕")
         Sub.ASSIST -> if (s.activeApp === s.assist && s.assist.running) "结束这一场" else "开始（眼镜 + 手机黑屏）"
+        Sub.CHAT -> glassesButton(s, s.chat, "在眼镜上开始聊天")
+        Sub.RECORD -> if (s.tape.recording) "停止" else "开始录音"
         else -> null
     }
 
@@ -1071,6 +1080,12 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 if (s.activeApp !== s.captions && s.linkState != LinkState.READY) { toast("先连上眼镜"); return }
                 toggleOnGlasses { it.captions }
             }
+            Sub.CHAT -> {
+                if (s.assistGet("key").isEmpty()) { toast("先在「场景助手 › 设置」里填大模型的 Key"); openSub(Sub.ASSIST_SET); return }
+                if (s.linkState != LinkState.READY) { toast("先连上眼镜"); return }
+                toggleOnGlasses { it.chat }
+            }
+            Sub.RECORD -> if (s.tape.recording) { s.tape.stop(); refreshNow() } else startRecording()
             Sub.ASSIST -> {
                 if (s.activeApp === s.assist && s.assist.running) {
                     s.closeApp()
@@ -1135,7 +1150,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
     /** 这几页每秒刷新一次（进度、倒计时、表盘预览）。 */
     private val pageTicker = object : Runnable {
         override fun run() {
-            if (sub != Sub.CLOCK && sub != Sub.POMO && sub != Sub.NAV && sub != Sub.WORKOUT && sub != Sub.WORKOUT_GROUP && sub != Sub.EYES) return
+            if (sub != Sub.CLOCK && sub != Sub.POMO && sub != Sub.NAV && sub != Sub.WORKOUT && sub != Sub.WORKOUT_GROUP && sub != Sub.EYES && sub != Sub.RECORD) return
             refreshNow()
             uiHandler.postDelayed(this, 1000)
         }
@@ -1263,6 +1278,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
             app(px(PhoneIcons.MEMORY), "全天记忆") { openSub(Sub.MEMORY) },
             app(px(PhoneIcons.CAPTIONS), "实时字幕") { openSub(Sub.CAPTIONS) },
             app(px(PhoneIcons.ASSIST), "场景助手") { openSub(Sub.ASSIST) },
+            app(px(PhoneIcons.CHAT), "聊天") { openSub(Sub.CHAT) },
+            app(px(PhoneIcons.RECORD), "录音") { openSub(Sub.RECORD) },
             app(px(PhoneIcons.AGENT), "AI 代理") { openSub(Sub.AGENT) },
             app(px(PhoneIcons.SIGHTS), "景点介绍") { openSub(Sub.SIGHTS) }, app(px(PhoneIcons.MANUAL), "使用手册") { openSub(Sub.MANUAL) })
         apps.chunked(4).forEach { r -> grid.addView(hbox().apply {
@@ -1328,6 +1345,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
                             a === s.party -> openSub(Sub.PARTY)
                             a === s.captions -> openSub(Sub.CAPTIONS)
                             a === s.assist -> openSub(Sub.ASSIST)
+                            a === s.chat -> openSub(Sub.CHAT)
                             a === s.agent -> openSub(Sub.AGENT)
                             a === s.nav -> openSub(Sub.NAV)
                         }
@@ -1744,7 +1762,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             howSeg.select(hows.indexOf(s.dashHideModeSetting).coerceAtLeast(0))
             howSeg.root.visibility = if (s.dashHeadWake) View.VISIBLE else View.GONE
             val home = s.dashHideMode == ReaderService.HIDE_HOME
-            howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时直接关屏，不回官方主界面。再按一下镜腿亮回来。看板显示时右单击关屏，左单击翻屏，左双击上一屏，右双击打开语音菜单。已经回到官方主界面时，左单击打开语音菜单（第一项是看板），左长按打开看板。" +
+            howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时直接关屏，不回官方主界面。再按一下镜腿亮回来。看板显示时右单击关屏，左单击翻屏，左双击上一屏，右双击打开语音菜单。已经在官方主界面上时，点一下左镜腿（主界面被点亮也算）打开语音菜单，再点一下打开场景助手。左长按也打开看板，主界面常常不报这一下。" +
                 "官方 app 连着时眼镜的报告会发给官方 app，NimoGo 收不到，要先停止官方 app（「我的 › 和官方 app 切换」）。"
                 else if (home) "回官方主界面；眼镜报告「主界面被点亮」时叫回看板。官方 app 连着时这个报告会发给官方 app，" +
                 "NimoGo 收不到，所以要先停止官方 app（「我的 › 和官方 app 切换」）。"
@@ -2564,6 +2582,142 @@ class MainActivity : Activity(), ReaderService.UiListener {
     }
 
     // =====================================================================
+    // 录音：手机或眼镜收音，录完再转文字
+    // =====================================================================
+
+    private var wantRec = false
+
+    private fun startRecording() {
+        val s = service ?: return
+        if (s.recSource != "glasses" && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            wantRec = true
+            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), REQ_MIC)
+            return
+        }
+        if (s.recSource == "glasses") {
+            if (s.linkState != LinkState.READY) { toast("先连上眼镜"); return }
+            if (s.assist.running || s.chat.running || s.captions.running) {
+                toast("先结束场景助手、聊天或字幕，再使用眼镜收音")
+                return
+            }
+        }
+        val err = s.tape.start(s.recSource)
+        if (err != null) toast(err) else refreshNow()
+    }
+
+    private fun clockMs(ms: Long): String {
+        val s = (ms / 1000).coerceAtLeast(0)
+        return "${s / 60}:${(s % 60).toString().padStart(2, '0')}"
+    }
+
+    private fun buildRecord(): View {
+        val page = vbox()
+        page.addView(note("选手机或眼镜收音。音质不用很好：手机压到大约每小时 4MB，眼镜用它自己的压缩，大约每小时 7MB。录完再点「转文字」，用的是场景助手里设好的转文字。"))
+        val srcSeg = Seg(listOf("手机", "眼镜")) { i ->
+            if (service?.tape?.recording == true) return@Seg
+            service?.recSource = if (i == 1) "glasses" else "phone"
+        }
+        page.addView(srcSeg.root, lp(bottom = 8))
+        val state = hint("")
+        page.addView(state, lp(bottom = 8))
+        page.addView(section("录好的"))
+        val (boxV, box) = scrollListBox(480)
+        page.addView(boxV)
+        var shown = ""
+        onUpdate(Sub.RECORD) { s ->
+            val t = s.tape
+            srcSeg.select(if (s.recSource == "glasses") 1 else 0)
+            state.text = when {
+                t.recording -> "正在用${if (s.recSource == "glasses") "眼镜" else "手机"}收音 · ${clockMs(t.elapsedMs)}"
+                t.error.isNotEmpty() -> t.error
+                else -> "没在录"
+            }
+            val notes = t.list()
+            val sig = notes.joinToString("|") { it.id + it.text.length + it.bytes + it.durationMs } + t.busyId + t.recording
+            if (sig == shown && !t.recording) return@onUpdate
+            if (sig != shown) {
+                shown = sig
+                box.removeAllViews()
+                if (notes.isEmpty()) box.addRow(Row("还没有录音").root)
+                val md = java.text.SimpleDateFormat("M/d HH:mm", java.util.Locale.US)
+                notes.forEach { n ->
+                    val kb = (n.bytes / 1024).coerceAtLeast(1)
+                    box.addRow(vbox().apply {
+                        setPadding(dp(14), dp(10), dp(14), dp(10))
+                        addView(text("${if (n.source == "glasses") "眼镜" else "手机"} · ${md.format(java.util.Date(n.started))} · ${clockMs(n.durationMs)} · ${kb} KB", 12f, SUB))
+                        if (n.text.isNotEmpty()) addView(text(n.text, 14.5f, INK).apply { setLineSpacing(0f, 1.35f) }, lp(top = 4))
+                        addView(hbox().apply {
+                            addView(pill(if (t.busyId == n.id) "转文字中" else "转文字", dark = false, small = true) {
+                                if (s.tape.busyId.isNotEmpty()) return@pill
+                                if (!s.assistAsrReady()) { toast("先在「场景助手 › 设置」里设好转文字"); openSub(Sub.ASSIST_SET); return@pill }
+                                s.tape.transcribe(n.id)
+                                refreshNow()
+                            })
+                            if (n.text.isNotEmpty()) addView(pill("复制", dark = false, small = true) {
+                                (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                                    .setPrimaryClip(android.content.ClipData.newPlainText("录音", n.text))
+                                toast("已复制")
+                            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
+                            addView(pill("删除", dark = false, small = true) {
+                                s.tape.delete(n.id); refreshNow()
+                            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
+                        }, lp(top = 8))
+                    })
+                }
+            }
+        }
+        return page
+    }
+
+    // =====================================================================
+    // 聊天：和 AI 直接说话，大模型用场景助手的那一套
+    // =====================================================================
+
+    private fun buildChat(): View {
+        val page = vbox()
+        page.addView(note("和 AI 直接聊天。大模型、转文字都用「场景助手 › 设置」里填好的那一套。眼镜上说完停一下就发送；回答长了双击翻页。"))
+        val input = field("打一句", multi = true)
+        val send = pill("发送", dark = true) {
+            val t = input.text?.toString()?.trim().orEmpty()
+            if (t.isEmpty()) return@pill
+            val s = service ?: return@pill
+            if (s.assistGet("key").isEmpty()) { toast("先在「场景助手 › 设置」里填大模型的 Key"); openSub(Sub.ASSIST_SET); return@pill }
+            input.setText("")
+            s.chat.say(t)
+            refreshNow()
+        }
+        page.addView(hbox().apply {
+            addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(send, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                leftMargin = dp(8); gravity = Gravity.BOTTOM
+            })
+        }, lp(bottom = 8))
+        page.addView(section("对话", "清空" to { service?.chat?.clear(); refreshNow() }))
+        val (boxV, box) = scrollListBox(480)
+        page.addView(boxV)
+        var shown = ""
+        onUpdate(Sub.CHAT) { s ->
+            val c = s.chat
+            val sig = c.turns.size.toString() + c.turns.joinToString("") { it.text.length.toString() + it.me } + c.thinking + c.error + c.running + c.hearing
+            if (sig == shown) return@onUpdate
+            shown = sig
+            box.removeAllViews()
+            if (c.error.isNotEmpty()) box.addRow(Row(c.error).root)
+            if (c.turns.isEmpty() && c.error.isEmpty()) box.addRow(Row(if (c.running) "在听…" else "还没有。在眼镜上说，或在上面打字。").root)
+            val hms = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+            c.turns.asReversed().forEach { t ->
+                box.addRow(vbox().apply {
+                    setPadding(dp(14), dp(9), dp(14), dp(9))
+                    addView(text(hms.format(java.util.Date(t.at)) + if (t.me) " · 我" else " · AI", 11f, SUB))
+                    addView(text(t.text, 14.5f, INK).apply { setLineSpacing(0f, 1.35f) }, lp(top = 3))
+                })
+            }
+            if (c.thinking) box.addView(text("在想…", 13f, SUB), 0)
+        }
+        return page
+    }
+
+    // =====================================================================
     // 场景助手（NimoGo）
     // =====================================================================
 
@@ -3081,7 +3235,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
         val sw = listBox()
         val onToggle = Toggle { service?.let { it.agentEnabled = !it.agentEnabled }; refreshNow() }
-        val onRow = Row("左镜腿叫出 AI 代理", "看书、NimoGo 看板上长按左镜腿；系统看板上左镜腿连点三次（单击是语音菜单）").apply { accessory(onToggle.root) }
+        val onRow = Row("左镜腿叫出 AI 代理", "看书、NimoGo 看板上长按左镜腿。官方主界面上用语音菜单说「代理」").apply { accessory(onToggle.root) }
         sw.addRow(onRow.root)
         val stickyToggle = Toggle { service?.let { it.agentSticky = !it.agentSticky }; refreshNow() }
         val stickyRow = Row("代理的消息一直显示", "不自动消失，按右镜腿才关；等确认的左单击直接回复").apply { accessory(stickyToggle.root) }
@@ -3193,7 +3347,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val t = s.agentGet("token"); tokenRow.value(if (t.isEmpty()) "未填" else "••••" + t.takeLast(4))
             labelRow.value(s.agentLabel)
             state.text = when {
-                !s.agentEnabled -> "没开。打开后，看书或 NimoGo 看板上长按左镜腿、系统看板上左镜腿连点三次，就能对${s.agentName}说命令"
+                !s.agentEnabled -> "没开。打开后，看书或 NimoGo 看板上长按左镜腿，或语音菜单说「代理」，就能对${s.agentName}说命令"
                 !s.agentReady -> "先填仓库和令牌"
                 s.agentError.isNotEmpty() -> "出错：${s.agentError}"
                 else -> "准备好了" + (if (s.agentCheckedAt > 0) "，上次查回复 " + java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date(s.agentCheckedAt)) else "")
@@ -4764,7 +4918,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val callToggle = Toggle { NotifyPrefs.setCallAlert(this, !NotifyPrefs.callAlert(this)); refreshNow() }
         top.addRow(Row("来电提醒", "电话、微信等来电时弹出来电人").apply { accessory(callToggle.root) }.root)
         val quietToggle = Toggle { service?.let { it.quietWhileReading = !it.quietWhileReading }; refreshNow() }
-        top.addRow(Row("提词时不打扰", "演讲模式、语音跟读、场景助手开着时，通知、来电、景点介绍都不弹（只看书时照常弹）").apply { accessory(quietToggle.root) }.root)
+        top.addRow(Row("提词时不打扰", "演讲模式、语音跟读、场景助手、聊天开着时，通知、来电、景点介绍都不弹（只看书时照常弹）").apply { accessory(quietToggle.root) }.root)
         val secChoices = listOf(5, 10, 20, 30)
         val notifySeg = Seg(secChoices.map { "$it 秒" }) { i -> service?.notifySeconds = secChoices[i]; refreshNow() }
         top.addRow(vbox().apply {
@@ -4964,6 +5118,14 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_MIC) {
+            if (wantRec) {
+                wantRec = false
+                if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startRecording()
+                else toast("录音需要麦克风权限")
+            }
+            return
+        }
         // NimoGo 导航：为了导航要的定位权限（单独的请求码，不触发看板自动定位那些逻辑）
         if (requestCode == REQ_NAV_LOC) {
             val p = pendingNavStart; pendingNavStart = null

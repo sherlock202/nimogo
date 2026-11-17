@@ -29,6 +29,7 @@ class VoiceMenuTest {
         assertEquals("sleep", idOf("催眠"))
         assertEquals("read", idOf("我想看书"))
         assertEquals("assist", idOf("请打开场景助手"))
+        assertEquals("chat", idOf("打开聊天"))
     }
 
     @Test fun longestAliasWins() {
@@ -51,11 +52,16 @@ class VoiceMenuTest {
         assertEquals(1, VoiceMenu.move(0, n, 4, "right"))
         assertEquals(n - 1, VoiceMenu.move(0, n, 4, "left"))
         assertEquals(4, VoiceMenu.move(0, n, 4, "down"))
-        // 最左最上抬头到最右最下；一列走完低头到右边一列最上，最右最下再低头回到最左最上
-        assertEquals(11, VoiceMenu.move(0, n, 4, "up"))
-        assertEquals(1, VoiceMenu.move(12, n, 4, "down"))
-        assertEquals(0, VoiceMenu.move(11, n, 4, "down"))
-        assertEquals(12, VoiceMenu.move(1, n, 4, "up"))
+        fun bottom(col: Int): Int {
+            var b = col
+            while (b + 4 < n) b += 4
+            return b
+        }
+        // 最左最上抬头到这一列的最下；一列走完再低头到右边一列最上
+        assertEquals(bottom(3), VoiceMenu.move(0, n, 4, "up"))
+        assertEquals(0, VoiceMenu.move(bottom(3), n, 4, "down"))
+        assertEquals(bottom(0), VoiceMenu.move(1, n, 4, "up"))
+        assertEquals(1, VoiceMenu.move(bottom(0), n, 4, "down"))
         val seen = mutableSetOf<Int>()
         var i = 0
         repeat(n) { seen.add(i); i = VoiceMenu.move(i, n, 4, "down") }

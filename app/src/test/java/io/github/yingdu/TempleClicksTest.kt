@@ -13,7 +13,7 @@ class TempleClicksTest {
     fun quickRepeatOfTheSameClickIsDropped() {
         val t = TempleClicks()
         assertTrue(t.tryDeliver(0, left))
-        assertFalse(t.tryDeliver(200, left))
+        assertFalse(t.tryDeliver(40, left))
     }
 
     @Test
@@ -34,7 +34,7 @@ class TempleClicksTest {
     fun aDroppedRepeatDoesNotExtendTheWindow() {
         val t = TempleClicks()
         assertTrue(t.tryDeliver(0, right))
-        assertFalse(t.tryDeliver(300, right))
-        assertTrue(t.tryDeliver(500, right))
+        assertFalse(t.tryDeliver(50, right))
+        assertTrue(t.tryDeliver(160, right))
     }
 }

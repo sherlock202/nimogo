@@ -29,7 +29,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-    <!-- 不要手机录音权限：全天记忆和实时字幕只用眼镜麦克风（声音经蓝牙传过来） -->
+    <!-- 录音：可以选手机麦克风。全天记忆、实时字幕、场景助手、聊天仍然只用眼镜麦克风。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- 番茄钟：计时期间手机休眠也能按时提醒（到点就释放） -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- 「我的 → 后台运行」：请系统别对萤读做电池优化（后台常驻，通知和重连不断） -->
@@ -111,6 +113,6 @@
         <service
             android:name=".ReaderService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|location" />
+            android:foregroundServiceType="connectedDevice|location|microphone" />
     </application>
 </manifest>
