@@ -494,12 +494,11 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     fun agentForget(n: Int) { agentCommands.removeAll { it.number == n }; agentSave(); notifyUi() }
 
-    /** 长按左镜腿：看书、NimoGo 看板上叫 AI 代理。抬头显示关着、停在官方主界面时，左长按打开 NimoGo 看板（主界面常常不报长按）。 */
+    /** 长按左镜腿：看书、NimoGo 看板上叫 AI 代理。官方主界面上没有长按。 */
     override fun onLongPressLeft(): Boolean {
         // 语音菜单开着：左长按是上一项（不叫 AI 代理，也不关菜单）
         if (activeApp === voiceMenu) { voiceMenu.previous(); return true }
-        if (onOfficialHome() && !dashHeadWake) { showNimoDashboard("主界面上左长按：显示看板"); return true }
-        if (onOfficialHome() && !dashLegacyLeft) { callVoiceMenu("系统看板上左长按"); return true }
+        if (onOfficialHome()) { log("主界面上左长按：没有这个操作"); return true }
         return callAgent("长按左镜腿")
     }
 
@@ -584,6 +583,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun setMic(on: Boolean) { menuWantsMic = on; glassesMic(on) }
         override fun pinyin(c: Char) = menuPinyin?.of(c)
         override fun commands() = VoiceMenu.commands(agentName, games.map { it.title })
+        override fun ringOrder() = menuOrder()
+        override fun ringHidden() = menuHidden()
         override fun launch(id: String) = launchVoice(id)
         override fun setRing(on: Boolean) { if (on) menuMediaOn() else menuMediaOff() }
         override fun holdHead(on: Boolean) {
@@ -591,6 +592,45 @@ class ReaderService : Service(), NimoListener, AppHost {
             if (on) suspendHeadUp() else if (!notifyLit) restoreHeadUp()
         }
     }).also { a -> a.closeSelf = { if (activeApp === a) closeVoiceMenu() } } }
+
+    /** 语音菜单的顺序。没存过的用默认；后来新加的功能补在最后。 */
+    fun menuOrder(): List<String> {
+        val saved = prefs.getString("menuOrder", null)?.split(',')?.filter { it in VoiceMenu.RING }.orEmpty()
+        return saved + VoiceMenu.RING.filter { it !in saved }
+    }
+
+    /** 不显示在眼镜菜单上的功能。说名字仍然能打开。 */
+    fun menuHidden(): Set<String> =
+        prefs.getString("menuHidden", "").orEmpty().split(',').filter { it in VoiceMenu.RING }.toSet()
+
+    fun menuShown(id: String) = id !in menuHidden()
+
+    fun menuRows(): List<VoiceCommand> {
+        val all = VoiceMenu.commands(agentName, emptyList())
+        return menuOrder().mapNotNull { id -> all.find { it.id == id } }
+    }
+
+    fun setMenuShown(id: String, on: Boolean) {
+        if (id !in VoiceMenu.RING) return
+        val hidden = menuHidden().toMutableSet()
+        if (on) hidden.remove(id) else hidden.add(id)
+        prefs.edit().putString("menuHidden", hidden.joinToString(",")).apply()
+        if (activeApp === voiceMenu) voiceMenu.reload()
+        notifyUi()
+    }
+
+    fun moveMenu(id: String, dir: Int) {
+        val order = menuOrder().toMutableList()
+        val i = order.indexOf(id)
+        val j = i + dir
+        if (i < 0 || j !in order.indices) return
+        val tmp = order[i]
+        order[i] = order[j]
+        order[j] = tmp
+        prefs.edit().putString("menuOrder", order.joinToString(",")).apply()
+        if (activeApp === voiceMenu) voiceMenu.reload()
+        notifyUi()
+    }
 
     /** 戒指选菜单：上下沿列走（到头换列），左右换一条，ok 启动。菜单没开时返回 false。 */
     fun menuRemote(action: String): Boolean {
@@ -679,6 +719,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         "party:lots" -> { openApp(party); party.drawLot(); null }
         "party:truth" -> { openApp(party); party.truthOrDare(null); null }
         "follow" -> if (book == null) "跟读要先在手机上打开讲稿" else { switchAppMode(AppMode.READER); readFromMenu = true; startFollow(); null }
+        "record" -> launchRecord()
         else -> {
             if (!id.startsWith("game:")) "没有这个功能"
             else {
@@ -686,6 +727,25 @@ class ReaderService : Service(), NimoListener, AppHost {
                 if (g == null) "没有这个游戏" else { openApp(g); null }
             }
         }
+    }
+
+    /** 语音菜单里的录音：用上次选的手机或眼镜。再说一次就停。 */
+    private fun launchRecord(): String? {
+        if (tape.recording) {
+            tape.stop()
+            popup("录音", "已停止")
+            return null
+        }
+        if (recSource == "glasses") {
+            if (linkState != LinkState.READY) return "先连上眼镜"
+            if (assist.running || chat.running || captions.running) return "先结束场景助手、聊天或字幕"
+        } else if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            return "先在手机上允许麦克风"
+        }
+        val err = tape.start(recSource)
+        if (err != null) return err
+        popup("录音", if (recSource == "glasses") "正在用眼镜收音" else "正在用手机收音")
+        return null
     }
 
     // ---------- 场景助手（NimoGo） ----------
@@ -1034,8 +1094,6 @@ class ReaderService : Service(), NimoListener, AppHost {
     /** 在眼镜上打开一个全屏功能（阅读的自动滚动、看板的轮换和自动收起都先停下）。 */
     fun openApp(app: GlassesApp) {
         exitLockUntil = 0
-        homeLeftClicks = 0
-        main.removeCallbacks(homeLeftFire)
         if (activeApp !== app) activeApp?.onClose()
         activeApp = app
         app.onOpen()
@@ -1124,8 +1182,8 @@ class ReaderService : Service(), NimoListener, AppHost {
     private val dashAtHome get() = !dashEnabled
 
     /**
-     * 系统看板（官方主界面）上、并且看板模式开着：左镜腿按以前的（左单击叫回看板，看板上左双击上一屏）。
-     * 看板模式关着时，只有系统看板本身用新的：左单击语音菜单，左双击场景助手。
+     * 系统看板（官方主界面）上、并且看板模式开着：左单击叫回看板，看板上左双击上一屏。
+     * 看板模式关着时，系统看板上左单击打开语音菜单。双击和长按在系统看板上没有操作。
      * 锻炼、番茄钟等功能一旦打开，按键只跟那个功能，这里不再插手。
      */
     private val dashLegacyLeft get() = dashEnabled && baseMode == AppMode.DASHBOARD
@@ -1257,8 +1315,7 @@ class ReaderService : Service(), NimoListener, AppHost {
 
 
     /**
-     * 打开 NimoGo 的看板。语音菜单里选「看板」、或抬头显示关着时在主界面上左长按，都走这里。
-     * 「使用看板」关着时也会打开。从菜单进来要先关掉菜单，再把看板推上去。
+     * 打开 NimoGo 的看板。语音菜单里选「看板」走这里。「使用看板」关着时也会打开。从菜单进来要先关掉菜单，再把看板推上去。
      */
     private fun showNimoDashboard(why: String) {
         log(why)
@@ -1944,6 +2001,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         runCatching { unregisterReceiver(timeReceiver) }
         main.removeCallbacks(dailyTimeSync)
         instance = null
+        runCatching { tape.stopPlay() }
         if (recWantsMic || recPhoneOn) tape.stop()
         activeApp?.onClose()
         assistMediaOff()
@@ -3337,44 +3395,19 @@ class ReaderService : Service(), NimoListener, AppHost {
     private fun onOfficialHome() = glassesPaused && activeApp == null && client.enteredAppId() == null
 
     /**
-     * 主界面上左镜腿：点一下等 400ms 是单击（语音菜单）；再点一下马上打开场景助手。
-     * 同一次点按会先报「主界面被点亮」再报左单击，这两下只算一次。
+     * 主界面上左单击：马上打开语音菜单。
+     * 同一次点按会先报「主界面被点亮」再报左单击，紧挨着的第二下不再开一次。
      */
-    private var homeLeftClicks = 0
     private var homeTapAt = 0L
-    private val homeLeftFire = Runnable {
-        homeLeftClicks = 0
-        val app = activeApp
-        if (app != null) {
-            log("${app.title} 已打开，左键交给这个功能，不叫菜单")
-            app.onInput(GlassesInput.CLICK_LEFT)
-            return@Runnable
-        }
-        if (!onOfficialHome()) {
-            log("已经不在系统看板，左键不叫菜单")
-            return@Runnable
-        }
-        callVoiceMenu("主界面上左单击")
-    }
 
-    /** 主界面上的一次点按。fromDouble：眼镜直接报了左双击，马上打开场景助手。紧挨着的「点亮」和「单击」只算一下。 */
-    private fun noteHomeTap(fromDouble: Boolean) {
+    private fun noteHomeTap() {
         val now = android.os.SystemClock.uptimeMillis()
-        if (!fromDouble && homeLeftClicks > 0 && now - homeTapAt < 160) {
-            log("主界面：同一次点按，不重复计数")
+        if (now - homeTapAt < 160) {
+            log("主界面：同一次点按，不重复开菜单")
             return
         }
         homeTapAt = now
-        main.removeCallbacks(homeLeftFire)
-        if (fromDouble || homeLeftClicks >= 1) {
-            homeLeftClicks = 0
-            log("主界面左键第 2 下：打开场景助手")
-            callAssist("主界面上左双击")
-            return
-        }
-        homeLeftClicks = 1
-        log("主界面左键第 1 下")
-        main.postDelayed(homeLeftFire, 400)
+        callVoiceMenu("主界面上左单击")
     }
 
     override fun onInput(input: GlassesInput) {
@@ -3429,20 +3462,26 @@ class ReaderService : Service(), NimoListener, AppHost {
             return
         }
         // 全屏功能开着（锻炼、番茄钟、导航……）：按键只跟这个功能，绝不拿去叫语音菜单。
+        // 刚用主界面单击打开菜单时，紧跟着的那下左单击是同一次点按，不要当成选下一项。
+        if (activeApp === voiceMenu && input == GlassesInput.CLICK_LEFT &&
+            android.os.SystemClock.uptimeMillis() - homeTapAt < 160) {
+            log("主界面：同一次点按，不在菜单里往下选")
+            return
+        }
         activeApp?.let { app ->
             if (app === voiceMenu && input == GlassesInput.LONG_PRESS) { closeMenuToDash(); return }
             if (input == GlassesInput.CLICK_RIGHT && dismissNotification()) return
             app.onInput(input)
             return
         }
-        // 系统看板（官方主界面）：左双击打开场景助手。抬头显示关着时，左单击打开语音菜单（第一项就是看板），左长按打开看板。
-        // 抬头显示开着、并且使用看板：左单击仍叫回看板。左长按和右镜腿在主界面上眼镜常常不上报。
+        // 系统看板（官方主界面）：左单击打开语音菜单（第一项就是看板）。双击、长按没有操作。
+        // 抬头显示开着、并且使用看板：左单击仍叫回看板。
         if (onOfficialHome() && input == GlassesInput.DOUBLE_LEFT) {
-            noteHomeTap(true)
+            log("主界面上左双击：没有这个操作")
             return
         }
         if ((!dashLegacyLeft || !dashHeadWake) && onOfficialHome() && input == GlassesInput.CLICK_LEFT) {
-            noteHomeTap(false)
+            noteHomeTap()
             return
         }
         // 看书、看板上眼镜会单独报左双击（单击仍翻页 / 上一页）：双击打开场景助手
@@ -3455,7 +3494,7 @@ class ReaderService : Service(), NimoListener, AppHost {
                 if (dashAtHome) { client.lightHome(); return }
                 // 抬头显示关着：点一下主界面就是单击（眼镜常常不另报左单击）。用来开菜单。
                 if (!dashHeadWake) {
-                    if (onOfficialHome()) noteHomeTap(false)
+                    if (onOfficialHome()) noteHomeTap()
                     else log("抬头显示关着：主界面亮起，不在系统看板上")
                     return
                 }

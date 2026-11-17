@@ -35,6 +35,7 @@ object VoiceMenu {
             VoiceCommand("party:lots", "抽签", listOf("抽签")),
             VoiceCommand("party:truth", "真心话", listOf("真心话大冒险", "真心话", "大冒险")),
             VoiceCommand("follow", "跟读", listOf("语音跟读", "跟读")),
+            VoiceCommand("record", "录音", listOf("录音")),
             VoiceCommand("games", "小游戏", listOf("小游戏", "游戏")),
         )
         val extra = mapOf(
@@ -52,12 +53,19 @@ object VoiceMenu {
         return list
     }
 
-    /** 戒指能逐条选的功能（语音还能用别名，比如骰子、看板）。游戏页只列游戏。 */
-    private val RING = listOf("dash", "read", "nav", "pomo", "workout", "eyes", "sleep", "clock", "captions", "assist", "chat", "agent", "memory", "sights", "party", "follow", "games")
+    /** 戒指能逐条选的功能（语音还能用别名，比如骰子、看板）。游戏页只列游戏。顺序和隐藏由菜单设置决定。 */
+    val RING = listOf("dash", "read", "nav", "pomo", "workout", "eyes", "sleep", "clock", "captions", "assist", "chat", "agent", "memory", "sights", "party", "follow", "record", "games")
 
-    fun ringItems(all: List<VoiceCommand>, games: Boolean): List<VoiceCommand> =
-        if (games) all.filter { it.id.startsWith("game:") }
-        else RING.mapNotNull { id -> all.find { it.id == id } }
+    /**
+     * 眼镜上排出来的功能。order 里没有的新功能补在最后。hidden 里的不显示，但说名字仍然能打开。
+     * 游戏页只列游戏，不用这份顺序。
+     */
+    fun ringItems(all: List<VoiceCommand>, games: Boolean, order: List<String> = RING, hidden: Set<String> = emptySet()): List<VoiceCommand> {
+        if (games) return all.filter { it.id.startsWith("game:") }
+        val byId = all.associateBy { it.id }
+        val ids = order.filter { it in RING && it !in hidden } + RING.filter { it !in order && it !in hidden }
+        return ids.mapNotNull { byId[it] }
+    }
 
     /** 9 项及以内用 3 列，更多用 4 列，一屏放得下全部。 */
     fun columnsFor(count: Int) = if (count <= 9) 3 else 4
@@ -286,6 +294,10 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
         fun setMic(on: Boolean)
         fun pinyin(c: Char): String?
         fun commands(): List<VoiceCommand>
+        /** 菜单上的顺序（含藏起来的）。 */
+        fun ringOrder(): List<String>
+        /** 不显示在菜单上的功能。 */
+        fun ringHidden(): Set<String>
         /** 启动这个功能。返回留在菜单上的一句话；null 表示已经离开菜单，或菜单自己该关掉。 */
         fun launch(id: String): String?
         /** 接管戒指（息屏时的音量键和播放键）。 */
@@ -388,7 +400,7 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
     }
 
     private fun items(): List<VoiceCommand> {
-        val list = VoiceMenu.ringItems(env.commands(), page == Page.GAMES)
+        val list = VoiceMenu.ringItems(env.commands(), page == Page.GAMES, env.ringOrder(), env.ringHidden())
         return if (page == Page.GAMES) list + VoiceCommand("back", "返回", emptyList()) else list
     }
 
@@ -410,6 +422,13 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
     private fun close() { closeSelf?.invoke() }
     private fun show() { host.redraw(this); host.changed() }
 
+    /** 手机上改了顺序或显示之后，眼镜上的名单跟着换。 */
+    fun reload() {
+        val n = items().size
+        if (n == 0) index = 0 else if (index >= n) index = n - 1
+        if (running) show()
+    }
+
     /** 左长按：上一项（ReaderService 把左长按转到这里）。 */
     fun previous() { host.log("语音菜单：左长按，上一项"); remote("left") }
 
@@ -429,7 +448,9 @@ class VoiceMenuApp(private val host: AppHost, private val env: Env) : GlassesApp
      */
     override fun glassesText(cols: Int, rows: Int): Pair<String, String> {
         val hint = "左键下一项　右键打开"
-        val body = VoiceMenu.textPage(items().map { it.label }, index, cols, rows, note, hint)
+        val list = items()
+        if (list.isEmpty()) return "菜单是空的\n到手机「我的 → 菜单设置」打开几项" to (if (hearing) "语音菜单 · 在听" else "语音菜单")
+        val body = VoiceMenu.textPage(list.map { it.label }, index, cols, rows, note, hint)
         val status = if (hearing) "语音菜单 · 在听" else "语音菜单"
         return body to status
     }

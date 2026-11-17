@@ -82,7 +82,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
     private enum class Sub {
         READ, STOCKS, AGENDA, NOTIFY, GAMES, GAME, CLOCK, POMO, POMO_SET, WORKOUT, WORKOUT_GROUP, EYES, PARTY,
         DASH_SET, FONT, READ_SET, ALIGN, OFFICIAL, LOG, ABOUT, LICENSES, MEMORY, MEMORY_SET, MEMORY_LISTEN, MEMORY_API, CAPTIONS, SIGHTS, MANUAL, MANUAL_TOPIC,
-        NAV, NAV_SET, ASSIST, ASSIST_SET, ASSIST_SESSION, CHAT, RECORD, AGENT
+        NAV, NAV_SET, ASSIST, ASSIST_SET, ASSIST_SESSION, CHAT, RECORD, AGENT, MENU
     }
 
     private var service: ReaderService? = null
@@ -780,6 +780,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         subPages[Sub.CHAT] = buildChat()
         subPages[Sub.RECORD] = buildRecord()
         subPages[Sub.AGENT] = buildAgent()
+        subPages[Sub.MENU] = buildMenuSettings()
         subPages[Sub.ABOUT] = buildAbout()
         subPages[Sub.MANUAL] = buildManual()
         subPages[Sub.MANUAL_TOPIC] = buildManualTopic()
@@ -1016,6 +1017,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.CHAT -> "聊天"
         Sub.RECORD -> "录音"
         Sub.AGENT -> "AI 代理"
+        Sub.MENU -> "菜单设置"
     }
 
     /** 子页面右上角的文字按钮。 */
@@ -1037,6 +1039,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.MEMORY_SET, Sub.MEMORY_API, Sub.MEMORY_LISTEN -> "说明" to { openManual("memory") }
         Sub.CAPTIONS -> "说明" to { openManual("captions") }
         Sub.READ_SET -> "说明" to { openManual("read") }
+        Sub.MENU -> "说明" to { openManual("start") }
         else -> null
     }
 
@@ -1762,7 +1765,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             howSeg.select(hows.indexOf(s.dashHideModeSetting).coerceAtLeast(0))
             howSeg.root.visibility = if (s.dashHeadWake) View.VISIBLE else View.GONE
             val home = s.dashHideMode == ReaderService.HIDE_HOME
-            howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时直接关屏，不回官方主界面。再按一下镜腿亮回来。看板显示时右单击关屏，左单击翻屏，左双击上一屏，右双击打开语音菜单。已经在官方主界面上时，点一下左镜腿（主界面被点亮也算）打开语音菜单，再点一下打开场景助手。左长按也打开看板，主界面常常不报这一下。" +
+            howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时直接关屏，不回官方主界面。再按一下镜腿亮回来。看板显示时右单击关屏，左单击翻屏，左双击上一屏，右双击打开语音菜单。已经在官方主界面上时，点一下左镜腿（主界面被点亮也算）打开语音菜单。菜单里的项目在「我的 → 菜单设置」。" +
                 "官方 app 连着时眼镜的报告会发给官方 app，NimoGo 收不到，要先停止官方 app（「我的 › 和官方 app 切换」）。"
                 else if (home) "回官方主界面；眼镜报告「主界面被点亮」时叫回看板。官方 app 连着时这个报告会发给官方 app，" +
                 "NimoGo 收不到，所以要先停止官方 app（「我的 › 和官方 app 切换」）。"
@@ -1819,6 +1822,38 @@ class MainActivity : Activity(), ReaderService.UiListener {
     // 我的：设置列表
     // =====================================================================
 
+    private fun buildMenuSettings(): View {
+        val page = vbox()
+        page.addView(note("眼镜语音菜单上的功能。开关决定显示不显示，箭头调整顺序。藏起来的仍可以说名字打开。"))
+        val box = listBox()
+        page.addView(box)
+        var shown = ""
+        onUpdate(Sub.MENU) { s ->
+            val rows = s.menuRows()
+            val sig = rows.joinToString(",") { it.id + s.menuShown(it.id) }
+            if (sig == shown) return@onUpdate
+            shown = sig
+            box.removeAllViews()
+            rows.forEachIndexed { i, cmd ->
+                val row = Row(cmd.label)
+                val on = Toggle { service?.setMenuShown(cmd.id, !s.menuShown(cmd.id)); refreshNow() }
+                on.set(s.menuShown(cmd.id))
+                fun arrow(t: String, enabled: Boolean, go: () -> Unit) = text(t, 16f, if (enabled) TAN else CARD_STROKE, true).apply {
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(dp(30), dp(30))
+                    if (enabled) setOnClickListener { go() }
+                }
+                row.accessory(hbox().apply {
+                    addView(arrow("↑", i > 0) { service?.moveMenu(cmd.id, -1); refreshNow() })
+                    addView(arrow("↓", i < rows.lastIndex) { service?.moveMenu(cmd.id, 1); refreshNow() })
+                    addView(on.root)
+                })
+                box.addRow(row.root)
+            }
+        }
+        return page
+    }
+
     private fun buildMe(): View {
         val page = vbox()
         page.addView(pageTitle("我的"))
@@ -1852,8 +1887,9 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val font = Row("眼镜字号", chevron = true) { openSub(Sub.FONT) }
         val align = Row("画面远近和上下", "拖动时眼镜马上跟着变", chevron = true) { openSub(Sub.ALIGN) }
         val read = Row("阅读显示", "图片 / 提词器文字、进度、排版", chevron = true) { openSub(Sub.READ_SET) }
+        val menu = Row("菜单设置", "语音菜单的顺序和显示", chevron = true) { openSub(Sub.MENU) }
         val notify = Row("通知转发", "", chevron = true) { openSub(Sub.NOTIFY) }
-        g.addRow(font.root); g.addRow(align.root); g.addRow(read.root); g.addRow(notify.root)
+        g.addRow(font.root); g.addRow(align.root); g.addRow(read.root); g.addRow(menu.root); g.addRow(notify.root)
         page.addView(g)
 
         // 看板顶部一行、天气卡片都用
@@ -2612,7 +2648,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
     private fun buildRecord(): View {
         val page = vbox()
-        page.addView(note("选手机或眼镜收音。音质不用很好：手机压到大约每小时 4MB，眼镜用它自己的压缩，大约每小时 7MB。录完再点「转文字」，用的是场景助手里设好的转文字。"))
+        page.addView(note("选手机或眼镜收音。录完可以播放，也可以点「转文字」，用的是场景助手里设好的转文字。"))
         val srcSeg = Seg(listOf("手机", "眼镜")) { i ->
             if (service?.tape?.recording == true) return@Seg
             service?.recSource = if (i == 1) "glasses" else "phone"
@@ -2633,7 +2669,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 else -> "没在录"
             }
             val notes = t.list()
-            val sig = notes.joinToString("|") { it.id + it.text.length + it.bytes + it.durationMs } + t.busyId + t.recording
+            val sig = notes.joinToString("|") { it.id + it.text.length + it.bytes + it.durationMs } + t.busyId + t.recording + t.playingId
             if (sig == shown && !t.recording) return@onUpdate
             if (sig != shown) {
                 shown = sig
@@ -2647,12 +2683,17 @@ class MainActivity : Activity(), ReaderService.UiListener {
                         addView(text("${if (n.source == "glasses") "眼镜" else "手机"} · ${md.format(java.util.Date(n.started))} · ${clockMs(n.durationMs)} · ${kb} KB", 12f, SUB))
                         if (n.text.isNotEmpty()) addView(text(n.text, 14.5f, INK).apply { setLineSpacing(0f, 1.35f) }, lp(top = 4))
                         addView(hbox().apply {
+                            addView(pill(if (t.playingId == n.id) "停止" else "播放", dark = false, small = true) {
+                                if (s.tape.recording) { toast("正在录音"); return@pill }
+                                s.tape.togglePlay(n.id)
+                                refreshNow()
+                            })
                             addView(pill(if (t.busyId == n.id) "转文字中" else "转文字", dark = false, small = true) {
                                 if (s.tape.busyId.isNotEmpty()) return@pill
                                 if (!s.assistAsrReady()) { toast("先在「场景助手 › 设置」里设好转文字"); openSub(Sub.ASSIST_SET); return@pill }
                                 s.tape.transcribe(n.id)
                                 refreshNow()
-                            })
+                            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
                             if (n.text.isNotEmpty()) addView(pill("复制", dark = false, small = true) {
                                 (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
                                     .setPrimaryClip(android.content.ClipData.newPlainText("录音", n.text))

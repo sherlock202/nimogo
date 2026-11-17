@@ -1,9 +1,12 @@
 package io.github.yingdu
 
+import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaRecorder
 import io.github.jaredmdobson.concentus.OpusApplication
+import io.github.jaredmdobson.concentus.OpusDecoder
 import io.github.jaredmdobson.concentus.OpusEncoder
 import io.github.jaredmdobson.concentus.OpusSignal
 import org.json.JSONObject
@@ -31,7 +34,7 @@ class RecNote(
 }
 
 /**
- * 录音：手机麦克风或眼镜麦克风，二选一。录完把文件留在手机上，需要时再转文字。
+ * 录音：手机麦克风或眼镜麦克风，二选一。录完把文件留在手机上，可以播放，需要时再转文字。
  */
 class Tape(
     private val dir: File,
@@ -49,6 +52,8 @@ class Tape(
     var error = ""
     /** 正在转文字的那条（文件名，不含扩展名）。 */
     var busyId = ""
+    /** 正在播放的那条。 */
+    var playingId = ""; private set
     var startedAt = 0L; private set
 
     private val work = Executors.newSingleThreadExecutor()
@@ -59,6 +64,8 @@ class Tape(
     private var glassesPackets = 0
     private var phoneSamples = 0
     private var active: File? = null
+    @Volatile private var playGen = 0
+    @Volatile private var playTrack: AudioTrack? = null
 
     val elapsedMs: Long get() = if (!recording) 0 else System.currentTimeMillis() - startedAt
 
@@ -73,6 +80,7 @@ class Tape(
 
     fun start(which: String): String? {
         if (recording) return "已经在录"
+        stopPlay()
         source = which
         error = ""
         dir.mkdirs()
@@ -111,9 +119,77 @@ class Tape(
     }
 
     fun delete(id: String) {
+        if (playingId == id) stopPlay()
         File(dir, "$id.ogg").delete()
         File(dir, "$id.json").delete()
         changed()
+    }
+
+    /** 点同一条是停止，点另一条就换过去播。正在录音时不播。 */
+    fun togglePlay(id: String) {
+        if (recording) return
+        if (playingId == id) { stopPlay(); return }
+        stopPlay()
+        val file = File(dir, "$id.ogg")
+        if (!file.isFile) return
+        val gen = playGen
+        playingId = id
+        error = ""
+        changed()
+        Thread({ playLoop(file, gen) }, "nimogo-play").start()
+    }
+
+    fun stopPlay() {
+        playGen++
+        runCatching { playTrack?.pause() }
+        runCatching { playTrack?.flush() }
+        if (playingId.isNotEmpty()) {
+            playingId = ""
+            changed()
+        }
+    }
+
+    private fun playLoop(file: File, gen: Int) {
+        val min = AudioTrack.getMinBufferSize(NimoMic.SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            .setAudioFormat(AudioFormat.Builder().setSampleRate(NimoMic.SAMPLE_RATE).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+            .setBufferSizeInBytes(maxOf(min, NimoMic.SAMPLE_RATE * 2))
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+        playTrack = track
+        try {
+            if (track.state != AudioTrack.STATE_INITIALIZED) throw IllegalStateException("这台手机播不了")
+            track.play()
+            val dec = OpusDecoder(NimoMic.SAMPLE_RATE, 1)
+            val buf = ShortArray(1920)
+            for (p in OggOpus.packets(file.readBytes())) {
+                if (gen != playGen) break
+                val n = try { dec.decode(p, 0, p.size, buf, 0, buf.size, false) } catch (e: Exception) { 0 }
+                var off = 0
+                while (off < n && gen == playGen) {
+                    val w = track.write(buf, off, n - off)
+                    if (w < 0) break
+                    off += w
+                }
+            }
+        } catch (e: Exception) {
+            val msg = e.message ?: e.javaClass.simpleName
+            main.post {
+                if (gen == playGen) error = "播放失败：$msg"
+                log("录音：播放失败：$msg")
+            }
+        } finally {
+            runCatching { if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.stop() }
+            runCatching { track.release() }
+            if (playTrack === track) playTrack = null
+            main.post {
+                if (gen == playGen && playingId == file.nameWithoutExtension) {
+                    playingId = ""
+                    changed()
+                }
+            }
+        }
     }
 
     /** 录完再转。长的按 40 秒一段，转完接在一起。 */

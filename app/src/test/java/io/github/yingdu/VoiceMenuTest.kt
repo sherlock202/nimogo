@@ -30,6 +30,17 @@ class VoiceMenuTest {
         assertEquals("read", idOf("我想看书"))
         assertEquals("assist", idOf("请打开场景助手"))
         assertEquals("chat", idOf("打开聊天"))
+        assertEquals("record", idOf("打开录音"))
+        assertEquals("record", idOf("录音"))
+    }
+
+    @Test fun ringOrderAndHidden() {
+        val items = VoiceMenu.ringItems(cmds, false, listOf("chat", "dash"), setOf("follow", "record"))
+        assertEquals("chat", items[0].id)
+        assertEquals("dash", items[1].id)
+        assertEquals("read", items[2].id)
+        assertTrue(items.none { it.id == "follow" || it.id == "record" })
+        assertEquals(VoiceMenu.RING.size - 2, items.size)
     }
 
     @Test fun longestAliasWins() {
