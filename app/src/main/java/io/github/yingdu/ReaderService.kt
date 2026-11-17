@@ -494,10 +494,11 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     fun agentForget(n: Int) { agentCommands.removeAll { it.number == n }; agentSave(); notifyUi() }
 
-    /** 长按左镜腿：看书、NimoGo 看板上叫 AI 代理。系统看板上若眼镜真的报了左长按，也打开语音菜单（实测主界面通常不报）。 */
+    /** 长按左镜腿：看书、NimoGo 看板上叫 AI 代理。抬头显示关着、停在官方主界面时，左长按打开 NimoGo 看板（主界面常常不报长按）。 */
     override fun onLongPressLeft(): Boolean {
         // 语音菜单开着：左长按是上一项（不叫 AI 代理，也不关菜单）
         if (activeApp === voiceMenu) { voiceMenu.previous(); return true }
+        if (onOfficialHome() && !dashHeadWake) { showNimoDashboard("主界面上左长按：显示看板"); return true }
         if (onOfficialHome() && !dashLegacyLeft) { callVoiceMenu("系统看板上左长按"); return true }
         return callAgent("长按左镜腿")
     }
@@ -645,7 +646,7 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     /** 语音菜单选中的功能。返回留在菜单上的提示；null 表示已经切走，或菜单该关掉。 */
     private fun launchVoice(id: String): String? = when (id) {
-        "dash" -> { menuFromHome = false; switchAppMode(AppMode.DASHBOARD); null }
+        "dash" -> { showNimoDashboard("语音菜单：看板"); null }
         "read" -> if (book == null) "还没有打开书" else { switchAppMode(AppMode.READER); readFromMenu = true; null }
         "nav" -> when {
             nav.active() -> { openApp(nav); null }
@@ -1094,7 +1095,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         pushPage()
     }
 
-    fun toggleShow() { if (glassesPaused) resumeGlasses() else pauseGlasses() }
+    fun toggleShow() { if (glassesPaused) resumeGlasses() else if (appMode == AppMode.DASHBOARD && activeApp == null) hideDashboard("收起看板") else pauseGlasses() }
 
     // ---------- 看板自动收起 ----------
 
@@ -1112,16 +1113,16 @@ class ReaderService : Service(), NimoListener, AppHost {
      * 换个键存，大家都从「关屏」开始。
      */
     var dashHideMode: Int
-        // 眼镜「抬头显示」关着时一律回主界面（2026-10-22 实测：关屏后眼镜只报长按右镜腿，而长按是眼镜自己的退出，
-        // 退出后眼镜不接受马上重开页面，长按开关看板做不出来）。这时收起 = 回官方主界面，点一下镜腿叫回
-        get() = if (!dashHeadWake) HIDE_HOME else dashHideModeSetting
+        // 抬头显示关着：收起只关屏，不退回官方主界面。页面还在，再按一下镜腿就亮回来。
+        // 抬头显示开着：用设置里选的方式（关屏或回主界面）。
+        get() = if (!dashHeadWake) HIDE_SCREEN_OFF else dashHideModeSetting
         set(v) { prefs.edit().putInt("dashHide36", v).apply(); notifyUi() }
     /** 设置里选的收起方式（只在「抬头显示」开着时起作用）。 */
     val dashHideModeSetting: Int
         get() = if (prefs.getInt("dashHide36", HIDE_SCREEN_OFF) == HIDE_HOME) HIDE_HOME else HIDE_SCREEN_OFF
     /**
      * 抬头显示看板：跟着眼镜自己的「抬头显示」设置（官方 app 和 NimoGo 里改的是同一个），不再单独设置（2026-10-22）。
-     * 开着：抬头开屏显示看板（从第一屏开始），低头再关。关着：收起时回官方主界面，左单击打开语音菜单（说「看板」叫回）；显示时右单击收起、左单击翻屏。
+     * 开着：抬头开屏显示看板（从第一屏开始），低头再关。关着：收起时直接关屏，不回官方主界面；再按一下镜腿亮回来。显示时右单击收起、左单击翻屏。
      */
     val dashHeadWake: Boolean get() = headUpDisplay == true
     private val headWakeOn get() = dashHeadWake && dashHideMode == HIDE_SCREEN_OFF
@@ -1174,7 +1175,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         } else {
             screenOffByUs = true; client.screenOff(true)
             main.postDelayed(standbyRefresh, 300)
-            log("$why（关屏；抬头再看）")
+            log(if (dashHeadWake) "$why（关屏；抬头再看）" else "$why（关屏，不回主界面；再按一下镜腿再看）")
         }
         updateNotification(); notifyUi()
     }
@@ -1182,6 +1183,33 @@ class ReaderService : Service(), NimoListener, AppHost {
     /** 萤读自己退回官方主界面的时间（uptime）：退出后眼镜会顺手报一次「主界面被点亮」，那不是用户点的。 */
     private var quitHomeAt = 0L
 
+
+    /**
+     * 打开 NimoGo 的看板。语音菜单里选「看板」、或抬头显示关着时在主界面上左长按，都走这里。
+     * 「使用看板」关着时也会打开。从菜单进来要先关掉菜单，再把看板推上去。
+     */
+    private fun showNimoDashboard(why: String) {
+        log(why)
+        menuFromHome = false
+        val fromMenu = activeApp === voiceMenu
+        if (activeApp != null) {
+            val app = activeApp
+            activeApp = null
+            app?.onClose()
+        }
+        if (!dashEnabled) dashEnabled = true
+        when {
+            appMode != AppMode.DASHBOARD -> switchAppMode(AppMode.DASHBOARD)
+            glassesPaused -> wakeFromHome(why)
+            fromMenu || client.enteredAppId() != NimoProtocol.APP_ID_NAV -> {
+                glassesPaused = false
+                headHidden = false
+                lastPushedDash = ""
+                dashPage = 0
+                pushPage()
+            }
+        }
+    }
 
     /**
      * 官方主界面刚被点亮时叫回看板：眼镜正忙着画主界面，这时发的"打开页面"常被丢掉，
@@ -1703,6 +1731,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     private fun pushDashboard(force: Boolean, restartTimers: Boolean = true) {
+        if (alignTesting) return
         if (dashAtHome) {
             // 不用看板：萤读自己的看板页不在眼镜上打开，眼镜留在主界面
             if (client.enteredAppId() != null) client.quitCurrent()
@@ -2506,6 +2535,7 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     /** 把当前页推到眼镜上，同时保存进度。 */
     private fun pushPage() {
+        if (alignTesting) return
         if (android.os.SystemClock.uptimeMillis() < exitLockUntil) {
             log("刚长按退出，先不把页面打开")
             return
@@ -3162,6 +3192,7 @@ class ReaderService : Service(), NimoListener, AppHost {
             }, 1200)
             main.postDelayed({ if (linkState == LinkState.READY && !notifyLit) restoreHeadUp() }, 2500)
             main.postDelayed({ if (linkState == LinkState.READY) { replayOffline(); agentShowPending() } }, 4500)
+            if (alignTesting) showAlignFrame()
             main.postDelayed(standbyRefresh, 5000)
             main.postDelayed({
                 if (linkState != LinkState.READY || glassesPaused) return@postDelayed
@@ -3296,9 +3327,10 @@ class ReaderService : Service(), NimoListener, AppHost {
             app.onInput(input)
             return
         }
-        // 系统看板（官方主界面）才用这套：左单击打开语音菜单，左双击打开场景助手，左三击打开 AI 代理。
-        // 左长按和右镜腿在主界面上眼镜不上报。
-        if (!dashLegacyLeft && onOfficialHome() && (input == GlassesInput.CLICK_LEFT || input == GlassesInput.DOUBLE_LEFT)) {
+        // 系统看板（官方主界面）：抬头显示关着时，左单击打开语音菜单（第一项就是看板），左长按打开看板。
+        // 抬头显示开着、并且使用看板：左单击仍叫回看板。左双击打开场景助手，左三击打开 AI 代理。
+        // 左长按和右镜腿在主界面上眼镜常常不上报。
+        if ((!dashLegacyLeft || !dashHeadWake) && onOfficialHome() && (input == GlassesInput.CLICK_LEFT || input == GlassesInput.DOUBLE_LEFT)) {
             homeLeftClicks = if (input == GlassesInput.DOUBLE_LEFT) maxOf(homeLeftClicks, 2) else homeLeftClicks + 1
             main.removeCallbacks(homeLeftFire)
             if (homeLeftClicks >= 3) {
@@ -3315,6 +3347,8 @@ class ReaderService : Service(), NimoListener, AppHost {
             GlassesInput.HOME_WAKE -> {
                 headIsDown = false
                 if (dashAtHome) { client.lightHome(); return }
+                // 抬头显示关着：短按是菜单，长按才开看板。主界面被点亮不要再把看板叫出来。
+                if (!dashHeadWake) { log("抬头显示关着：主界面亮起不自动打开看板"); return }
                 // 官方主界面被点亮了（点了一下镜腿）：看板是自动收起/被眼镜退出的，就叫回来
                 // 弹通知时是我们自己在主界面上开的屏（眼镜自带弹窗方式），不算用户点亮
                 if (notifyLit) { log("弹通知时主界面亮了，不叫回看板"); return }
@@ -3349,6 +3383,8 @@ class ReaderService : Service(), NimoListener, AppHost {
                 return
             }
             else -> if (glassesPaused) {
+                // 抬头显示关着、人在官方主界面：单击已经交给菜单，不要再因点亮主界面把看板打开。
+                if (!dashHeadWake && onOfficialHome()) return
                 // 官方主界面上的左单击、左双击已经在上面交给语音菜单和场景助手，不会走到这里。
                 // 这里是页面还开着、只是关了屏：点镜腿直接把看板亮回来（右镜腿在主界面上通常不报）。
                 val click = input == GlassesInput.CLICK_LEFT || input == GlassesInput.CLICK_RIGHT ||
@@ -3414,6 +3450,65 @@ class ReaderService : Service(), NimoListener, AppHost {
         log(if (displayOff != true) "息屏模式：开" else "息屏模式：关")
     }
     fun toggleAutoBrightness() { client.setGlassesSetting(NimoProtocol.SET_AUTO_BRIGHTNESS, autoBrightness != true) }
+
+    /** 画面上下、远近，0..10。null = 还没从眼镜读到。眼镜自己记住，这里只是当前值。 */
+    var imageHeight: Int? = null; private set
+    var imageDistance: Int? = null; private set
+    private var alignTesting = false
+    private var alignWasOff = false
+    private var heightSend: Int? = null
+    private var distanceSend: Int? = null
+    private val sendHeight = Runnable { heightSend?.let { client.setDisplayLevel(NimoProtocol.SET_HEIGHT_LEVEL, it); log("画面上下：$it") } }
+    private val sendDistance = Runnable { distanceSend?.let { client.setDisplayLevel(NimoProtocol.SET_DISTANCE, it); log("画面远近：$it") } }
+
+    override fun onDisplayLevel(key: Int, level: Int) {
+        when (key) {
+            NimoProtocol.SET_HEIGHT_LEVEL -> imageHeight = level
+            NimoProtocol.SET_DISTANCE -> imageDistance = level
+        }
+        notifyUi()
+    }
+
+    fun setImageHeight(level: Int) {
+        val v = level.coerceIn(0, NimoProtocol.DISPLAY_LEVEL_MAX)
+        imageHeight = v
+        heightSend = v
+        main.removeCallbacks(sendHeight)
+        main.postDelayed(sendHeight, 40)
+    }
+
+    fun setImageDistance(level: Int) {
+        val v = level.coerceIn(0, NimoProtocol.DISPLAY_LEVEL_MAX)
+        imageDistance = v
+        distanceSend = v
+        main.removeCallbacks(sendDistance)
+        main.postDelayed(sendDistance, 40)
+    }
+
+    /** 打开设置页：眼镜上画一圈框，拖动时马上能看出上下和远近。 */
+    fun beginAlignTest() {
+        alignTesting = true
+        alignWasOff = screenOffByUs
+        if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
+        client.readDisplayAlign()
+        if (linkState == LinkState.READY) showAlignFrame() else log("画面位置：连上眼镜后才能看")
+        notifyUi()
+    }
+
+    /** 离开设置页：去掉测试框，回到刚才的画面。 */
+    fun endAlignTest() {
+        if (!alignTesting) return
+        alignTesting = false
+        main.removeCallbacks(sendHeight); main.removeCallbacks(sendDistance)
+        sendHeight.run(); sendDistance.run()
+        if (alignWasOff) { alignWasOff = false; screenOffByUs = true; client.screenOff(true); return }
+        if (glassesPaused) client.quitCurrent() else pushPage()
+    }
+
+    private fun showAlignFrame() {
+        client.showImage(DashboardImage.alignTest(), DashboardImage.W, DashboardImage.H)
+        log("画面位置：眼镜上显示测试框")
+    }
 
     override fun onBattery(level: Int, charging: Boolean) {
         battery = level

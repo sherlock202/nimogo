@@ -40,6 +40,8 @@ object NimoProtocol {
 
     const val SET_TIME = 0x01
     const val SET_BRIGHTNESS = 0x02
+    /** 画面远近（0..10，和官方 app 的视距是同一条）。 */
+    const val SET_DISTANCE = 0x03
     const val SET_AUTO_BRIGHTNESS = 0x0E
     /** 亮度偏移（自动亮度开着时手动调亮 / 调暗，有符号一字节 −128..127；官方 app 里的 set_brightness_offset）。 */
     const val SET_BRIGHTNESS_OFFSET = 0x15
@@ -49,6 +51,9 @@ object NimoProtocol {
     // SET_AUTO_BRIGHTNESS = 0x0E 自动亮度（上面已定义）
     const val REPORT_DASH_WAKE = 0x06     // 抬头亮屏时眼镜发来的上报（要回一条确认）
     const val SET_PHONE_TYPE = 0x14
+    /** 画面上下（0..10，和官方 app 的高度档是同一条）。 */
+    const val SET_HEIGHT_LEVEL = 0x17
+    const val DISPLAY_LEVEL_MAX = 10
 
     const val CTRL_ENTER_APP = 0x01
     const val CTRL_QUIT_APP = 0x03

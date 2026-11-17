@@ -34,6 +34,8 @@ interface NimoListener {
     fun onPrompterRestore() {}
     /** 眼镜现在的亮度档位（0..16，连接时读到的）。 */
     fun onBrightnessLevel(level: Int) {}
+    /** 画面上下或远近的当前档（0..10）。key 是 SET_HEIGHT_LEVEL 或 SET_DISTANCE。 */
+    fun onDisplayLevel(key: Int, level: Int) {}
     /** 眼镜上报的自动亮度档位（0..16）。 */
     fun onAutoBrightnessLevel(level: Int) {}
     fun onLinkState(state: LinkState)
@@ -69,6 +71,20 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         if (state != LinkState.READY) return
         sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_SET_PARAMETER, NimoProtocol.SET_BRIGHTNESS,
             byteArrayOf(level.coerceIn(0, NimoProtocol.MAX_BRIGHTNESS_LEVEL).toByte())))
+    }
+
+    /** 画面上下或远近（0..10）。眼镜会记住，拖动时马上生效。 */
+    fun setDisplayLevel(key: Int, level: Int) {
+        if (state != LinkState.READY) return
+        sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_SET_PARAMETER, key,
+            byteArrayOf(level.coerceIn(0, NimoProtocol.DISPLAY_LEVEL_MAX).toByte())))
+    }
+
+    /** 读眼镜现在的画面上下和远近。 */
+    fun readDisplayAlign() {
+        if (state != LinkState.READY) return
+        for (k in listOf(NimoProtocol.SET_HEIGHT_LEVEL, NimoProtocol.SET_DISTANCE))
+            sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_GET_PARAMETER, k))
     }
 
     companion object {
@@ -762,7 +778,8 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             NimoProtocol.CMD_SET_PARAMETER, NimoProtocol.SET_PHONE_TYPE,
             byteArrayOf(NimoProtocol.PHONE_TYPE_OTHER.toByte()), needsAck = false))
         sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_GET_PARAMETER, NimoProtocol.GET_VERSION))
-        for (k in listOf(NimoProtocol.SET_HEADUP_DISPLAY, NimoProtocol.SET_DISPLAY_OFF, NimoProtocol.SET_AUTO_BRIGHTNESS, NimoProtocol.SET_BRIGHTNESS))
+        for (k in listOf(NimoProtocol.SET_HEADUP_DISPLAY, NimoProtocol.SET_DISPLAY_OFF, NimoProtocol.SET_AUTO_BRIGHTNESS, NimoProtocol.SET_BRIGHTNESS,
+            NimoProtocol.SET_HEIGHT_LEVEL, NimoProtocol.SET_DISTANCE))
             sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_GET_PARAMETER, k))
         if (needUnblankOnConnect) {
             needUnblankOnConnect = false
@@ -1404,6 +1421,11 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             NimoProtocol.SET_BRIGHTNESS -> if (data.isNotEmpty()) {
                 val lvl = (data[0].toInt() and 0xFF).coerceIn(0, NimoProtocol.MAX_BRIGHTNESS_LEVEL)
                 log("眼镜亮度：$lvl 档"); listener.onBrightnessLevel(lvl)
+            }
+            NimoProtocol.SET_HEIGHT_LEVEL, NimoProtocol.SET_DISTANCE -> if (data.isNotEmpty()) {
+                val lvl = (data[0].toInt() and 0xFF).coerceIn(0, NimoProtocol.DISPLAY_LEVEL_MAX)
+                log(if (key == NimoProtocol.SET_HEIGHT_LEVEL) "画面上下：$lvl" else "画面远近：$lvl")
+                listener.onDisplayLevel(key, lvl)
             }
             NimoProtocol.GET_VERSION -> if (data.size >= 4) {
                 val v = (data[0].toInt() and 0xFF) or ((data[1].toInt() and 0xFF) shl 8) or

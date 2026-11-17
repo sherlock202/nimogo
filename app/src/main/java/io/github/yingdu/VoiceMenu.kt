@@ -16,6 +16,7 @@ object VoiceMenu {
 
     fun commands(agentName: String, games: List<String>): List<VoiceCommand> {
         val list = mutableListOf(
+            VoiceCommand("dash", "看板", listOf("看板", "默认面板")),
             VoiceCommand("read", "阅读", listOf("阅读", "看书", "讲稿")),
             VoiceCommand("nav", "导航", listOf("导航")),
             VoiceCommand("pomo", "番茄钟", listOf("番茄钟", "番茄")),
@@ -34,7 +35,6 @@ object VoiceMenu {
             VoiceCommand("party:truth", "真心话", listOf("真心话大冒险", "真心话", "大冒险")),
             VoiceCommand("follow", "跟读", listOf("语音跟读", "跟读")),
             VoiceCommand("games", "小游戏", listOf("小游戏", "游戏")),
-            VoiceCommand("dash", "看板", listOf("看板", "默认面板")),
         )
         val extra = mapOf(
             "2048" to listOf("2048", "二零四八", "二〇四八"),
@@ -52,7 +52,7 @@ object VoiceMenu {
     }
 
     /** 戒指能逐条选的功能（语音还能用别名，比如骰子、看板）。游戏页只列游戏。 */
-    private val RING = listOf("read", "nav", "pomo", "workout", "eyes", "sleep", "clock", "captions", "assist", "agent", "memory", "sights", "party", "follow", "games")
+    private val RING = listOf("dash", "read", "nav", "pomo", "workout", "eyes", "sleep", "clock", "captions", "assist", "agent", "memory", "sights", "party", "follow", "games")
 
     fun ringItems(all: List<VoiceCommand>, games: Boolean): List<VoiceCommand> =
         if (games) all.filter { it.id.startsWith("game:") }

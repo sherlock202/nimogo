@@ -378,4 +378,16 @@ object DashboardImage {
         }
         return NimoFrameCodec.pack2bpp(levels)
     }
+
+    /** 调画面上下、远近时显示的框：整圈边和十字，移动时能看出框有没有被切掉。 */
+    fun alignTest(): ByteArray {
+        val bmp = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.BLACK)
+        val p = Paint().apply { color = Color.WHITE; strokeWidth = 2f; isAntiAlias = false }
+        c.drawRect(1f, 1f, (W - 2).toFloat(), (H - 2).toFloat(), p.apply { style = Paint.Style.STROKE })
+        c.drawLine(8f, H / 2f, (W - 8).toFloat(), H / 2f, p)
+        c.drawLine(W / 2f, 8f, W / 2f, (H - 8).toFloat(), p)
+        return toGlasses(bmp)
+    }
 }

@@ -80,7 +80,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
     private enum class Tab { HOME, DASH, ME }
     private enum class Sub {
         READ, STOCKS, AGENDA, NOTIFY, GAMES, GAME, CLOCK, POMO, POMO_SET, WORKOUT, WORKOUT_GROUP, EYES, PARTY,
-        DASH_SET, FONT, READ_SET, OFFICIAL, LOG, ABOUT, LICENSES, MEMORY, MEMORY_SET, MEMORY_LISTEN, MEMORY_API, CAPTIONS, SIGHTS, MANUAL, MANUAL_TOPIC,
+        DASH_SET, FONT, READ_SET, ALIGN, OFFICIAL, LOG, ABOUT, LICENSES, MEMORY, MEMORY_SET, MEMORY_LISTEN, MEMORY_API, CAPTIONS, SIGHTS, MANUAL, MANUAL_TOPIC,
         NAV, NAV_SET, ASSIST, ASSIST_SET, ASSIST_SESSION, AGENT
     }
 
@@ -760,6 +760,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         subPages[Sub.PARTY] = buildParty()
         subPages[Sub.DASH_SET] = buildDashSettings()
         subPages[Sub.FONT] = buildFont()
+        subPages[Sub.ALIGN] = buildAlign()
         subPages[Sub.READ_SET] = buildReadSettings()
         subPages[Sub.OFFICIAL] = buildOfficial()
         subPages[Sub.LOG] = buildLog()
@@ -852,6 +853,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         when (s) {
             Sub.READ -> service?.switchAppMode(ReaderService.AppMode.READER)
             Sub.AGENDA -> if (!CalendarReader.hasPermission(this)) need(Manifest.permission.READ_CALENDAR)
+            Sub.ALIGN -> service?.beginAlignTest()
             else -> {}
         }
         render()
@@ -1003,7 +1005,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.WORKOUT -> "锻炼"; Sub.WORKOUT_GROUP -> service?.workout?.editingGroup()?.name ?: "运动组"
         Sub.EYES -> "视力训练"
         Sub.PARTY -> "聚会工具"; Sub.DASH_SET -> "看板设置"
-        Sub.FONT -> "眼镜字号"; Sub.READ_SET -> "阅读显示"; Sub.OFFICIAL -> "官方 app"; Sub.LOG -> "日志"; Sub.ABOUT -> "关于"; Sub.LICENSES -> "开源许可"
+        Sub.FONT -> "眼镜字号"; Sub.ALIGN -> "画面远近和上下"; Sub.READ_SET -> "阅读显示"; Sub.OFFICIAL -> "官方 app"; Sub.LOG -> "日志"; Sub.ABOUT -> "关于"; Sub.LICENSES -> "开源许可"
         Sub.MEMORY -> "全天记忆"; Sub.CAPTIONS -> "实时字幕"; Sub.MEMORY_LISTEN -> "收音方式和耗电"; Sub.MEMORY_API -> "转文字和总结"; Sub.MEMORY_SET -> "全天记忆设置"; Sub.SIGHTS -> "景点介绍"
         Sub.MANUAL -> "使用手册"; Sub.MANUAL_TOPIC -> manualTopic.title
         Sub.NAV -> "导航"; Sub.NAV_SET -> "导航设置"
@@ -1552,7 +1554,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val show = pill("显示看板", small = true) {
             val s = service ?: return@pill
             if (!s.dashEnabled) { toast("先打开最上面的「使用看板」"); return@pill }
-            s.switchAppMode(ReaderService.AppMode.DASHBOARD); if (s.glassesPaused) s.resumeGlasses() else s.pauseGlasses()
+            s.switchAppMode(ReaderService.AppMode.DASHBOARD); if (s.glassesPaused) s.resumeGlasses() else if (s.appMode == ReaderService.AppMode.DASHBOARD && s.activeApp == null) s.toggleShow() else s.pauseGlasses()
         }
         fun flip(d: Int) { service?.flipDashboard(d); refreshNow() }
         pv.addView(hbox().apply {
@@ -1742,7 +1744,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             howSeg.select(hows.indexOf(s.dashHideModeSetting).coerceAtLeast(0))
             howSeg.root.visibility = if (s.dashHeadWake) View.VISIBLE else View.GONE
             val home = s.dashHideMode == ReaderService.HIDE_HOME
-            howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时回官方主界面。看板模式开着时左单击叫回看板；显示时右单击收起，左单击翻屏，左双击上一屏，右双击打开语音菜单。" +
+            howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时直接关屏，不回官方主界面。再按一下镜腿亮回来。看板显示时右单击关屏，左单击翻屏，左双击上一屏，右双击打开语音菜单。已经回到官方主界面时，左单击打开语音菜单（第一项是看板），左长按打开看板。" +
                 "官方 app 连着时眼镜的报告会发给官方 app，NimoGo 收不到，要先停止官方 app（「我的 › 和官方 app 切换」）。"
                 else if (home) "回官方主界面；眼镜报告「主界面被点亮」时叫回看板。官方 app 连着时这个报告会发给官方 app，" +
                 "NimoGo 收不到，所以要先停止官方 app（「我的 › 和官方 app 切换」）。"
@@ -1751,7 +1753,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             headRow.titleV.text = "眼镜的抬头显示"
             headRow.desc(when {
                 s.headUpDisplay == null -> "连上眼镜后读取（和官方 app 里的是同一个设置）"
-                !s.dashHeadWake -> "关：收起时回官方主界面，说「看板」叫回"
+                !s.dashHeadWake -> "关：收起时直接关屏，不回主界面"
                 home -> "开：抬头叫回看板，低头回主界面"
                 else -> "开：抬头显示看板，低头关屏"
             })
@@ -1830,9 +1832,10 @@ class MainActivity : Activity(), ReaderService.UiListener {
         page.addView(section("眼镜"))
         val g = listBox()
         val font = Row("眼镜字号", chevron = true) { openSub(Sub.FONT) }
+        val align = Row("画面远近和上下", "拖动时眼镜马上跟着变", chevron = true) { openSub(Sub.ALIGN) }
         val read = Row("阅读显示", "图片 / 提词器文字、进度、排版", chevron = true) { openSub(Sub.READ_SET) }
         val notify = Row("通知转发", "", chevron = true) { openSub(Sub.NOTIFY) }
-        g.addRow(font.root); g.addRow(read.root); g.addRow(notify.root)
+        g.addRow(font.root); g.addRow(align.root); g.addRow(read.root); g.addRow(notify.root)
         page.addView(g)
 
         // 看板顶部一行、天气卡片都用
@@ -1877,6 +1880,10 @@ class MainActivity : Activity(), ReaderService.UiListener {
             stepsRow.desc(s.steps.steps?.let { "今天 %,d 步".format(it) } ?: "还没有步数数据")
             stepsRow.value(if (s.steps.steps != null) s.steps.source else "去授权")
             font.value("${s.glassesFontPx}px")
+            align.value(when {
+                s.imageHeight == null && s.imageDistance == null -> ""
+                else -> "上下 ${s.imageHeight ?: "–"} · 远近 ${s.imageDistance ?: "–"}"
+            })
             bg.value(if (s.ignoringBatteryOptimizations()) "已允许" else "去允许")
             read.value(if (s.readerAsImage) "图片" else "文字")
             val chosen = chosenApps()
@@ -1913,6 +1920,65 @@ class MainActivity : Activity(), ReaderService.UiListener {
     }
 
     private fun versionName(): String = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: ""
+
+    /** 画面上下、远近：拖动马上发给眼镜，眼镜上同时显示一圈框。 */
+    private fun buildAlign(): View {
+        val page = vbox()
+        page.addView(note("和官方 app 里的是同一套，0 到 10。拖动时眼镜马上变。这一页会在眼镜上画一圈框和十字，看框有没有被切掉、远近是否合适。返回后恢复原来的画面。"))
+        val c = card()
+        var dragHeight = false
+        var dragDistance = false
+        val heightValue = text("上下", 16f, INK, true)
+        val heightBar = SeekBar(this).apply {
+            max = NimoProtocol.DISPLAY_LEVEL_MAX
+            progressTintList = ColorStateList.valueOf(TAN); thumbTintList = ColorStateList.valueOf(TAN)
+            progressBackgroundTintList = ColorStateList.valueOf(TRACK)
+        }
+        val distanceValue = text("远近", 16f, INK, true)
+        val distanceBar = SeekBar(this).apply {
+            max = NimoProtocol.DISPLAY_LEVEL_MAX
+            progressTintList = ColorStateList.valueOf(TAN); thumbTintList = ColorStateList.valueOf(TAN)
+            progressBackgroundTintList = ColorStateList.valueOf(TRACK)
+        }
+        fun label(kind: String, level: Int?) = "$kind  ${level ?: "–"}"
+        heightBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                heightValue.text = label("上下", p) + "  ·  下 ← → 上"
+                service?.setImageHeight(p)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) { dragHeight = true }
+            override fun onStopTrackingTouch(sb: SeekBar?) { dragHeight = false }
+        })
+        distanceBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                distanceValue.text = label("远近", p) + "  ·  近 ← → 远"
+                service?.setImageDistance(p)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) { dragDistance = true }
+            override fun onStopTrackingTouch(sb: SeekBar?) { dragDistance = false }
+        })
+        c.addView(heightValue)
+        c.addView(hint("左边更靠下，右边更靠上"), lp(top = 2))
+        c.addView(heightBar, lp(top = 4))
+        c.addView(distanceValue, lp(top = 16))
+        c.addView(hint("左边更近，右边更远"), lp(top = 2))
+        c.addView(distanceBar, lp(top = 4))
+        page.addView(c, lp(top = 8))
+        onLeave(Sub.ALIGN) { service?.endAlignTest() }
+        onUpdate(Sub.ALIGN) { s ->
+            if (!dragHeight) {
+                s.imageHeight?.let { if (heightBar.progress != it) heightBar.progress = it }
+                heightValue.text = label("上下", s.imageHeight) + "  ·  下 ← → 上"
+            }
+            if (!dragDistance) {
+                s.imageDistance?.let { if (distanceBar.progress != it) distanceBar.progress = it }
+                distanceValue.text = label("远近", s.imageDistance) + "  ·  近 ← → 远"
+            }
+        }
+        return page
+    }
 
     /** 眼镜字号：12～32px 每 1px 一档，拖动时实时预览眼镜上的效果。 */
     private fun buildFont(): View {
