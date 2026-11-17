@@ -83,7 +83,8 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         private const val ACK_TIMEOUT_MS = 5_000L
         /** 麦克风特征值的属性句柄（实测）。 */
         private const val MIC_HANDLE = 3
-        private const val KEEPALIVE_MS = 30_000L
+        /** App 在前台时隔这么久问一次电量。后台不问。 */
+        private const val BATTERY_POLL_MS = 60_000L
         /** 发完数据后，多久放回均衡连接间隔。 */
         private const val LINK_BOOST_MS = 3_000L
         private const val WRITE_WATCHDOG_MS = 1_000L
@@ -773,11 +774,21 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         flushText()
     }
 
-    /** 每 30 秒查一次电量，兼作保活，避免系统回收空闲连接。 */
+    /** 返回 true 才问电量（NimoGo 正在前台）。没设置就不问。 */
+    var batteryWatch: (() -> Boolean)? = null
+    private val batteryPoll = Runnable { pollBattery() }
+
+    /** 前台状态变了：开着就马上问一次，然后每分钟一次；关着就停。 */
+    fun syncBatteryWatch() {
+        main.removeCallbacks(batteryPoll)
+        if (batteryWatch?.invoke() == true) pollBattery()
+    }
+
+    /** 只在 App 打开时问电量，大约一分钟一次。待机不问，免得把连接间隔一次次拉高。 */
     private fun pollBattery() {
-        if (state != LinkState.READY && state != LinkState.HANDSHAKING) return
+        if (state != LinkState.READY || batteryWatch?.invoke() != true) return
         sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_GET_PARAMETER, NimoProtocol.GET_BATTERY))
-        main.postDelayed({ if (state == LinkState.READY) pollBattery() }, KEEPALIVE_MS)
+        main.postDelayed(batteryPoll, BATTERY_POLL_MS)
     }
 
     // ---------- 显示文字 ----------

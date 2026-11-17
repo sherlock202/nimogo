@@ -3866,13 +3866,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
     override fun onResume() {
         super.onResume()
-        ReaderService.uiVisible = true
+        ReaderService.instance?.onUiVisible(true) ?: run { ReaderService.uiVisible = true }
         // 从系统设置回来：允许了就接着装
         pendingApk?.let { if (packageManager.canRequestPackageInstalls() && it.exists()) installUpdate(it) }
     }
 
     override fun onPause() {
-        ReaderService.uiVisible = false
+        ReaderService.instance?.onUiVisible(false) ?: run { ReaderService.uiVisible = false }
         super.onPause()
     }
 

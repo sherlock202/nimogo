@@ -1772,6 +1772,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         GlassesFonts.init(this)
         steps = StepsProvider(this) { if (appMode == AppMode.DASHBOARD) pushDashboard(force = false); notifyUi() }
         client = NimoClient(this, this)
+        client.batteryWatch = { uiVisible }
         client.page = displayPage
         powerSaveBlanked = prefs.getBoolean("powerSaveBlanked", false)
         if (prefs.contains("displayOffUser")) userDisplayOff = prefs.getBoolean("displayOffUser", false)
@@ -1817,6 +1818,16 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
     private val dailyTimeSync: Runnable = object : Runnable {
         override fun run() { client.resyncTime("每天一次"); main.postDelayed(this, DAY_MS) }
+    }
+
+    /** App 到前台才问电量；退到后台就停。 */
+    fun onUiVisible(visible: Boolean) {
+        uiVisible = visible
+        if (!visible) {
+            main.removeCallbacks(brightnessStep)
+            brightnessAnim = null
+        }
+        if (::client.isInitialized) client.syncBatteryWatch()
     }
 
     /** 打开 NimoGo 时：还有没推出去的通知就先连上再推；否则按原来的，慢慢重试中的马上试一次。 */
@@ -2071,9 +2082,10 @@ class ReaderService : Service(), NimoListener, AppHost {
         }
     }
 
-    /** 眼镜按环境光算出了新的亮度：开着自动亮度时平滑地设过去；关着就不管（官方也是忽略）。 */
+    /** 眼镜按环境光算出了新的亮度：开着自动亮度、并且 NimoGo 在前台时，平滑地设过去。
+     *  退到后台不回写，避免为了亮度一直和眼镜通信。 */
     override fun onAutoBrightnessLevel(level: Int) {
-        if (autoBrightness != true || linkState != LinkState.READY) return
+        if (autoBrightness != true || linkState != LinkState.READY || !uiVisible) return
         val cur = brightnessPct.toDouble()
         // 同一个环境里眼镜报的档位会上下跳：先平滑、差得不够多就不动、两次调整之间隔开（AutoBrightnessFilter）
         val target = autoBrightFilter.feed(android.os.SystemClock.uptimeMillis(), NimoClient.autoPercent(level), cur) ?: return
