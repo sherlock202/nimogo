@@ -1811,11 +1811,6 @@ class MainActivity : Activity(), ReaderService.UiListener {
             else AlertDialog.Builder(this).setTitle("断开眼镜？").setPositiveButton("断开") { _, _ -> s.disconnect() }.setNegativeButton("取消", null).show()
         }
         c.addRow(link.root)
-        val saveToggle = Toggle {
-            val s = service ?: return@Toggle
-            s.powerSave = !s.powerSave
-        }
-        c.addRow(Row("节电模式", "不断开蓝牙。没有显示 2 分钟后息屏，来通知或按左镜腿再亮").apply { accessory(saveToggle.root) }.root)
         c.addRow(Row("和官方 app 切换", "眼镜同时只能连一个 app", chevron = true) { openSub(Sub.OFFICIAL) }.root)
         val bg = Row("后台运行", chevron = true) {
             val s = service ?: return@Row
@@ -1892,7 +1887,6 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 else -> chosen.take(3).joinToString("、") + " 等 ${chosen.size} 个"
             })
             notify.value(if (NotifyPrefs.enabled(this)) "已开" else "已关")
-            saveToggle.set(s.powerSave)
             link.value(when (s.linkState) {
                 LinkState.READY -> s.deviceName.ifEmpty { "已连接" }; LinkState.DISCONNECTED -> "未连接"; else -> "连接中…"
             })

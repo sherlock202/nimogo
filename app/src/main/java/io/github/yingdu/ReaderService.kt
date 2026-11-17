@@ -49,8 +49,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         private const val DAY_MS = 24 * 3600_000L
         /** 关屏收起时，眼镜上待机的第一屏多久检查一次要不要更新。 */
         const val STANDBY_REFRESH_MS = 30_000L
-        /** 节电模式：没有显示后多久息屏。不断开蓝牙，来通知或按左镜腿再亮。 */
-        const val POWER_SAVE_BLANK_MS = 2 * 60_000L
         /** 看板开着时，天气最多这么久取一次。 */
         const val WEATHER_INTERVAL_MS = 4 * 60 * 60_000L
         const val OFFLINE_MAX_AGE_MS = 120_000L
@@ -973,7 +971,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
         glassesPaused = false
         log("打开：${app.title}")
-        wakeForShow("节电：打开${app.title}")
         pushPage()
     }
 
@@ -1094,7 +1091,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
         glassesPaused = false; lastPushedDash = ""; dashPage = 0
         activeApp?.onResume()
-        wakeForShow("节电：恢复显示")
         pushPage()
     }
 
@@ -1505,7 +1501,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         headHidden = false
         stopAutoFlip()
         log(if (mode == AppMode.DASHBOARD) "切换到看板" else "切换到阅读")
-        wakeForShow(if (mode == AppMode.DASHBOARD) "节电：打开看板" else "节电：打开阅读")
         if (appMode == AppMode.DASHBOARD) { dashPage = 0; refreshDashboard(forceWeather = weather == null) }
         restartDashTimer()
         pushPage()
@@ -1774,8 +1769,11 @@ class ReaderService : Service(), NimoListener, AppHost {
         client = NimoClient(this, this)
         client.batteryWatch = { uiVisible }
         client.page = displayPage
-        powerSaveBlanked = prefs.getBoolean("powerSaveBlanked", false)
-        if (prefs.contains("displayOffUser")) userDisplayOff = prefs.getBoolean("displayOffUser", false)
+        if (prefs.getBoolean("powerSaveBlanked", false)) {
+            restoreDisplayOff = if (prefs.contains("displayOffUser")) prefs.getBoolean("displayOffUser", false) else false
+            prefs.edit().remove("powerSave").remove("powerSaveBlanked").apply()
+            log("节电已取消：连上后把息屏还回原来的设置")
+        } else if (prefs.contains("powerSave")) prefs.edit().remove("powerSave").apply()
         if (appMode == AppMode.DASHBOARD) { refreshDashboard(forceWeather = dashEnabled); restartDashTimer() }
         prefs.getString("lastBook", null)?.let { openBook(Uri.parse(it), fromRestore = true) }
         pomodoro.restore()
@@ -1856,7 +1854,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         main.removeCallbacks(sightsTimer); main.removeCallbacks(sightNext)
         stopAutoFlip()
         main.removeCallbacks(dashTick)
-        endLink(keepPowerSaveScreen = false)
+        endLink()
         io.shutdown()
         super.onDestroy()
     }
@@ -1882,97 +1880,21 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     fun disconnect() {
         holdOff = true
-        endLink(keepPowerSaveScreen = false)
+        endLink()
     }
 
-    /**
-     * 节电：开着时不断开蓝牙。眼镜上没有显示大约 2 分钟后息屏，来通知或按左镜腿再亮回原来的息屏开关。
-     * 点了「断开」或交给官方 app（holdOff）之后，通知不再自动连上。
-     */
-    var powerSave: Boolean
-        get() = prefs.getBoolean("powerSave", false)
-        set(v) {
-            prefs.edit().putBoolean("powerSave", v).apply()
-            if (v) userSkipBlank = false
-            log(if (v) "节电模式开：没有显示 2 分钟后息屏，不断开蓝牙" else "节电模式关")
-            watchPowerSave()
-            notifyUi()
-        }
-
-    /** 用户主动断开（或交给官方 app）。为 true 时节电不再自动重连。 */
+    /** 用户主动断开（或交给官方 app）。为 true 时不再自动重连。 */
     private var holdOff = false
     /** 这次重连只为了推通知，连上后不要把上次的画面打开。 */
     private var quietLink = false
+    /** 上一版节电临时打开过息屏：连上后还回用户自己的开关。null = 不用还。 */
+    private var restoreDisplayOff: Boolean? = null
 
-    /** 眼镜上现在有没有画面（看板、阅读、全屏功能，或一条还没消失的通知）。 */
-    private fun showingOnGlasses() = powerWake || notifyLit || notifyOver || notifyOverReader || !glassesPaused
-
-    /** 节电自己把息屏打开了（还没还回用户原来的开关）。 */
-    private var powerSaveBlanked = false
-    /** 用户自己的息屏开关。节电临时打开时不覆盖它。 */
-    private var userDisplayOff: Boolean? = null
-    /** 正在代发息屏：这一下的回报不要写成用户的选择。 */
-    private var applyingPowerSaveScreen = false
-    /** 用户刚手动改过息屏：这次空闲先别再自动息屏，下次有显示再空下来才恢复。 */
-    private var userSkipBlank = false
-    /** 节电息屏后正在把屏幕打开等通知。这段时间仍算有显示。 */
-    private var powerWake = false
-    private var powerBlankArmed = false
-    private val powerSaveBlank = Runnable {
-        powerBlankArmed = false
-        if (!powerSave || holdOff || userSkipBlank || linkState != LinkState.READY || showingOnGlasses()) return@Runnable
-        if (displayOff != false || screenOffByUs || client.darkHome) return@Runnable
-        powerSaveBlanked = true
-        prefs.edit().putBoolean("powerSaveBlanked", true).apply()
-        applyingPowerSaveScreen = true
-        client.screenOff(true)
-        applyingPowerSaveScreen = false
-        log("节电：没有显示，息屏。来通知或按左镜腿再亮")
-    }
-
-    private fun watchPowerSave() {
-        val idle = powerSave && !holdOff && linkState == LinkState.READY && !showingOnGlasses()
-        if (!idle) {
-            powerBlankArmed = false
-            main.removeCallbacks(powerSaveBlank)
-            if (showingOnGlasses() || !powerSave || holdOff) userSkipBlank = false
-            if (powerSaveBlanked && (showingOnGlasses() || !powerSave || holdOff)) releasePowerSaveScreen()
-            return
-        }
-        if (powerSaveBlanked && displayOff == false && !powerBlankArmed) {
-            powerBlankArmed = true
-            main.postDelayed(powerSaveBlank, POWER_SAVE_BLANK_MS)
-        }
-        if (powerSaveBlanked || powerBlankArmed || userSkipBlank || displayOff != false || screenOffByUs || client.darkHome) return
-        powerBlankArmed = true
-        main.postDelayed(powerSaveBlank, POWER_SAVE_BLANK_MS)
-    }
-
-    /** 节电临时息屏还回用户原来的开关。 */
-    private fun releasePowerSaveScreen() {
-        if (!powerSaveBlanked) return
-        powerSaveBlanked = false
-        prefs.edit().putBoolean("powerSaveBlanked", false).apply()
-        if (linkState != LinkState.READY || userDisplayOff == true || displayOff != true) return
-        applyingPowerSaveScreen = true
-        client.screenOff(false)
-        applyingPowerSaveScreen = false
-        log("节电：恢复屏幕")
-    }
-
-    /**
-     * 断开。keepPowerSaveScreen 为 false 时，先把节电临时息屏还回用户原来的开关。
-     * 用户点断开、交给官方 app、服务退出都走这条。
-     */
-    private fun endLink(keepPowerSaveScreen: Boolean) {
-        main.removeCallbacks(powerSaveBlank)
-        powerBlankArmed = false
-        if (!keepPowerSaveScreen && powerSaveBlanked) {
-            val off = userDisplayOff == true
-            powerSaveBlanked = false
-            prefs.edit().putBoolean("powerSaveBlanked", false).apply()
-            client.disconnect(displayOff = off)
-        } else client.disconnect()
+    private fun endLink() {
+        val off = restoreDisplayOff
+        restoreDisplayOff = null
+        if (off != null && linkState == LinkState.READY) client.disconnect(displayOff = off)
+        else client.disconnect()
     }
 
     /** 通知来了但没连着：有的手机要等界面到前台才肯连。通知服务可以拉起一个看不见的界面。 */
@@ -2021,19 +1943,17 @@ class ReaderService : Service(), NimoListener, AppHost {
     /** 把眼镜交给官方 app：停掉翻译、收起画面、断开连接（不自动重连）。 */
     fun handOffToOfficial() {
         holdOff = true
-        main.removeCallbacks(powerSaveBlank)
-        powerBlankArmed = false
         stopAutoFlip()
         client.quitCurrent()
         main.postDelayed({
-            endLink(keepPowerSaveScreen = false)
+            endLink()
             log("已断开，眼镜交给官方 app 使用")
         }, 300)
     }
 
     /** 完全退出：断开眼镜并结束前台服务。 */
     fun shutdown() {
-        endLink(keepPowerSaveScreen = false)
+        endLink()
         stopAutoFlip()
         inForeground = false
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -2567,7 +2487,6 @@ class ReaderService : Service(), NimoListener, AppHost {
     private fun setTop(line: Int, byFollow: Boolean = false) {
         val p = paginator ?: return
         topLine = line.coerceIn(0, p.lineCount - 1)
-        wakeForShow("节电：翻页")
         if (followOn && !byFollow) {
             // 跟读时手动翻了（戒指、镜腿、音量键、手机上的按钮）：从眼镜上这一屏的开头重新找。
             // 翻页前念的话（还在 4 秒的声音里）不能再把位置拉回去：丢掉留着的声音，翻页前的识别结果也不要
@@ -2586,14 +2505,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private fun savedOffset(): Int = bookUri?.let { prefs.getInt("pos:$it", 0) } ?: 0
 
     /** 把当前页推到眼镜上，同时保存进度。 */
-    /** 手机上要在眼镜显示内容：节电断开后先连上。服务自己恢复上次的书时不走这里，避免一启动就连。 */
-    private fun wakeForShow(why: String) {
-        releasePowerSaveScreen()
-        if (powerSave && !holdOff && linkState != LinkState.READY) relink(why, quiet = false)
-    }
-
     private fun pushPage() {
-        if (powerSaveBlanked && !glassesPaused) releasePowerSaveScreen()
         if (android.os.SystemClock.uptimeMillis() < exitLockUntil) {
             log("刚长按退出，先不把页面打开")
             return
@@ -2696,19 +2608,6 @@ class ReaderService : Service(), NimoListener, AppHost {
                 log("眼镜没连着，通知先存着（${offlineQueue.size} 条），连上后再弹")
                 // 点了「断开」或交给官方 app（holdOff）就不再自动连。其余断开（连不上停下）来通知就在后台重连再推。
                 if (!holdOff) relink("有通知", quiet = true)
-            }
-            return
-        }
-        if (powerSaveBlanked && !powerWake) {
-            // 关着屏时自带弹窗会被丢掉：先开屏，等屏幕亮起再弹。这段时间不要又息屏。
-            powerWake = true
-            releasePowerSaveScreen()
-            client.screenOnThen {
-                main.postDelayed({
-                    if (linkState != LinkState.READY) { powerWake = false; return@postDelayed }
-                    onPhoneNotification(app, title, text, litMs0, fit, pkg)
-                    main.postDelayed({ powerWake = false; watchPowerSave() }, litMs)
-                }, 1_500)
             }
             return
         }
@@ -2859,7 +2758,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         notifyOver = false
         log("通知显示完，回到看板")
         if (appMode == AppMode.DASHBOARD && !glassesPaused && linkState == LinkState.READY) pushDashboard(force = false, restartTimers = false)
-        watchPowerSave()
     }
 
     /** 通知正画在阅读的这一页上。 */
@@ -2869,7 +2767,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         notifyOverReader = false
         log("通知显示完，回到阅读")
         if (appMode == AppMode.READER && !glassesPaused && linkState == LinkState.READY) pushPage()
-        watchPowerSave()
     }
 
     /** 按右镜腿：关掉正显示着的通知（NimoGo 画的；眼镜自带的弹窗关不掉）。关掉了返回 true。 */
@@ -2894,7 +2791,6 @@ class ReaderService : Service(), NimoListener, AppHost {
             main.postDelayed(standbyRefresh, 300)
         }
         restoreHeadUp()
-        watchPowerSave()
     }
 
     /** 语音菜单正用抬头低头选着：这段时间里不把抬头显示开回去，否则一低头屏幕就灭。 */
@@ -3241,11 +3137,16 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (state == LinkState.DISCONNECTED) { memEngine.onGlassesLost(); headUpSuspended = false; notifyLit = false; autoBrightFilter.reset() }
         if (state == LinkState.READY && memEnabled && !memEngine.running) main.postDelayed({ memStartIfEnabled() }, 3_000)
         if (state == LinkState.READY) {
+            restoreDisplayOff?.let { off ->
+                restoreDisplayOff = null
+                client.screenOff(off)
+                log(if (off) "息屏还回：开" else "息屏还回：关")
+            }
             val quiet = quietLink
             quietLink = false
             if (quiet) {
                 // 只为推通知连上：不把上次的看板 / 阅读打开
-                log("节电：为通知连上，不打开原来的画面")
+                log("为通知连上，不打开原来的画面")
                 main.postDelayed({ if (linkState == LinkState.READY) replayOffline() }, 2_000)
                 updateNotification(); notifyUi(); return
             }
@@ -3279,7 +3180,7 @@ class ReaderService : Service(), NimoListener, AppHost {
      */
     override fun onTwsReconnected() {
         log("两条镜腿重新连上：同步画面到两边")
-        if (screenOffByUs || powerSaveBlanked) {
+        if (screenOffByUs) {
             client.screenOff(true)
             if (screenOffByUs) { standbyKey = null; lastPushedDash = "" }
             return
@@ -3349,12 +3250,6 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     override fun onInput(input: GlassesInput) {
-        if (powerSaveBlanked && input == GlassesInput.CLICK_LEFT) {
-            log("节电：左镜腿，恢复显示")
-            releasePowerSaveScreen()
-            notifyUi()
-            return
-        }
         // 排查"抬头不显示看板"：收起状态下抬头时，把当时的状态记下来
         if (input == GlassesInput.HEAD_UP && glassesPaused)
             log("抬头时：" + (activeApp?.let { "全屏功能「${it.title}」开着，" } ?: "") + "模式 ${appMode.name}，" +
@@ -3507,13 +3402,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     override fun onGlassesSetting(key: Int, on: Boolean) {
         when (key) {
             NimoProtocol.SET_HEADUP_DISPLAY -> headUpDisplay = on
-            NimoProtocol.SET_DISPLAY_OFF -> {
-                displayOff = on
-                if (!applyingPowerSaveScreen && !powerSaveBlanked) {
-                    userDisplayOff = on
-                    prefs.edit().putBoolean("displayOffUser", on).apply()
-                }
-            }
+            NimoProtocol.SET_DISPLAY_OFF -> displayOff = on
             NimoProtocol.SET_AUTO_BRIGHTNESS -> { autoBrightness = on; autoBrightFilter.reset(); if (!on) { main.removeCallbacks(brightnessStep); brightnessAnim = null } }
         }
         notifyUi()
@@ -3521,13 +3410,6 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     fun toggleHeadUp() { client.setGlassesSetting(NimoProtocol.SET_HEADUP_DISPLAY, headUpDisplay != true); log(if (headUpDisplay != true) "抬头显示：开" else "抬头显示：关") }
     fun toggleDisplayOff() {
-        main.removeCallbacks(powerSaveBlank)
-        powerBlankArmed = false
-        if (powerSaveBlanked) {
-            powerSaveBlanked = false
-            prefs.edit().putBoolean("powerSaveBlanked", false).apply()
-        }
-        userSkipBlank = true
         client.setGlassesSetting(NimoProtocol.SET_DISPLAY_OFF, displayOff != true)
         log(if (displayOff != true) "息屏模式：开" else "息屏模式：关")
     }
@@ -3862,7 +3744,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         // 通知里显示页码；只在内容变化时更新，避免频繁刷新
         val t = "$pageNumber/$autoFlip/$glassesPaused/$appMode/$linkState/${activeApp?.status()}"
         if (t != lastNotifText) { lastNotifText = t; updateNotification() }
-        watchPowerSave()
     }
 
     // ---------- 前台通知 ----------

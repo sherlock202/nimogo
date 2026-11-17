@@ -231,13 +231,13 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         log("${head}眼镜刚没有回应，${sec} 秒内的通知先存着，之后有新消息会再连。打开 NimoGo 或点「连接」会马上试")
     }
 
-    /** 上次连接的眼镜地址（节电断开后，通知或手机上打开功能时用来再连）。 */
+    /** 上次连接的眼镜地址（通知或手机上打开功能时用来再连）。 */
     fun deviceAddress(): String? = device?.address
 
-    /** 丢掉还没发出去的画面。节电模式只为通知重连时用，免得一连上就把上次的看板又打开。 */
+    /** 丢掉还没发出去的画面。只为通知重连时用，免得一连上就把上次的看板又打开。 */
     fun clearPending() { pending = null }
 
-    /** displayOff：断开前先把息屏设成这个值（节电临时息屏要还回用户原来的开关）。null = 不额外改。 */
+    /** displayOff：断开前先把息屏设成这个值。null = 不额外改。 */
     fun disconnect(displayOff: Boolean? = null) {
         wantConnected = false
         main.removeCallbacksAndMessages(null)
