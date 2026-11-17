@@ -19,6 +19,12 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- 步数：打开系统 Health Connect 的授权页 -->
+        <package android:name="com.google.android.apps.healthdata" />
+        <package android:name="com.android.healthconnect.controller" />
+        <intent>
+            <action android:name="android.health.connect.action.MANAGE_HEALTH_PERMISSIONS" />
+        </intent>
     </queries>
 
     <!-- Android 11 及以下 -->

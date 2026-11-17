@@ -27,6 +27,8 @@ class StepsProvider(private val ctx: Context, private val onChange: () -> Unit) 
 
     var steps: Long? = null; private set
     var source = ""; private set
+    /** 没用上手环步数时，给设置页看的原因。 */
+    var detail = ""; private set
 
     private val prefs = ctx.getSharedPreferences("steps", Context.MODE_PRIVATE)
     private var sensorOn = false
@@ -39,14 +41,23 @@ class StepsProvider(private val ctx: Context, private val onChange: () -> Unit) 
     fun hasSensorPermission() = Build.VERSION.SDK_INT < 29 ||
         ctx.checkSelfPermission(PERM_SENSOR) == PackageManager.PERMISSION_GRANTED
 
-    /** 需要申请的权限。 */
-    fun neededPermissions(): List<String> = buildList {
-        if (healthConnectAvailable() && !hasHealthPermission()) add(PERM_HEALTH)
-        if (Build.VERSION.SDK_INT >= 29 && !hasSensorPermission()) add(PERM_SENSOR)
+    fun refresh() {
+        when {
+            !healthConnectAvailable() -> usePhone("这台手机没有 Health Connect（需要安卓 14），只能用手机计步")
+            !hasHealthPermission() -> usePhone("还没有允许读取 Health Connect。点这一行去授权，手环也要先同步进去")
+            else -> readHealthConnect()
+        }
     }
 
-    fun refresh() {
-        if (hasHealthPermission()) readHealthConnect() else startSensor()
+    /**
+     * 打开系统的 Health Connect 授权页（授予或关闭「读取步数」）。
+     * 这台手机没有这个页面时返回 false。
+     */
+    fun openHealthPermissions(activity: android.app.Activity): Boolean {
+        if (Build.VERSION.SDK_INT < 34) return false
+        val intent = android.content.Intent("android.health.connect.action.MANAGE_HEALTH_PERMISSIONS")
+            .putExtra(android.content.Intent.EXTRA_PACKAGE_NAME, activity.packageName)
+        return runCatching { activity.startActivity(intent) }.isSuccess
     }
 
     fun stop() {
@@ -59,7 +70,8 @@ class StepsProvider(private val ctx: Context, private val onChange: () -> Unit) 
     @SuppressLint("NewApi")
     private fun readHealthConnect() {
         try {
-            val hc = ctx.getSystemService(android.health.connect.HealthConnectManager::class.java) ?: return startSensor()
+            val hc = ctx.getSystemService(android.health.connect.HealthConnectManager::class.java)
+                ?: return usePhone("这台手机没有 Health Connect，只能用手机计步")
             val start = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant()
             val filter = android.health.connect.TimeInstantRangeFilter.Builder()
                 .setStartTime(start).setEndTime(Instant.now()).build()
@@ -71,16 +83,32 @@ class StepsProvider(private val ctx: Context, private val onChange: () -> Unit) 
                 object : OutcomeReceiver<android.health.connect.AggregateRecordsResponse<Long>, android.health.connect.HealthConnectException> {
                     override fun onResult(r: android.health.connect.AggregateRecordsResponse<Long>) {
                         val v = r.get(android.health.connect.datatypes.StepsRecord.STEPS_COUNT_TOTAL)
-                        if (v == null) { startSensor(); return }
+                        if (v == null) {
+                            usePhone("Health Connect 里没有今天的步数。请在手环的 app 里打开同步")
+                            return
+                        }
                         steps = v
                         source = "Health Connect"
+                        detail = ""
                         onChange()
                     }
-                    override fun onError(e: android.health.connect.HealthConnectException) { startSensor() }
+                    override fun onError(e: android.health.connect.HealthConnectException) {
+                        usePhone("读 Health Connect 失败，暂时用手机计步")
+                    }
                 })
         } catch (e: Exception) {
-            startSensor()
+            usePhone("读 Health Connect 失败，暂时用手机计步")
         }
+    }
+
+    /** 退回手机计步，并记下原因。已经在用手机计步、原因也没变时，不额外刷新界面。 */
+    private fun usePhone(why: String) {
+        val leaveHealth = source == "Health Connect"
+        if (leaveHealth) { source = ""; steps = null }
+        val detailChanged = detail != why
+        detail = why
+        startSensor()
+        if ((leaveHealth || detailChanged) && sensorValue == null) onChange()
     }
 
     // ---------- 手机计步传感器 ----------
@@ -113,7 +141,8 @@ class StepsProvider(private val ctx: Context, private val onChange: () -> Unit) 
 
     private fun publishSensor() {
         val v = sensorValue ?: return
-        if (hasHealthPermission() && source == "Health Connect") return
+        // 手环步数已经在用时，手机传感器不再覆盖
+        if (source == "Health Connect" && detail.isEmpty()) return
         steps = v
         source = "手机计步"
         onChange()

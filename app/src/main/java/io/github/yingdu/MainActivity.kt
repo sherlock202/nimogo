@@ -1767,16 +1767,15 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val home = s.dashHideMode == ReaderService.HIDE_HOME
             howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时直接关屏，不回官方主界面。再按一下镜腿亮回来。看板显示时右单击关屏，左单击翻屏，左双击上一屏，右双击打开语音菜单。已经在官方主界面上时，点一下左镜腿（主界面被点亮也算）打开语音菜单。菜单里的项目在「我的 → 菜单设置」。" +
                 "官方 app 连着时眼镜的报告会发给官方 app，NimoGo 收不到，要先停止官方 app（「我的 › 和官方 app 切换」）。"
-                else if (home) "回官方主界面；眼镜报告「主界面被点亮」时叫回看板。官方 app 连着时这个报告会发给官方 app，" +
-                "NimoGo 收不到，所以要先停止官方 app（「我的 › 和官方 app 切换」）。"
-                else "只关屏幕：抬头亮、低头关。"
+                else if (home) "抬头显示开着：抬头显示 NimoGo 看板，不在原生看板上停留。看板显示时左单击打开语音菜单，右单击翻到下一屏，左双击上一屏。"
+                else "抬头显示开着：抬头亮起 NimoGo 看板，低头关屏。看板显示时左单击打开语音菜单，右单击翻到下一屏。"
             headToggle.set(s.dashHeadWake)
             headRow.titleV.text = "眼镜的抬头显示"
             headRow.desc(when {
                 s.headUpDisplay == null -> "连上眼镜后读取（和官方 app 里的是同一个设置）"
                 !s.dashHeadWake -> "关：收起时直接关屏，不回主界面"
-                home -> "开：抬头叫回看板，低头回主界面"
-                else -> "开：抬头显示看板，低头关屏"
+                home -> "开：抬头显示 NimoGo 看板，左单击打开语音菜单"
+                else -> "开：抬头显示 NimoGo 看板，低头关屏"
             })
             darkToggle.set(s.dashHomeDark)
             darkRow.root.visibility = if (home && s.dashHeadWake) View.VISIBLE else View.GONE
@@ -1913,9 +1912,12 @@ class MainActivity : Activity(), ReaderService.UiListener {
         data.addRow(cityRow.root)
         val stepsRow = Row("步数来源", "", chevron = true) {
             val sp = service?.steps ?: return@Row
-            val perms = sp.neededPermissions()
-            if (perms.isEmpty()) { toast("已经授权"); sp.refresh() } else requestPermissions(perms.toTypedArray(), REQ_PERMS)
+            if (!sp.openHealthPermissions(this)) {
+                message("步数来源", "这台手机没有 Health Connect（安卓 14 起才有）。NimoGo 不能直接连手环，只能用手机自己的计步。")
+            } else awaitingHealthPerm = true
         }
+        stepsRow.descV.maxLines = 3
+        stepsRow.descV.ellipsize = null
         data.addRow(stepsRow.root)
         page.addView(data)
 
@@ -1931,8 +1933,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
         onUpdate(Tab.ME) { s ->
             locToggle.set(s.autoLocate)
             cityRow.value(s.dashCity.ifEmpty { "未设置" })
-            stepsRow.desc(s.steps.steps?.let { "今天 %,d 步".format(it) } ?: "还没有步数数据")
-            stepsRow.value(if (s.steps.steps != null) s.steps.source else "去授权")
+            val count = s.steps.steps?.let { "今天 %,d 步".format(it) } ?: "还没有步数数据"
+            stepsRow.desc(if (s.steps.detail.isBlank()) count else "$count。${s.steps.detail}")
+            stepsRow.value(when {
+                s.steps.source.isNotEmpty() -> s.steps.source
+                s.steps.healthConnectAvailable() -> "去授权"
+                else -> "手机计步"
+            })
             font.value("${s.glassesFontPx}px")
             align.value(when {
                 s.imageHeight == null && s.imageDistance == null -> ""
@@ -4119,11 +4126,22 @@ class MainActivity : Activity(), ReaderService.UiListener {
         }
     }
 
+    /** 从 Health Connect 授权页回来后重新读步数。 */
+    private var awaitingHealthPerm = false
+
     override fun onResume() {
         super.onResume()
         ReaderService.instance?.onUiVisible(true) ?: run { ReaderService.uiVisible = true }
         // 从系统设置回来：允许了就接着装
         pendingApk?.let { if (packageManager.canRequestPackageInstalls() && it.exists()) installUpdate(it) }
+        if (awaitingHealthPerm) {
+            awaitingHealthPerm = false
+            val sp = service?.steps
+            sp?.refresh()
+            if (sp != null && Build.VERSION.SDK_INT >= 29 && !sp.hasSensorPermission()) {
+                requestPermissions(arrayOf(StepsProvider.PERM_SENSOR), REQ_PERMS)
+            }
+        }
     }
 
     override fun onPause() {

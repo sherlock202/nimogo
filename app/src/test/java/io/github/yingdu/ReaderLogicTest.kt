@@ -326,7 +326,8 @@ class DashCardsTest {
         assertTrue(two[0].leftHead === two[0].rightHead)
         // 单独一张占满整屏：右边没有标题
         assertNull(DashLayout.screens(listOf(rows(3)), 4, heads = listOf(ha))[0].rightHead)
-        assertEquals("rain", DashboardImage.weatherIcon("小雨")); assertEquals("cloud", DashboardImage.weatherIcon("多云")); assertEquals("sun", DashboardImage.weatherIcon(null))
+        assertEquals("rain", DashboardImage.weatherIcon("小雨")); assertEquals("cloud", DashboardImage.weatherIcon("多云"))
+        assertEquals("sun", DashboardImage.weatherIcon("晴")); assertEquals("", DashboardImage.weatherIcon(null))
     }
 
     @Test fun countdownSortsAndSkipsPast() {

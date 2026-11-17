@@ -50,7 +50,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         /** 关屏收起时，眼镜上待机的第一屏多久检查一次要不要更新。 */
         const val STANDBY_REFRESH_MS = 30_000L
         /** 看板开着时，天气最多这么久取一次。 */
-        const val WEATHER_INTERVAL_MS = 4 * 60 * 60_000L
+        const val WEATHER_INTERVAL_MS = 30 * 60_000L
         const val OFFLINE_MAX_AGE_MS = 120_000L
         /** 全天记忆：一直没转成文字的录音最多留多久（之后删掉，不在手机上长期留录音）。 */
         const val PENDING_KEEP_MS = 24 * 3600_000L
@@ -1182,8 +1182,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     private val dashAtHome get() = !dashEnabled
 
     /**
-     * 系统看板（官方主界面）上、并且看板模式开着：左单击叫回看板，看板上左双击上一屏。
-     * 看板模式关着时，系统看板上左单击打开语音菜单。双击和长按在系统看板上没有操作。
+     * 系统看板上左单击打开语音菜单，抬头显示开着也一样。双击和长按在系统看板上没有操作。
      * 锻炼、番茄钟等功能一旦打开，按键只跟那个功能，这里不再插手。
      */
     private val dashLegacyLeft get() = dashEnabled && baseMode == AppMode.DASHBOARD
@@ -1297,11 +1296,10 @@ class ReaderService : Service(), NimoListener, AppHost {
         notifyLit = false; main.removeCallbacks(reOffAfterNotify); restoreHeadUp()
         notifyOver = false; main.removeCallbacks(endNotifyOver)
         if (dashHideMode == HIDE_HOME) {
-            // 退回主界面后就交给眼镜，萤读不再做任何事。
-            // 测试开关打开时：低着头就先关屏再退出（眼镜自己只在抬头→低头那一下变暗，这时已经低着头了，主界面会一直亮着）
+            // 退回主界面后就交给眼镜。抬头显示开着时，主界面被点亮会再叫回 NimoGo 的看板。
             quitHomeAt = android.os.SystemClock.uptimeMillis()
             if (headDown && dashHomeDark) { client.quitToDarkHome(); log("$why（回主界面，低着头所以关屏；抬头再看）【测试】") }
-            else { client.quitCurrent(); log("$why（回主界面；左单击打开语音菜单，说「看板」再看）") }
+            else { client.quitCurrent(); log("$why（回主界面；抬头再看 NimoGo 看板）") }
         } else {
             screenOffByUs = true; client.screenOff(true)
             main.postDelayed(standbyRefresh, 300)
@@ -1689,7 +1687,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         }
     }
 
-    /** 看板开着才取天气。打开时取一次，之后最多 4 小时一次；手动刷新不受这个间隔限制。 */
+    /** 看板开着才取天气。打开时取一次，之后最多 30 分钟一次；手动刷新不受这个间隔限制。 */
     private fun weatherDue(force: Boolean): Boolean {
         if (!dashEnabled) return false
         if (force) return true
@@ -1699,7 +1697,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     /** 使用看板关着时不显示天气。 */
     private fun shownWeather(): Weather? = if (dashEnabled) weather else null
 
-    /** 后台刷新行情（每次）。天气只在看板开着、而且到了 4 小时间隔（或手动刷新）时取。 */
+    /** 后台刷新行情（每次）。天气只在看板开着、而且到了 30 分钟间隔（或手动刷新）时取。 */
     fun refreshDashboard(forceWeather: Boolean = false) {
         steps.refresh()
         sightsCardRefresh(force = forceWeather)
@@ -1741,6 +1739,7 @@ class ReaderService : Service(), NimoListener, AppHost {
                 }
                 weather = w
                 lastWeatherAt = System.currentTimeMillis()
+                log("天气：${dashCity.ifBlank { "未设城市" }} ${w.desc} ${w.temp.toInt()}°")
                 if (appMode == AppMode.DASHBOARD && dashEnabled) pushDashboard(force = false)
                 notifyUi()
             }
@@ -3474,13 +3473,12 @@ class ReaderService : Service(), NimoListener, AppHost {
             app.onInput(input)
             return
         }
-        // 系统看板（官方主界面）：左单击打开语音菜单（第一项就是看板）。双击、长按没有操作。
-        // 抬头显示开着、并且使用看板：左单击仍叫回看板。
+        // 系统看板（官方主界面）：左单击打开语音菜单。抬头显示开着也一样，不再拿这下去盖上 NimoGo 的看板。双击、长按没有操作。
         if (onOfficialHome() && input == GlassesInput.DOUBLE_LEFT) {
             log("主界面上左双击：没有这个操作")
             return
         }
-        if ((!dashLegacyLeft || !dashHeadWake) && onOfficialHome() && input == GlassesInput.CLICK_LEFT) {
+        if (onOfficialHome() && input == GlassesInput.CLICK_LEFT) {
             noteHomeTap()
             return
         }
@@ -3498,13 +3496,9 @@ class ReaderService : Service(), NimoListener, AppHost {
                     else log("抬头显示关着：主界面亮起，不在系统看板上")
                     return
                 }
-                // 官方主界面被点亮了（点了一下镜腿）：看板是自动收起/被眼镜退出的，就叫回来
-                // 弹通知时是我们自己在主界面上开的屏（眼镜自带弹窗方式），不算用户点亮
+                // 抬头显示开着：主界面刚亮就换成 NimoGo 的看板，不在原生看板上停留。
                 if (notifyLit) { log("弹通知时主界面亮了，不叫回看板"); return }
-                // 萤读刚把页面退回主界面：主界面亮起是退出引起的，不是用户点的，不叫回（v5.8：低头收起后看板又被打开，屏幕黑一下再亮）
                 if (android.os.SystemClock.uptimeMillis() - quitHomeAt < QUIT_HOME_IGNORE_MS) { log("刚退回主界面，主界面亮起不算点亮，不叫回看板"); return }
-                // 眼镜刚亮屏、正在处理自己的主界面时发"打开页面"会被忽略（v5.7.4 日志：只亮了官方主界面）：
-                // 马上发，再隔一小会儿重发几次
                 wakeFromHome("点亮主界面：显示看板")
                 return
             }
@@ -3512,13 +3506,11 @@ class ReaderService : Service(), NimoListener, AppHost {
                 headIsDown = false
                 main.removeCallbacks(headDownHide)
                 if (!dashHeadWake) return
-                // 页面还开着、只是萤读关了屏（关屏方式收起的；收起后才改成「回主界面」也一样）：抬头就开屏
                 val pageOpen = screenOffByUs && client.enteredAppId() != null
-                // 通知正亮着：抬头是为了看它，不要拿看板把它顶掉（v5.16.3：战绩弹出来一抬头 1 秒就没了）
                 if (glassesPaused && showingPopup) { log("抬头：正在显示通知，等它显示完"); return }
                 if (glassesPaused && !headHidden) log("抬头：看板是在手机上收起的，不自动显示（点「显示看板」）")
                 else if (glassesPaused && dashHideMode == HIDE_HOME && !pageOpen) log("抬头：收起方式是「回主界面」，眼镜点亮主界面时才叫回看板")
-                if (!glassesPaused) { cancelDashTimers(); armDashTimers(); scheduleDashLive() }   // 还在看，重新计时
+                if (!glassesPaused) { cancelDashTimers(); armDashTimers(); scheduleDashLive() }
                 else if (headHidden && (headWakeOn || pageOpen) && !dashAtHome) { log("抬头：显示看板"); wakeDashboard() }
                 return
             }
@@ -3532,12 +3524,8 @@ class ReaderService : Service(), NimoListener, AppHost {
                 return
             }
             else -> if (glassesPaused) {
-                if (!dashHeadWake && onOfficialHome()) {
-                    if (input == GlassesInput.LONG_PRESS) showNimoDashboard("主界面上长按：显示看板")
-                    return
-                }
-                // 官方主界面上的左单击、左双击已经在上面交给语音菜单和场景助手，不会走到这里。
-                // 这里是页面还开着、只是关了屏：点镜腿直接把看板亮回来（右镜腿在主界面上通常不报）。
+                if (onOfficialHome()) return
+                // 页面还开着、只是关了屏：点镜腿把看板亮回来。官方主界面上不走这里，左单击已经用来开菜单。
                 val click = input == GlassesInput.CLICK_LEFT || input == GlassesInput.CLICK_RIGHT ||
                     input == GlassesInput.DOUBLE_LEFT || input == GlassesInput.DOUBLE_RIGHT
                 if (click) {
@@ -3551,10 +3539,10 @@ class ReaderService : Service(), NimoListener, AppHost {
         }
         if (appMode == AppMode.DASHBOARD) {
             when (input) {
-                // 眼镜「抬头显示」关着时：右单击收起看板（再按一下显示），左单击翻到下一屏
+                // 抬头显示开着：左单击打开语音菜单（不用回到原生看板，也不用双击）。右单击翻到下一屏，左双击上一屏。
                 GlassesInput.CLICK_RIGHT -> if (!dashHeadWake) hideDashboard("右镜腿：收起看板") else dashFlip(1)
                 GlassesInput.DOUBLE_RIGHT -> callVoiceMenu("看板上右双击")
-                GlassesInput.CLICK_LEFT -> dashFlip(if (dashHeadWake) -1 else 1)
+                GlassesInput.CLICK_LEFT -> if (dashHeadWake) callVoiceMenu("看板上左单击") else dashFlip(1)
                 // 看板模式关着时左双击已经在上面打开场景助手；看板模式开着时这里按以前的：上一屏
                 GlassesInput.DOUBLE_LEFT -> dashFlip(-1)
                 GlassesInput.LONG_PRESS -> { log("手动刷新"); refreshDashboard(forceWeather = true) }

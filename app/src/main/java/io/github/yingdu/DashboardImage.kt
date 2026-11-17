@@ -132,9 +132,9 @@ object DashboardImage {
         "steps" to listOf("..##.....", ".####....", ".####....", "..##.##..", ".....###.", "....####.", ".....##..", ".........", "........."),
     )
 
-    /** 天气描述对应的小图标。 */
+    /** 天气描述对应的小图标。没有天气时不画（以前会画成太阳）。 */
     fun weatherIcon(desc: String?): String = when {
-        desc == null -> "sun"
+        desc.isNullOrBlank() -> ""
         desc.contains("雪") -> "snow"
         desc.contains("雨") || desc.contains("雷") -> "rain"
         desc.contains("云") || desc.contains("阴") || desc.contains("雾") -> "cloud"
@@ -210,7 +210,12 @@ object DashboardImage {
             var wt = (full[0] + " " + full[1]).trim() + full[2]
             val room = W - 8 - dotsW - x - 12
             if (f.measure(wt) > room) wt = f.ellipsize((full[0] + " " + full[1]).trim(), room)   // 放不下先省略最高最低温
-            if (room > 24) { px.icon(weatherIcon(weather?.desc), x, mid - 4, DIM); f.draw(c, wt, x + 12, top, DIM) }
+            if (room > 24) {
+                val icon = if (weather != null) weatherIcon(weather.desc) else ""
+                val shift = if (icon.isNotEmpty()) 12 else 0
+                if (shift > 0) px.icon(icon, x, mid - 4, DIM)
+                f.draw(c, wt, x + shift, top, DIM)
+            }
         }
         for (i in 0 until if (pages > 1) pages else 0) {
             val cx = W - 10 - (pages - 1 - i) * 10
