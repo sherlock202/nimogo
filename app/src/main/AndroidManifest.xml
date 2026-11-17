@@ -93,6 +93,16 @@
             </intent-filter>
         </service>
 
+        <!-- 通知来了但眼镜没连着：有的手机要等界面到前台才肯连。这个界面不显示，连上就关。 -->
+        <activity
+            android:name=".LinkWakeActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <!-- NimoGo 导航：接收 Navigation SDK 发来的逐向数据（只在 app 内部用） -->
         <service
             android:name=".NavInfoService"

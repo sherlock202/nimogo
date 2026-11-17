@@ -138,13 +138,39 @@ class PhoneNotificationService : NotificationListenerService() {
     /** 交给阅读服务。服务没在跑（进程被收过）就先把它拉起来，否则这条通知会被丢掉，要等打开 app 才连。 */
     private fun deliver(label: String, title: String, text: String, pkg: String?) {
         val svc = ReaderService.instance
-        if (svc != null) { svc.onPhoneNotification(label, title, text, pkg = pkg); return }
-        val i = android.content.Intent(this, ReaderService::class.java).setAction(ReaderService.ACTION_NOTIFY)
-            .putExtra("nApp", label).putExtra("nTitle", title).putExtra("nText", text).putExtra("nPkg", pkg)
-        runCatching { startForegroundService(i) }
-            .onFailure { ReaderService.instance?.log("通知来了，但拉不起服务：$it") }
+        val wake = svc == null || svc.shouldWakeForLink()
+        if (svc != null) svc.onPhoneNotification(label, title, text, pkg = pkg)
+        else {
+            val i = android.content.Intent(this, ReaderService::class.java).setAction(ReaderService.ACTION_NOTIFY)
+                .putExtra("nApp", label).putExtra("nTitle", title).putExtra("nText", text).putExtra("nPkg", pkg)
+            runCatching { startForegroundService(i) }
+                .onFailure { android.util.Log.w("NimoGo", "通知来了，但拉不起服务：$it") }
+        }
+        if (wake) wakeLink()
     }
 
+    /** 通知监听服务可以在后台打开界面。拉一个看不见的界面，让这次连接算前台发起的。 */
+    private fun wakeLink() {
+        val i = android.content.Intent(this, LinkWakeActivity::class.java)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { startActivity(i) }
+            .onFailure { ReaderService.instance?.log("通知来了，但拉不起连接界面：$it") }
+    }
+
+}
+
+/** 不显示的界面。通知来了、眼镜没连着时由通知服务拉起，让这次蓝牙连接算作前台发起，连上就关。 */
+class LinkWakeActivity : android.app.Activity() {
+    override fun onResume() {
+        super.onResume()
+        window.decorView.postDelayed({
+            ReaderService.instance?.onLinkWake()
+            if (!isFinishing) {
+                finish()
+                overridePendingTransition(0, 0)
+            }
+        }, 400)
+    }
 }
 
 /** 来电通知：只提醒"正在响铃"的那一次（接通后变成"通话中"不提醒），同一通来电 60 秒内只提醒一次。 */

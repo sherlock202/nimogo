@@ -67,6 +67,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         const val QUIT_HOME_IGNORE_MS = 3_000L
         /** 通知监听服务通过它把手机通知、导航信息交给我们。 */
         var instance: ReaderService? = null
+        /** NimoGo 的界面在前台时，通知不用再拉一个连接界面。 */
+        @Volatile var uiVisible = false
         private const val CHANNEL_ID = "reader"
         private const val NOTIF_ID = 1
         private const val PREFS = "reader"
@@ -1962,7 +1964,24 @@ class ReaderService : Service(), NimoListener, AppHost {
         } else client.disconnect()
     }
 
-    /** 节电断开之后再连上。quiet：只为通知，连上后不打开原来的画面。已经在连或已连上时返回 true。 */
+    /** 通知来了但没连着：有的手机要等界面到前台才肯连。通知服务可以拉起一个看不见的界面。 */
+    fun shouldWakeForLink(): Boolean {
+        if (holdOff || linkState == LinkState.READY || uiVisible || client.autoConnectCoolingDown()) return false
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastLinkWakeAt < 20_000) return false
+        lastLinkWakeAt = now
+        return true
+    }
+
+    private var lastLinkWakeAt = 0L
+
+    /** 看不见的界面到了前台：把没连上的眼镜再连一次。 */
+    fun onLinkWake() {
+        if (holdOff || linkState == LinkState.READY) return
+        log("有通知：到前台再连接")
+        if (linkState == LinkState.DISCONNECTED) relink("有通知", quiet = true)
+        else client.restartIfConnecting()
+    }
     @SuppressLint("MissingPermission")
     private fun relink(why: String, quiet: Boolean): Boolean {
         if (holdOff) return false
