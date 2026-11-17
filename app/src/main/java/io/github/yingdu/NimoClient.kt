@@ -764,7 +764,6 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_GET_PARAMETER, NimoProtocol.GET_VERSION))
         for (k in listOf(NimoProtocol.SET_HEADUP_DISPLAY, NimoProtocol.SET_DISPLAY_OFF, NimoProtocol.SET_AUTO_BRIGHTNESS, NimoProtocol.SET_BRIGHTNESS))
             sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_GET_PARAMETER, k))
-        pollBattery()
         if (needUnblankOnConnect) {
             needUnblankOnConnect = false
             sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_SET_PARAMETER, NimoProtocol.SET_DISPLAY_OFF, byteArrayOf(0)))
@@ -772,6 +771,8 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         }
         setState(LinkState.READY)
         flushText()
+        askBattery()
+        if (batteryWatch?.invoke() == true) main.postDelayed(batteryPoll, BATTERY_POLL_MS)
     }
 
     /** 返回 true 才问电量（NimoGo 正在前台）。没设置就不问。 */
@@ -784,10 +785,15 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         if (batteryWatch?.invoke() == true) pollBattery()
     }
 
-    /** 只在 App 打开时问电量，大约一分钟一次。待机不问，免得把连接间隔一次次拉高。 */
+    /** 连上时马上问一次。之后只在 App 打开时大约一分钟问一次，待机不再问。 */
+    private fun askBattery() {
+        if (tx == null) return
+        sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_GET_PARAMETER, NimoProtocol.GET_BATTERY))
+    }
+
     private fun pollBattery() {
         if (state != LinkState.READY || batteryWatch?.invoke() != true) return
-        sendFrame(NimoFrameCodec.encodeFrame(NimoProtocol.CMD_GET_PARAMETER, NimoProtocol.GET_BATTERY))
+        askBattery()
         main.postDelayed(batteryPoll, BATTERY_POLL_MS)
     }
 
