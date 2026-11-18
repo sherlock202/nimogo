@@ -36,7 +36,7 @@ object Legal {
         "· 导航：导航期间的精确位置、目的地和路线由 Google Navigation SDK 发给 Google，用你自己的 API Key；" +
         "从 Google Maps 共享过来的短链接会访问 Google 的服务器展开；在 NimoGo 里输入地名，或用语音说出要去的地方时，这句话和当前位置发给 Google 地点搜索（Places API，用你自己的 API Key；用不了时改用手机系统的地理编码）。说出的地名先在手机上离线转成文字。\n" +
         "· 景点介绍：精确位置发给你选的地图服务（高德或 Google），景点名称发给百度百科、维基百科。\n" +
-        "· 天气：大致位置或城市名发给 Open-Meteo（取日本气象厅预报），城市名的反查用 BigDataCloud。\n" +
+        "· 天气：大致位置发给挪威气象局（met.no）取预报，城市名的反查用 BigDataCloud，城市坐标用 Open-Meteo。\n" +
         "· 股票：股票代码发给雅虎财经、腾讯证券、Robinhood、微牛（Webull）。\n" +
         "· 网络卡片：按你填的网址、请求头和请求体去请求。\n" +
         "· 语音跟读：识别在手机上离线做，声音和识别结果不发给任何服务；第一次用时从 GitHub（sherpa-onnx 项目的发布页）下载识别模型。" +

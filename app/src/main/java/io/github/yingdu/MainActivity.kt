@@ -1784,12 +1784,10 @@ class MainActivity : Activity(), ReaderService.UiListener {
         wakeBox.addRow(headRow.root)
         page.addView(wakeBox)
         val nativeBox = listBox()
-        nativeBox.addRow(Row("原生看板右侧显示天气（测试）", "回到原生看板，右侧换成位置卡片，依次试 6 种推法", chevron = true) {
-            service?.nativeWeatherProbe(); toast("约 25 秒内依次试 6 种，看眼镜右侧哪一种出现天气")
-        }.root)
-        nativeBox.addRow(Row("原生看板右侧换回股票", "测试完把右侧卡片换回来", chevron = true) {
-            service?.nativeRightToStock(); toast("已发送")
-        }.root)
+        val nativeWeatherToggle = Toggle { service?.let { it.nativeWeatherOn = !it.nativeWeatherOn }; refreshNow() }
+        val nativeWeatherRow = Row("原生看板右侧显示天气", "眼镜的官方主界面右侧显示手机上的天气，不用开 NimoGo 看板。关掉时右侧换回股票")
+            .apply { accessory(nativeWeatherToggle.root) }
+        nativeBox.addRow(nativeWeatherRow.root)
         page.addView(nativeBox, lp(top = 10))
 
         onUpdate(Sub.DASH_SET) { s ->
@@ -1801,6 +1799,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 else "抬头显示开着：抬头显示 NimoGo 看板。低头时眼镜自己会暗屏，但看板不收起，再抬头还是 NimoGo 看板。看板上左单击打开语音菜单，右单击翻到下一屏。" +
                 "到时间后看板收起（和点「收起显示」一样），回到原生看板，不息屏。再抬头就像点了「恢复显示」，重新显示 NimoGo 看板。原生看板上左单击打开语音菜单。"
             headToggle.set(s.dashHeadWake)
+            nativeWeatherToggle.set(s.nativeWeatherOn)
             headRow.titleV.text = "眼镜的抬头显示"
             headRow.desc(when {
                 s.headUpDisplay == null -> "连上眼镜后读取（和官方 app 里的是同一个设置）"
@@ -4429,7 +4428,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         page.addView(up)
         page.addView(note("NimoGo 基于萤读修改（萤读以 Apache License 2.0 开源，github.com/codexmasterme/yingdu），同样按 Apache License 2.0 授权。协议参考开源项目 MentraOS（Apache 2.0）。Opus 编解码用 Concentus（BSD）。" +
             "眼镜点阵字体基于 GNU Unifont 和 Fusion Pixel Font（SIL OFL 1.1）。许可全文见「开源许可」。\n" +
-            "数据来源：行情 雅虎财经、腾讯证券、Robinhood、微牛；天气 Open-Meteo 的日本气象厅预报（CC BY 4.0）；反向地理编码 BigDataCloud；" +
+            "数据来源：行情 雅虎财经、腾讯证券、Robinhood、微牛；天气 挪威气象局 met.no（CC BY 4.0）；反向地理编码 BigDataCloud；" +
             "景点 高德地图、Google 地图；景点介绍 百度百科、维基百科（CC BY-SA 4.0）。\n" +
             "导航 Google Navigation SDK（受 Google Maps Platform 服务条款约束）。场景助手的即时翻译用 Google ML Kit 离线翻译（受 ML Kit 服务条款约束）。"))
         onUpdate(Sub.ABOUT) {

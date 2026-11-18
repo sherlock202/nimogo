@@ -50,7 +50,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         /** 关屏收起时，眼镜上待机的第一屏多久检查一次要不要更新。 */
         const val STANDBY_REFRESH_MS = 30_000L
         /** 看板开着时，天气最多这么久取一次。 */
-        const val WEATHER_INTERVAL_MS = 30 * 60_000L
+        const val WEATHER_INTERVAL_MS = 4 * 60 * 60_000L
+        const val WEATHER_RETRY_MS = 10 * 60_000L
         const val OFFLINE_MAX_AGE_MS = 120_000L
         /** 全天记忆：一直没转成文字的录音最多留多久（之后删掉，不在手机上长期留录音）。 */
         const val PENDING_KEEP_MS = 24 * 3600_000L
@@ -1428,31 +1429,48 @@ class ReaderService : Service(), NimoListener, AppHost {
         set(v) { prefs.edit().putBoolean("dashHomeDarkTest", v).apply(); if (!v) client.lightHome(); notifyUi() }
 
     /**
-     * 测试：把天气画成图，投到原生看板右侧的「位置」卡片。图该发到主界面的哪个 layout / 资源号没有记录，
-     * 依次试几种，每种之间隔 4 秒；图右下角和日志里都写着是第几种。
+     * 原生看板（眼镜的官方主界面）右侧的「位置」卡片显示天气。默认开。
+     * 天气取到后推一张图；眼镜回到官方主界面（连上、退出 NimoGo 页面、抬头）时也补推一次。
+     * 关掉时右侧换回股票。这个功能不管「使用看板」开没开，都会取天气（大约 4 小时一次）。
      */
-    fun nativeWeatherProbe() {
-        if (linkState != LinkState.READY) { log("原生看板天气测试：眼镜没连上"); return }
-        if (client.enteredAppId() != null) {
-            if (appMode == AppMode.DASHBOARD && !glassesPaused) hideDashboard("原生看板天气测试：先收起看板", headDown = false, keepScreen = true)
-            else { log("原生看板天气测试：眼镜上正开着别的功能，先退出再试"); return }
+    var nativeWeatherOn: Boolean
+        get() = prefs.getBoolean("nativeWeatherOn", true)
+        set(v) {
+            if (v == nativeWeatherOn) return
+            prefs.edit().putBoolean("nativeWeatherOn", v).apply()
+            if (v) startNativeWeather()
+            else if (linkState == LinkState.READY) { client.setDashRightLayout(NimoProtocol.DASH_RIGHT_STOCK); log("原生看板右侧换回股票") }
+            notifyUi()
         }
-        client.setDashRightLayout(NimoProtocol.DASH_RIGHT_LOCATION)
-        val probes = listOf(0 to 0, 0 to 1, 0 to 2, 0 to 5, 1 to 0, 1 to 5)
-        probes.forEachIndexed { i, (layout, res) ->
-            main.postDelayed({
-                if (linkState != LinkState.READY || client.enteredAppId() != null) return@postDelayed
-                val img = DashboardImage.nativeWeather(dashCity, weather, "第 ${i + 1} 种")
-                client.pushHomeImage(layout, res, img, NimoProtocol.DASH_MAP_WIDTH, NimoProtocol.DASH_MAP_HEIGHT)
-                log("原生看板天气测试：第 ${i + 1} 种（layout $layout，资源 $res）")
-            }, 1_500L + i * 4_000L)
-        }
+
+    /** 把右侧换成「位置」卡片，天气到期就重新取，然后推到眼镜的官方主界面上。 */
+    private fun startNativeWeather() {
+        if (!nativeWeatherOn) return
+        if (linkState == LinkState.READY) client.setDashRightLayout(NimoProtocol.DASH_RIGHT_LOCATION)
+        refreshWeatherIfDue()
+        pushNativeWeatherIfHome()
     }
 
-    /** 测试结束后把原生看板右侧换回股票卡片。 */
-    fun nativeRightToStock() {
-        if (linkState != LinkState.READY) { log("眼镜没连上"); return }
-        client.setDashRightLayout(NimoProtocol.DASH_RIGHT_STOCK)
+    /** 眼镜停在官方主界面上（没开 NimoGo 的页面）、手上有天气时，把天气图推到原生看板右侧。 */
+    private fun pushNativeWeatherIfHome() {
+        if (!nativeWeatherOn || linkState != LinkState.READY || client.enteredAppId() != null) return
+        val w = weather ?: return
+        client.pushHomeImage(0, 0, DashboardImage.nativeWeather(dashCity, w),
+            NimoProtocol.DASH_MAP_WIDTH, NimoProtocol.DASH_MAP_HEIGHT)
+    }
+
+    /** 天气到期（或强制）就重新取：有自动定位先定位，再取。 */
+    private fun refreshWeatherIfDue(force: Boolean = false) {
+        if (!weatherDue(force)) return
+        if (autoLocate) locate() else if (!dashLat.isNaN()) fetchWeather(dashLat, dashLon)
+    }
+
+    /** 每 10 分钟看一次天气有没有到期（连着眼镜的时候一直运行）。 */
+    private val nativeWeatherTick: Runnable = object : Runnable {
+        override fun run() {
+            if (nativeWeatherOn) refreshWeatherIfDue()
+            main.postDelayed(this, 10 * 60_000L)
+        }
     }
 
     private fun hideDashboard(why: String, headDown: Boolean = headIsDown, keepScreen: Boolean = false) {
@@ -1469,6 +1487,7 @@ class ReaderService : Service(), NimoListener, AppHost {
             if (!keepScreen && headDown && dashHomeDark) { client.quitToDarkHome(); log("$why（回主界面，低着头所以关屏；抬头再看）【测试】") }
             else {
                 client.quitCurrent()
+                main.postDelayed({ pushNativeWeatherIfHome() }, 1_500)   // 回到官方主界面后，把天气图补上
                 log(if (keepScreen) "$why（看板收起，屏幕保持亮着；再抬头显示看板）" else "$why（回主界面；抬头再看 NimoGo 看板）")
             }
         } else {
@@ -1872,17 +1891,19 @@ class ReaderService : Service(), NimoListener, AppHost {
         }
     }
 
-    /** 看板开着才取天气。打开时取一次，之后最多 30 分钟一次；手动刷新不受这个间隔限制。 */
+    /** 取天气：看板开着、或原生看板显示天气开着才取。打开时取一次，之后每 4 小时一次；手动刷新不受这个间隔限制。 */
     private fun weatherDue(force: Boolean): Boolean {
-        if (!dashEnabled) return false
+        if (!dashEnabled && !nativeWeatherOn) return false
         if (force) return true
-        return System.currentTimeMillis() - lastWeatherTry >= WEATHER_INTERVAL_MS
+        // 没取到过（或上次失败）10 分钟后再试；取到过就每 4 小时一次
+        val wait = if (weather == null) WEATHER_RETRY_MS else WEATHER_INTERVAL_MS
+        return System.currentTimeMillis() - lastWeatherTry >= wait
     }
 
     /** 使用看板关着时不显示天气。 */
     private fun shownWeather(): Weather? = if (dashEnabled) weather else null
 
-    /** 后台刷新行情（每次）。天气只在看板开着、而且到了 30 分钟间隔（或手动刷新）时取。 */
+    /** 后台刷新行情（每次）。天气只在到了 4 小时间隔（或手动刷新）时取。 */
     fun refreshDashboard(forceWeather: Boolean = false) {
         steps.refresh()
         sightsCardRefresh(force = forceWeather)
@@ -1912,7 +1933,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
 
     private fun fetchWeather(lat: Double, lon: Double) {
-        if (!dashEnabled) return
+        if (!dashEnabled && !nativeWeatherOn) return
         lastWeatherTry = System.currentTimeMillis()
         io.execute {
             val result = runCatching { DashboardData.weather(lat, lon) }
@@ -1925,6 +1946,7 @@ class ReaderService : Service(), NimoListener, AppHost {
                 weather = w
                 lastWeatherAt = System.currentTimeMillis()
                 log("天气：${dashCity.ifBlank { "未设城市" }} ${w.desc} ${w.temp.toInt()}°")
+                pushNativeWeatherIfHome()
                 if (appMode == AppMode.DASHBOARD && dashEnabled) pushDashboard(force = false)
                 notifyUi()
             }
@@ -3496,6 +3518,10 @@ class ReaderService : Service(), NimoListener, AppHost {
                 client.screenOff(off)
                 log(if (off) "息屏还回：开" else "息屏还回：关")
             }
+            // 原生看板右侧的天气：连上后 2.5 秒再推（眼镜还在初始化时推会被丢掉）；之后每 10 分钟看一次是否到期
+            main.postDelayed({ if (linkState == LinkState.READY) startNativeWeather() }, 2_500)
+            main.removeCallbacks(nativeWeatherTick)
+            main.postDelayed(nativeWeatherTick, 10 * 60_000L)
             val quiet = quietLink
             quietLink = false
             if (quiet) {
@@ -3603,6 +3629,7 @@ class ReaderService : Service(), NimoListener, AppHost {
                 "，收起方式 ${if (dashHideMode == HIDE_HOME) "回主界面" else "关屏"}，抬头显示看板 ${if (dashHeadWake) "开" else "关"}，" +
                 "使用看板 ${if (dashEnabled) "开" else "关"}，眼镜页面 ${client.enteredAppId() ?: "主界面"}")
         if (input == GlassesInput.EXITED) {
+            main.postDelayed({ pushNativeWeatherIfHome() }, 1_500)   // 眼镜退回官方主界面：补上天气图
             val now = android.os.SystemClock.uptimeMillis()
             if (activeApp === voiceMenu || now < menuReturnUntil) {
                 if (activeApp === voiceMenu || client.enteredAppId() == null) closeMenuToDash()
@@ -3680,6 +3707,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (appMode == AppMode.DASHBOARD) when (input) {
             GlassesInput.HOME_WAKE -> {
                 headIsDown = false
+                pushNativeWeatherIfHome()
                 if (dashAtHome) { client.lightHome(); return }
                 // 抬头显示关着：点一下主界面就是单击（眼镜常常不另报左单击）。用来开菜单。
                 if (!dashHeadWake) {

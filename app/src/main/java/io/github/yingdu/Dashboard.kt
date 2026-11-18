@@ -171,18 +171,42 @@ object DashboardFormatter {
         95, 96, 99 -> "雷雨"
         else -> "—"
     }
+
+    /** 挪威气象局（met.no）的天气符号，去掉 _day / _night 后转中文。 */
+    fun metDesc(symbol: String): String = when (symbol.substringBefore('_')) {
+        "clearsky" -> "晴"
+        "fair" -> "晴间多云"
+        "partlycloudy" -> "多云"
+        "cloudy" -> "阴"
+        "fog" -> "雾"
+        "lightrain", "lightrainshowers" -> "小雨"
+        "rain", "rainshowers" -> "中雨"
+        "heavyrain", "heavyrainshowers" -> "大雨"
+        "lightrainandthunder", "rainandthunder", "heavyrainandthunder",
+        "lightrainshowersandthunder", "rainshowersandthunder", "heavyrainshowersandthunder" -> "雷雨"
+        "lightsleet", "sleet", "heavysleet", "lightsleetshowers", "sleetshowers", "heavysleetshowers",
+        "lightsleetandthunder", "sleetandthunder", "heavysleetandthunder",
+        "lightssleetshowersandthunder", "sleetshowersandthunder", "heavysleetshowersandthunder" -> "雨夹雪"
+        "lightsnow", "lightsnowshowers" -> "小雪"
+        "snow", "snowshowers" -> "雪"
+        "heavysnow", "heavysnowshowers" -> "大雪"
+        "lightsnowandthunder", "snowandthunder", "heavysnowandthunder",
+        "lightsnowshowersandthunder", "snowshowersandthunder", "heavysnowshowersandthunder" -> "雷雪"
+        else -> "—"
+    }
 }
 
 /**
  * 联网取数据。股票用雅虎财经的公开行情接口（非官方，可能延迟或偶尔失效）。
- * 城市坐标用 Open-Meteo 地理编码。天气用同一家转的日本气象厅（JMA）预报，免费、不需要 API Key。都在后台线程调用。
+ * 城市坐标用 Open-Meteo 地理编码。天气用挪威气象局（met.no）的预报，免费、不需要 API Key，
+ * 要求请求里标明是谁在用。都在后台线程调用。
  */
 object DashboardData {
-    private fun get(url: String): String {
+    private fun get(url: String, userAgent: String = "Mozilla/5.0 (Android) NimoReader"): String {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 8000
         c.readTimeout = 8000
-        c.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) NimoReader")
+        c.setRequestProperty("User-Agent", userAgent)
         try {
             if (c.responseCode !in 200..299) throw java.io.IOException("HTTP ${c.responseCode}")
             return c.inputStream.bufferedReader().use { it.readText() }
@@ -207,34 +231,37 @@ object DashboardData {
         return listOf("city", "locality", "principalSubdivision").map { j.optString(it) }.firstOrNull { it.isNotBlank() }
     }
 
-    /** 现在的天气 + 接下来 12 小时 + 今明后三天（给「天气预报」卡片用）。 */
+    /** 现在的天气 + 接下来 12 小时 + 今明后三天（给「天气预报」卡片用）。挪威气象局，按手机时区。 */
     fun weather(lat: Double, lon: Double): Weather {
         val j = org.json.JSONObject(get(
-            "https://api.open-meteo.com/v1/jma?latitude=$lat&longitude=$lon" +
-                "&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code" +
-                "&hourly=temperature_2m,weather_code&timezone=auto&forecast_days=3"))
-        val cur = j.getJSONObject("current")
-        val daily = j.getJSONObject("daily")
-        val hourly = j.getJSONObject("hourly")
-        // 小时预报的时间是当地时间 "2026-09-27T15:00"，取当前时间之后的 12 个小时
-        val nowKey = cur.getString("time").take(13)
-        val ht = hourly.getJSONArray("time")
-        val start = (0 until ht.length()).firstOrNull { ht.getString(it).take(13) > nowKey } ?: ht.length()
-        val hours = (start until minOf(ht.length(), start + 12)).map { i ->
-            HourForecast(ht.getString(i).substring(11, 13).toInt(),
-                DashboardFormatter.weatherDesc(hourly.getJSONArray("weather_code").getInt(i)),
-                hourly.getJSONArray("temperature_2m").getDouble(i))
+            "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${"%.4f".format(java.util.Locale.US, lat)}&lon=${"%.4f".format(java.util.Locale.US, lon)}",
+            "NimoGo/1.7 github.com/sherlock202/nimogo"))
+        val series = j.getJSONObject("properties").getJSONArray("timeseries")
+        if (series.length() == 0) throw java.io.IOException("没有数据")
+        val zone = java.time.ZoneId.systemDefault()
+        val points = (0 until series.length()).map { i ->
+            val o = series.getJSONObject(i)
+            val data = o.getJSONObject("data")
+            val symbol = listOf("next_1_hours", "next_6_hours", "next_12_hours").firstNotNullOfOrNull { key ->
+                data.optJSONObject(key)?.optJSONObject("summary")?.optString("symbol_code")?.takeIf { it.isNotEmpty() }
+            } ?: ""
+            Triple(java.time.Instant.parse(o.getString("time")).atZone(zone),
+                data.getJSONObject("instant").getJSONObject("details").getDouble("air_temperature"), symbol)
         }
-        val days = (0 until daily.getJSONArray("time").length()).map { i ->
-            DayForecast(DashboardFormatter.weatherDesc(daily.getJSONArray("weather_code").getInt(i)),
-                daily.getJSONArray("temperature_2m_min").getDouble(i), daily.getJSONArray("temperature_2m_max").getDouble(i))
+        val now = java.time.ZonedDateTime.now(zone)
+        val upcoming = points.filter { !it.first.isBefore(now.minusMinutes(30)) }.ifEmpty { points }
+        val cur = upcoming.first()
+        val hours = upcoming.take(12).map { (t, temp, symbol) ->
+            HourForecast(t.hour, DashboardFormatter.metDesc(symbol), temp)
         }
-        return Weather(
-            DashboardFormatter.weatherDesc(cur.getInt("weather_code")),
-            cur.getDouble("temperature_2m"),
-            daily.getJSONArray("temperature_2m_max").getDouble(0),
-            daily.getJSONArray("temperature_2m_min").getDouble(0),
-            hours, days)
+        val byDay = upcoming.groupBy { it.first.toLocalDate() }
+        val days = byDay.entries.take(3).map { (_, ps) ->
+            val midday = ps.minBy { kotlin.math.abs(it.first.hour - 12) }
+            DayForecast(DashboardFormatter.metDesc(midday.third), ps.minOf { it.second }, ps.maxOf { it.second })
+        }
+        val today = byDay[now.toLocalDate()] ?: byDay.values.first()
+        return Weather(DashboardFormatter.metDesc(cur.third), cur.second,
+            today.maxOf { it.second }, today.minOf { it.second }, hours, days)
     }
 
     /**
