@@ -198,8 +198,7 @@ object DashboardFormatter {
 
 /**
  * 联网取数据。股票用雅虎财经的公开行情接口（非官方，可能延迟或偶尔失效）。
- * 城市坐标用 Open-Meteo 地理编码。天气用挪威气象局（met.no）的预报，免费、不需要 API Key，
- * 要求请求里标明是谁在用。都在后台线程调用。
+ * 城市坐标用 Open-Meteo 地理编码。天气用 Open-Meteo 的预报（免费、不需要 API Key），时区按坐标所在地。都在后台线程调用。
  */
 object DashboardData {
     private fun get(url: String, userAgent: String = "Mozilla/5.0 (Android) NimoReader"): String {
@@ -231,37 +230,42 @@ object DashboardData {
         return listOf("city", "locality", "principalSubdivision").map { j.optString(it) }.firstOrNull { it.isNotBlank() }
     }
 
-    /** 现在的天气 + 接下来 12 小时 + 今明后三天（给「天气预报」卡片用）。挪威气象局，按手机时区。 */
+    /**
+     * 现在的天气 + 接下来 12 小时 + 今明后三天（给「天气预报」卡片用）。
+     * Open-Meteo 的普通预报：当前温度、湿度、降水、天气代码，每天的最高最低温和降水概率。
+     * 逐小时和每天的天气代码是卡片要用的，接口里多要了这两项。时区按坐标所在地，不写死东京。
+     */
     fun weather(lat: Double, lon: Double): Weather {
+        val latS = "%.4f".format(java.util.Locale.US, lat)
+        val lonS = "%.4f".format(java.util.Locale.US, lon)
         val j = org.json.JSONObject(get(
-            "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${"%.4f".format(java.util.Locale.US, lat)}&lon=${"%.4f".format(java.util.Locale.US, lon)}",
-            "NimoGo/1.7 github.com/sherlock202/nimogo"))
-        val series = j.getJSONObject("properties").getJSONArray("timeseries")
-        if (series.length() == 0) throw java.io.IOException("没有数据")
-        val zone = java.time.ZoneId.systemDefault()
-        val points = (0 until series.length()).map { i ->
-            val o = series.getJSONObject(i)
-            val data = o.getJSONObject("data")
-            val symbol = listOf("next_1_hours", "next_6_hours", "next_12_hours").firstNotNullOfOrNull { key ->
-                data.optJSONObject(key)?.optJSONObject("summary")?.optString("symbol_code")?.takeIf { it.isNotEmpty() }
-            } ?: ""
-            Triple(java.time.Instant.parse(o.getString("time")).atZone(zone),
-                data.getJSONObject("instant").getJSONObject("details").getDouble("air_temperature"), symbol)
+            "https://api.open-meteo.com/v1/forecast?latitude=$latS&longitude=$lonS" +
+                "&current=temperature_2m,relative_humidity_2m,precipitation,weather_code" +
+                "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max" +
+                "&hourly=temperature_2m,weather_code&timezone=auto&forecast_days=3"))
+        val cur = j.getJSONObject("current")
+        val daily = j.getJSONObject("daily")
+        val hourly = j.getJSONObject("hourly")
+        val nowKey = cur.getString("time").take(13)
+        val ht = hourly.getJSONArray("time")
+        val start = (0 until ht.length()).firstOrNull { ht.getString(it).take(13) > nowKey } ?: ht.length()
+        val hours = (start until minOf(ht.length(), start + 12)).map { i ->
+            HourForecast(ht.getString(i).substring(11, 13).toInt(),
+                DashboardFormatter.weatherDesc(hourly.getJSONArray("weather_code").getInt(i)),
+                hourly.getJSONArray("temperature_2m").getDouble(i))
         }
-        val now = java.time.ZonedDateTime.now(zone)
-        val upcoming = points.filter { !it.first.isBefore(now.minusMinutes(30)) }.ifEmpty { points }
-        val cur = upcoming.first()
-        val hours = upcoming.take(12).map { (t, temp, symbol) ->
-            HourForecast(t.hour, DashboardFormatter.metDesc(symbol), temp)
+        val nDays = daily.getJSONArray("time").length()
+        val days = (0 until nDays).map { i ->
+            DayForecast(DashboardFormatter.weatherDesc(daily.getJSONArray("weather_code").getInt(i)),
+                daily.getJSONArray("temperature_2m_min").getDouble(i),
+                daily.getJSONArray("temperature_2m_max").getDouble(i))
         }
-        val byDay = upcoming.groupBy { it.first.toLocalDate() }
-        val days = byDay.entries.take(3).map { (_, ps) ->
-            val midday = ps.minBy { kotlin.math.abs(it.first.hour - 12) }
-            DayForecast(DashboardFormatter.metDesc(midday.third), ps.minOf { it.second }, ps.maxOf { it.second })
-        }
-        val today = byDay[now.toLocalDate()] ?: byDay.values.first()
-        return Weather(DashboardFormatter.metDesc(cur.third), cur.second,
-            today.maxOf { it.second }, today.minOf { it.second }, hours, days)
+        return Weather(
+            DashboardFormatter.weatherDesc(cur.getInt("weather_code")),
+            cur.getDouble("temperature_2m"),
+            daily.getJSONArray("temperature_2m_max").getDouble(0),
+            daily.getJSONArray("temperature_2m_min").getDouble(0),
+            hours, days)
     }
 
     /**

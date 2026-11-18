@@ -4428,7 +4428,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         page.addView(up)
         page.addView(note("NimoGo 基于萤读修改（萤读以 Apache License 2.0 开源，github.com/codexmasterme/yingdu），同样按 Apache License 2.0 授权。协议参考开源项目 MentraOS（Apache 2.0）。Opus 编解码用 Concentus（BSD）。" +
             "眼镜点阵字体基于 GNU Unifont 和 Fusion Pixel Font（SIL OFL 1.1）。许可全文见「开源许可」。\n" +
-            "数据来源：行情 雅虎财经、腾讯证券、Robinhood、微牛；天气 挪威气象局 met.no（CC BY 4.0）；反向地理编码 BigDataCloud；" +
+            "数据来源：行情 雅虎财经、腾讯证券、Robinhood、微牛；天气 Open-Meteo（CC BY 4.0）；反向地理编码 BigDataCloud；" +
             "景点 高德地图、Google 地图；景点介绍 百度百科、维基百科（CC BY-SA 4.0）。\n" +
             "导航 Google Navigation SDK（受 Google Maps Platform 服务条款约束）。场景助手的即时翻译用 Google ML Kit 离线翻译（受 ML Kit 服务条款约束）。"))
         onUpdate(Sub.ABOUT) {
