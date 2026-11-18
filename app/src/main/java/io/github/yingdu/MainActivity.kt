@@ -1774,42 +1774,31 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val secs = listOf(10, 20, 30, 0)
         val secSeg = Seg(listOf("10 秒", "20 秒", "30 秒", "不收起")) { i -> service?.dashAutoHideSec = secs[i]; refreshNow() }
         fc.addView(secSeg.root, lp(top = 6))
-        fc.addView(text("收起方式", 13.5f), lp(top = 12))
-        val hows = listOf(ReaderService.HIDE_SCREEN_OFF, ReaderService.HIDE_HOME)
-        val howSeg = Seg(listOf("关屏", "回主界面")) { i -> service?.dashHideMode = hows[i]; refreshNow() }
-        fc.addView(howSeg.root, lp(top = 6))
         val howHint = hint("")
-        fc.addView(howHint, lp(top = 8))
+        fc.addView(howHint, lp(top = 12))
         page.addView(fc, lp(top = 4, bottom = 10))
         val wakeBox = listBox()
         // 跟着眼镜自己的「抬头显示」（和「我的」页的抬头显示、官方 app 里的是同一个设置）
         val headToggle = Toggle { service?.toggleHeadUp(); refreshNow() }
-        val headRow = Row("抬头时显示看板", "低头不关屏").apply { accessory(headToggle.root) }
+        val headRow = Row("抬头时显示看板", "低头不收起看板").apply { accessory(headToggle.root) }
         wakeBox.addRow(headRow.root)
-        val darkToggle = Toggle { service?.let { it.dashHomeDark = !it.dashHomeDark }; refreshNow() }
-        val darkRow = Row("低着头收起时直接关屏（测试）", "低头退回主界面时先关屏，主界面不会一直亮着；12 秒后松开关屏，交回眼镜自己按抬头低头开关屏。抬头没反应就点左镜腿或关掉这个开关").apply { accessory(darkToggle.root) }
-        wakeBox.addRow(darkRow.root)
         page.addView(wakeBox)
 
         onUpdate(Sub.DASH_SET) { s ->
             offNote.visibility = if (s.dashEnabled) View.GONE else View.VISIBLE
             lookSeg.select(if (s.dashAsImage) 0 else 1)
             secSeg.select(secs.indexOf(s.dashAutoHideSec).coerceAtLeast(0))
-            howSeg.select(hows.indexOf(s.dashHideModeSetting).coerceAtLeast(0))
-            howSeg.root.visibility = if (s.dashHeadWake) View.VISIBLE else View.GONE
-            val home = s.dashHideMode == ReaderService.HIDE_HOME
             howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时直接关屏，不回官方主界面。再按一下镜腿亮回来。看板显示时右单击关屏，左单击翻屏，左双击上一屏，右双击打开语音菜单。已经在官方主界面上时，点一下左镜腿（主界面被点亮也算）打开语音菜单。菜单里的项目在「我的 → 菜单设置」。" +
                 "官方 app 连着时眼镜的报告会发给官方 app，NimoGo 收不到，要先停止官方 app（「我的 › 和官方 app 切换」）。"
-                else "抬头显示开着：抬头显示 NimoGo 看板，低头不关屏、也不收起。看板上左单击打开语音菜单，右单击翻到下一屏。到时间后看板自己隐去，不关屏。再抬头重新显示 NimoGo 看板。原生看板上左单击也打开语音菜单。"
+                else "抬头显示开着：抬头显示 NimoGo 看板。低头时眼镜自己会暗屏，但看板不收起，再抬头还是 NimoGo 看板。看板上左单击打开语音菜单，右单击翻到下一屏。" +
+                "到时间后看板隐去，屏幕暗下去，但不回原生看板。这时左单击打开语音菜单，抬头重新显示 NimoGo 看板。原生看板上左单击也打开语音菜单。"
             headToggle.set(s.dashHeadWake)
             headRow.titleV.text = "眼镜的抬头显示"
             headRow.desc(when {
                 s.headUpDisplay == null -> "连上眼镜后读取（和官方 app 里的是同一个设置）"
                 !s.dashHeadWake -> "关：收起时直接关屏，不回主界面"
-                else -> "开：抬头显示 NimoGo 看板。低头不关屏。左单击打开语音菜单"
+                else -> "开：抬头显示 NimoGo 看板。低头不收起。左单击打开语音菜单"
             })
-            darkToggle.set(s.dashHomeDark)
-            darkRow.root.visibility = if (home && s.dashHeadWake) View.VISIBLE else View.GONE
         }
         return page
     }

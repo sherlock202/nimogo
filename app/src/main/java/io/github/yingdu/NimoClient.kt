@@ -1252,11 +1252,15 @@ class NimoClient(private val context: Context, private val listener: NimoListene
      */
 
     private var lastPullLogAt = 0L
+    private var lastPullAt = 0L
 
     private fun onDashWake(data: ByteArray) {
         val hex = data.joinToString(" ") { "%02x".format(it) }
         val pull = NimoFrameCodec.parseDashPull(data)
         if (pull == null) { log("眼镜上报 key=6 data=$hex"); return }
+        val pullAt = android.os.SystemClock.uptimeMillis()
+        val gap = if (lastPullAt == 0L) "第一次" else "距上次 ${(pullAt - lastPullAt) / 1000} 秒"
+        lastPullAt = pullAt
         val content = NimoFrameCodec.dashPullState(NimoProtocol.DASH_STATE_ACCEPTED, pull.requestId, pull.left, pull.right, DASH_PULL_INTERVAL_SEC)
         NimoFrameCodec.updateContentFrames(NimoProtocol.APP_ID_HOME, 0, NimoProtocol.DASH_RES_STATE,
             NimoProtocol.DASH_RES_TYPE_STATE, content).forEach { sendFrame(it) }
@@ -1265,10 +1269,10 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         if (data[1].toInt() != 0) {
             // 不叫回看板，但留一条记录（排查「收起后再抬头没显示」：看是不是眼镜只发了定时拉取、没发抬头）。每 30 秒最多记一条
             val now = android.os.SystemClock.uptimeMillis()
-            if (now - lastPullLogAt > 30_000) { lastPullLogAt = now; log("眼镜主界面定时拉取（起因 ${data[1].toInt() and 0xFF}），不算抬头（$hex）") }
+            if (now - lastPullLogAt > 30_000) { lastPullLogAt = now; log("眼镜主界面定时拉取（起因 ${data[1].toInt() and 0xFF}，$gap），不算抬头（$hex）") }
             return
         }
-        log("眼镜主界面被点亮：抬头（$hex）")
+        log("眼镜主界面被点亮：抬头（$gap，$hex）")
         listener.onInput(GlassesInput.HOME_WAKE)
     }
 

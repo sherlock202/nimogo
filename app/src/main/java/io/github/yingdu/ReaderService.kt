@@ -1356,7 +1356,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         pushPage()
     }
 
-    fun toggleShow() { if (glassesPaused) resumeGlasses() else if (appMode == AppMode.DASHBOARD && activeApp == null) hideDashboard("收起看板") else pauseGlasses() }
+    fun toggleShow() { if (glassesPaused) resumeGlasses() else if (appMode == AppMode.DASHBOARD && activeApp == null) hideDashboard("收起看板", standby = dashHeadWake) else pauseGlasses() }
 
     // ---------- 看板自动收起 ----------
 
@@ -1383,7 +1383,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         get() = if (prefs.getInt("dashHide36", HIDE_SCREEN_OFF) == HIDE_HOME) HIDE_HOME else HIDE_SCREEN_OFF
     /**
      * 抬头显示看板：跟着眼镜自己的「抬头显示」设置（官方 app 和 NimoGo 里改的是同一个），不再单独设置（2026-10-22）。
-     * 开着：抬头显示 NimoGo 看板。看板显示期间临时关掉眼镜自己的抬头显示，低头不关屏、也不收起。
+     * 开着：抬头显示 NimoGo 看板。低头时眼镜自己会暗屏，看板不收起，页面留着；再抬头还是看板。
+     * 不去临时关掉眼镜的抬头显示：改这项设置时眼镜会关屏，抬头刚亮起的看板就被关掉了。
      * 到时间只把看板隐去，不关屏；再抬头重新显示。看板上和原生看板上，左单击都打开语音菜单。
      * 关着：收起时直接关屏，不回官方主界面；再按一下镜腿亮回来。显示时右单击收起、左单击翻屏。
      */
@@ -1400,8 +1401,10 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun run() {
             // 通知正盖在看板上：等它显示完再收起
             if (notifyOver) { main.postDelayed(this, 1_000); return }
-            // 到时间只收起看板，不关屏。关屏之后点镜腿会把看板亮回来，语音菜单就开不了。
-            hideDashboard("看板已自动收起", keepScreen = true)
+            // 抬头显示开着：页面不退出，只把屏幕暗下去。退出页面后眼镜不再报抬头，再抬头就只剩原生看板。
+            // 暗着时左单击打开语音菜单，抬头显示看板。抬头显示关着：退回主界面，屏幕亮着，左单击开语音菜单。
+            if (dashHeadWake) hideDashboard("看板已自动收起", headDown = false, standby = true)
+            else hideDashboard("看板已自动收起", keepScreen = true)
         }
     }
     private val headDownHide: Runnable = object : Runnable {
@@ -1423,22 +1426,24 @@ class ReaderService : Service(), NimoListener, AppHost {
         get() = prefs.getBoolean("dashHomeDarkTest", false)
         set(v) { prefs.edit().putBoolean("dashHomeDarkTest", v).apply(); if (!v) client.lightHome(); notifyUi() }
 
-    private fun hideDashboard(why: String, headDown: Boolean = headIsDown, keepScreen: Boolean = false) {
+    private fun hideDashboard(why: String, headDown: Boolean = headIsDown, keepScreen: Boolean = false, standby: Boolean = false) {
         if (appMode != AppMode.DASHBOARD || glassesPaused || linkState != LinkState.READY) return
         cancelDashTimers()
         glassesPaused = true
         headHidden = true
         notifyLit = false; main.removeCallbacks(reOffAfterNotify); restoreHeadUp()
         notifyOver = false; main.removeCallbacks(endNotifyOver)
-        if (keepScreen || dashHideMode == HIDE_HOME) {
+        if (standby && client.enteredAppId() == NimoProtocol.APP_ID_NAV) {
+            screenOffByUs = true; client.screenOff(true)
+            main.postDelayed(standbyRefresh, 300)
+            log("$why（页面留着，屏幕暗下去；抬头显示看板，左单击打开语音菜单）")
+        } else if (keepScreen || standby || dashHideMode == HIDE_HOME) {
             // 退回主界面，屏幕保持亮着。到时间收起走这里：关屏的话，下一次点镜腿会把看板亮回来，开不了语音菜单。
             // 刚退出时眼镜会顺手报一次「主界面被点亮」，quitHomeAt 用来忽略那一次，避免看板马上又出现。
             quitHomeAt = android.os.SystemClock.uptimeMillis(); quitEchoSeen = false
             if (!keepScreen && headDown && dashHomeDark) { client.quitToDarkHome(); log("$why（回主界面，低着头所以关屏；抬头再看）【测试】") }
             else {
                 client.quitCurrent()
-                // 看板在眼前时关掉过眼镜的抬头显示，收起后要开回去，再抬头眼镜才会报抬头、叫回看板
-                if (dashHeadWake) ensureHeadUpOn()
                 log(if (keepScreen) "$why（看板收起，屏幕保持亮着；再抬头显示看板）" else "$why（回主界面；抬头再看 NimoGo 看板）")
             }
         } else {
@@ -1466,19 +1471,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (!quitEchoSeen) { quitEchoSeen = true; return true }
         return false
     }
-
-    /**
-     * 看板收起后，把眼镜自己的抬头显示补一次开回去。收起时发的那条常常正赶上页面退出，被眼镜丢掉；
-     * 丢了的话眼镜不再随头亮屏，也就不会报抬头，再抬头就只剩原生看板。重复发一次开是没有副作用的。
-     */
-    private fun ensureHeadUpOn() {
-        for (delay in longArrayOf(1_200, 3_500)) main.postDelayed({
-            if (linkState != LinkState.READY || headUpSuspended || menuHoldsHead || !glassesPaused || !headHidden) return@postDelayed
-            if (headUpDisplay != true || appMode != AppMode.DASHBOARD) return@postDelayed
-            client.setGlassesSetting(NimoProtocol.SET_HEADUP_DISPLAY, true)
-        }, delay)
-    }
-
 
     /**
      * 打开 NimoGo 的看板。语音菜单里选「看板」走这里。「使用看板」关着时也会打开。从菜单进来要先关掉菜单，再把看板推上去。
@@ -2046,8 +2038,6 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (force && screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
         glassesPaused = false
         headHidden = false
-        // 抬头显示开着时，看板在眼前的这几秒先关掉眼镜自己的抬头显示，否则一低头眼镜就把屏幕关了，再抬头只会亮原生看板。
-        if (dashHeadWake && activeApp == null) suspendHeadUp()
         if (force && restartTimers) { startDashTimers(); shownAt = android.os.SystemClock.uptimeMillis() }
         if (!force && key == lastPushedDash) { notifyUi(); return }
         lastPushedDash = key
@@ -3124,7 +3114,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (!notifyLit) return@Runnable
         notifyLit = false
         log("通知显示完")
-        if (appMode == AppMode.DASHBOARD && glassesPaused && headHidden && dashHideMode == HIDE_SCREEN_OFF && linkState == LinkState.READY) {
+        if (appMode == AppMode.DASHBOARD && glassesPaused && headHidden && linkState == LinkState.READY &&
+            (dashHideMode == HIDE_SCREEN_OFF || client.enteredAppId() == NimoProtocol.APP_ID_NAV)) {
             screenOffByUs = true; client.screenOff(true)
             main.postDelayed(standbyRefresh, 300)
         }
@@ -3693,8 +3684,8 @@ class ReaderService : Service(), NimoListener, AppHost {
             }
             else -> if (glassesPaused) {
                 if (onOfficialHome()) return
-                // 原生看板（页面号可能还留着）：左单击开语音菜单，不拿去把看板亮回来。
-                if (dashHeadWake && input == GlassesInput.CLICK_LEFT) { noteHomeTap(); return }
+                // 看板收起着（页面留着、屏幕暗着，或者页面号还没清掉）：左单击开语音菜单，不拿去把看板亮回来。
+                if (dashHeadWake && input == GlassesInput.CLICK_LEFT) { callVoiceMenu("看板收起时左单击"); return }
                 // 页面还开着、只是关了屏：点镜腿把看板亮回来。官方主界面上不走这里，左单击已经用来开菜单。
                 val click = input == GlassesInput.CLICK_LEFT || input == GlassesInput.CLICK_RIGHT ||
                     input == GlassesInput.DOUBLE_LEFT || input == GlassesInput.DOUBLE_RIGHT
