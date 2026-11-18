@@ -1427,13 +1427,13 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (keepScreen || dashHideMode == HIDE_HOME) {
             // 退回主界面，屏幕保持亮着。到时间收起走这里：关屏的话，下一次点镜腿会把看板亮回来，开不了语音菜单。
             // 刚退出时眼镜会顺手报一次「主界面被点亮」，quitHomeAt 用来忽略那一次，避免看板马上又出现。
-            quitHomeAt = android.os.SystemClock.uptimeMillis()
+            quitHomeAt = android.os.SystemClock.uptimeMillis(); quitEchoSeen = false
             if (!keepScreen && headDown && dashHomeDark) { client.quitToDarkHome(); log("$why（回主界面，低着头所以关屏；抬头再看）【测试】") }
             else {
                 client.quitCurrent()
-                // 到时间收起：把头抬显示交回眼镜之后，如果头正低着，眼镜会马上息屏。再发一次开屏，这次收起本身不关屏。
-                if (keepScreen && dashHeadWake) client.screenOff(false)
-                log(if (keepScreen) "$why（看板收起，屏幕保持亮着）" else "$why（回主界面；抬头再看 NimoGo 看板）")
+                // 看板在眼前时关掉过眼镜的抬头显示，收起后要开回去，再抬头眼镜才会报抬头、叫回看板
+                if (dashHeadWake) ensureHeadUpOn()
+                log(if (keepScreen) "$why（看板收起，屏幕保持亮着；再抬头显示看板）" else "$why（回主界面；抬头再看 NimoGo 看板）")
             }
         } else {
             screenOffByUs = true; client.screenOff(true)
@@ -1445,6 +1445,33 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     /** 萤读自己退回官方主界面的时间（uptime）：退出后眼镜会顺手报一次「主界面被点亮」，那不是用户点的。 */
     private var quitHomeAt = 0L
+    /** 退回主界面后，那一次顺手的「点亮」是不是已经遇到过。 */
+    private var quitEchoSeen = false
+
+    /**
+     * 刚退回主界面时眼镜顺手报的那一次「点亮 / 抬头」要忽略，否则看板马上又弹出来。
+     * 但只忽略第一次：之后用户低头再抬头，是真的抬头，必须叫回看板（以前 3 秒内的抬头一律忽略，收起后很快再抬头就只看到原生看板）。
+     * 退回后 1 秒内的一律当作顺手报的。
+     */
+    private fun homeEcho(): Boolean {
+        val dt = android.os.SystemClock.uptimeMillis() - quitHomeAt
+        if (dt >= QUIT_HOME_IGNORE_MS) return false
+        if (dt < 1_000) { quitEchoSeen = true; return true }
+        if (!quitEchoSeen) { quitEchoSeen = true; return true }
+        return false
+    }
+
+    /**
+     * 看板收起后，把眼镜自己的抬头显示补一次开回去。收起时发的那条常常正赶上页面退出，被眼镜丢掉；
+     * 丢了的话眼镜不再随头亮屏，也就不会报抬头，再抬头就只剩原生看板。重复发一次开是没有副作用的。
+     */
+    private fun ensureHeadUpOn() {
+        for (delay in longArrayOf(1_200, 3_500)) main.postDelayed({
+            if (linkState != LinkState.READY || headUpSuspended || menuHoldsHead || !glassesPaused || !headHidden) return@postDelayed
+            if (headUpDisplay != true || appMode != AppMode.DASHBOARD) return@postDelayed
+            client.setGlassesSetting(NimoProtocol.SET_HEADUP_DISPLAY, true)
+        }, delay)
+    }
 
 
     /**
@@ -3573,7 +3600,7 @@ class ReaderService : Service(), NimoListener, AppHost {
             } else if (ending === study) study.onHide()
             glassesPaused = true
             main.removeCallbacks(restoreCheck)
-            quitHomeAt = android.os.SystemClock.uptimeMillis()
+            quitHomeAt = android.os.SystemClock.uptimeMillis(); quitEchoSeen = false
             exitLockUntil = quitHomeAt + 2_000
             val reading = !endTalk && baseMode == AppMode.READER && activeApp == null && !readFromMenu
             readFromMenu = false
@@ -3635,8 +3662,8 @@ class ReaderService : Service(), NimoListener, AppHost {
                 }
                 // 抬头显示开着：主界面刚亮就换成 NimoGo 的看板，不在原生看板上停留。
                 if (notifyLit) { log("弹通知时主界面亮了，不叫回看板"); return }
-                if (android.os.SystemClock.uptimeMillis() - quitHomeAt < QUIT_HOME_IGNORE_MS) { log("刚退回主界面，主界面亮起不算点亮，不叫回看板"); return }
-                wakeFromHome("点亮主界面：显示看板")
+                if (homeEcho()) { log("刚退回主界面，主界面亮起不算抬头，不叫回看板"); return }
+                wakeFromHome("抬头：主界面亮起，显示看板")
                 return
             }
             GlassesInput.HEAD_UP -> {
@@ -3646,10 +3673,10 @@ class ReaderService : Service(), NimoListener, AppHost {
                 if (glassesPaused && showingPopup) { log("抬头：正在显示通知，等它显示完"); return }
                 if (glassesPaused && !headHidden) { log("抬头：看板是在手机上收起的，不自动显示（点「显示看板」）"); return }
                 if (!glassesPaused) { cancelDashTimers(); armDashTimers(); scheduleDashLive(); return }
-                if (android.os.SystemClock.uptimeMillis() - quitHomeAt < QUIT_HOME_IGNORE_MS) { log("刚退回主界面，这次抬头不叫回看板"); return }
+                if (homeEcho()) { log("刚退回主界面，这次抬头不叫回看板"); return }
                 if (dashAtHome) return
-                log("抬头：显示看板")
-                wakeDashboard()
+                // 走和「主界面被点亮」同一条路：打开页面的指令会连发几次，眼镜刚亮起时头一次常被丢掉
+                wakeFromHome("抬头：显示看板")
                 return
             }
             GlassesInput.HEAD_DOWN -> {

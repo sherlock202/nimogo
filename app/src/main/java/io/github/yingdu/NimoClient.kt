@@ -1251,6 +1251,8 @@ class NimoClient(private val context: Context, private val listener: NimoListene
      * 回一条确认：发给 app 0 / 资源 0xFF / 类型 3，内容 01 00 [序号] 00 00 00 01 04 [刷新间隔秒，2 字节] （实测这样眼镜才不重复上报）。
      */
 
+    private var lastPullLogAt = 0L
+
     private fun onDashWake(data: ByteArray) {
         val hex = data.joinToString(" ") { "%02x".format(it) }
         val pull = NimoFrameCodec.parseDashPull(data)
@@ -1260,7 +1262,12 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             NimoProtocol.DASH_RES_TYPE_STATE, content).forEach { sendFrame(it) }
         // 第 2 个字节是这次拉取的起因：00 = 抬头（主界面刚亮起），01 = 定时拉取（按回复里的刷新间隔，主界面亮着时会一直来）。
         // 只有抬头才叫回看板；定时拉取只回「收到」，也不记日志（不然看板收起后每隔一会儿又被叫起来）
-        if (data[1].toInt() != 0) return
+        if (data[1].toInt() != 0) {
+            // 不叫回看板，但留一条记录（排查「收起后再抬头没显示」：看是不是眼镜只发了定时拉取、没发抬头）。每 30 秒最多记一条
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastPullLogAt > 30_000) { lastPullLogAt = now; log("眼镜主界面定时拉取（起因 ${data[1].toInt() and 0xFF}），不算抬头（$hex）") }
+            return
+        }
         log("眼镜主界面被点亮：抬头（$hex）")
         listener.onInput(GlassesInput.HOME_WAKE)
     }
