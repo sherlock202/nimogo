@@ -1284,6 +1284,13 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         }
     }
 
+    /** 往官方主界面（appId 0）推一张图（原生看板右侧的「位置」卡片用；layout / 资源号还在实测）。 */
+    fun pushHomeImage(layoutId: Int, resId: Int, packed2bpp: ByteArray, width: Int, height: Int) {
+        if (state != LinkState.READY) return
+        NimoFrameCodec.updateContentFrames(NimoProtocol.APP_ID_HOME, layoutId, resId, NimoProtocol.WIDGET_PICTURE,
+            NimoFrameCodec.imageContent(packed2bpp, width, height)).forEach { sendFrame(it) }
+    }
+
     /** 最近一次收到「右长按以外」的镜腿 / 头部操作的时间（uptime）。 */
     private var lastOtherInputAt = 0L
 

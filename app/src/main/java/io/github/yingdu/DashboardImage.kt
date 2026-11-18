@@ -384,6 +384,33 @@ object DashboardImage {
         return NimoFrameCodec.pack2bpp(levels)
     }
 
+    /**
+     * 原生看板右侧「位置」卡片里的天气图（304×180）：城市、大字温度和天气、最高最低温。
+     * tag 画在右下角（测试时标出这是第几种推法）。
+     */
+    fun nativeWeather(city: String, w: Weather?, tag: String): ByteArray {
+        val nw = NimoProtocol.DASH_MAP_WIDTH; val nh = NimoProtocol.DASH_MAP_HEIGHT
+        val bmp = Bitmap.createBitmap(nw, nh, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.BLACK)
+        val px = Px(c)
+        val f = GlassesFonts.text(20)
+        val big = GlassesFonts.text(32)
+        val small = GlassesFonts.text(12)
+        f.draw(c, f.ellipsize(city.ifBlank { "天气" }, nw - 16), 8, 8, DIM)
+        if (w == null) f.draw(c, "还没取到天气", 8, 60, FULL)
+        else {
+            val icon = weatherIcon(w.desc)
+            ICONS[icon]?.forEachIndexed { j, row -> row.forEachIndexed { i, ch -> if (ch == '#') px.rect(8 + i * 4, 48 + j * 4, 4, 4, FULL) } }
+            val x = big.draw(c, "${w.temp.toInt()}°", 56, 50, FULL) + 12
+            f.draw(c, f.ellipsize(w.desc, nw - x - 8), x, 56, FULL)
+            f.draw(c, "${w.low.toInt()}~${w.high.toInt()}°", 8, 100, DIM)
+        }
+        if (tag.isNotEmpty()) small.draw(c, tag, nw - 8, nh - 20, DIM, alignRight = true)
+        px.frame(1, 1, nw - 2, nh - 2, 8, LINE)
+        return toGlasses(bmp)
+    }
+
     /** 调画面上下、远近时显示的框：整圈边和十字，移动时能看出框有没有被切掉。 */
     fun alignTest(): ByteArray {
         val bmp = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888)

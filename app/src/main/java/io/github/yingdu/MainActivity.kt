@@ -1783,6 +1783,14 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val headRow = Row("抬头时显示看板", "低头不收起看板").apply { accessory(headToggle.root) }
         wakeBox.addRow(headRow.root)
         page.addView(wakeBox)
+        val nativeBox = listBox()
+        nativeBox.addRow(Row("原生看板右侧显示天气（测试）", "回到原生看板，右侧换成位置卡片，依次试 6 种推法", chevron = true) {
+            service?.nativeWeatherProbe(); toast("约 25 秒内依次试 6 种，看眼镜右侧哪一种出现天气")
+        }.root)
+        nativeBox.addRow(Row("原生看板右侧换回股票", "测试完把右侧卡片换回来", chevron = true) {
+            service?.nativeRightToStock(); toast("已发送")
+        }.root)
+        page.addView(nativeBox, lp(top = 10))
 
         onUpdate(Sub.DASH_SET) { s ->
             offNote.visibility = if (s.dashEnabled) View.GONE else View.VISIBLE

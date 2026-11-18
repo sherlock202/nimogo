@@ -1427,6 +1427,34 @@ class ReaderService : Service(), NimoListener, AppHost {
         get() = prefs.getBoolean("dashHomeDarkTest", false)
         set(v) { prefs.edit().putBoolean("dashHomeDarkTest", v).apply(); if (!v) client.lightHome(); notifyUi() }
 
+    /**
+     * 测试：把天气画成图，投到原生看板右侧的「位置」卡片。图该发到主界面的哪个 layout / 资源号没有记录，
+     * 依次试几种，每种之间隔 4 秒；图右下角和日志里都写着是第几种。
+     */
+    fun nativeWeatherProbe() {
+        if (linkState != LinkState.READY) { log("原生看板天气测试：眼镜没连上"); return }
+        if (client.enteredAppId() != null) {
+            if (appMode == AppMode.DASHBOARD && !glassesPaused) hideDashboard("原生看板天气测试：先收起看板", headDown = false, keepScreen = true)
+            else { log("原生看板天气测试：眼镜上正开着别的功能，先退出再试"); return }
+        }
+        client.setDashRightLayout(NimoProtocol.DASH_RIGHT_LOCATION)
+        val probes = listOf(0 to 0, 0 to 1, 0 to 2, 0 to 5, 1 to 0, 1 to 5)
+        probes.forEachIndexed { i, (layout, res) ->
+            main.postDelayed({
+                if (linkState != LinkState.READY || client.enteredAppId() != null) return@postDelayed
+                val img = DashboardImage.nativeWeather(dashCity, weather, "第 ${i + 1} 种")
+                client.pushHomeImage(layout, res, img, NimoProtocol.DASH_MAP_WIDTH, NimoProtocol.DASH_MAP_HEIGHT)
+                log("原生看板天气测试：第 ${i + 1} 种（layout $layout，资源 $res）")
+            }, 1_500L + i * 4_000L)
+        }
+    }
+
+    /** 测试结束后把原生看板右侧换回股票卡片。 */
+    fun nativeRightToStock() {
+        if (linkState != LinkState.READY) { log("眼镜没连上"); return }
+        client.setDashRightLayout(NimoProtocol.DASH_RIGHT_STOCK)
+    }
+
     private fun hideDashboard(why: String, headDown: Boolean = headIsDown, keepScreen: Boolean = false) {
         if (appMode != AppMode.DASHBOARD || glassesPaused || linkState != LinkState.READY) return
         cancelDashTimers()
