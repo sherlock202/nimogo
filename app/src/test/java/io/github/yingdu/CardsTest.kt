@@ -55,6 +55,18 @@ class CardsTest {
         assertEquals("abcd\nefg…", CardStore.fit("abcdefghi", 4, 2))
     }
 
+    @Test fun autoOrderFrontThenBack() {
+        assertEquals(0 to true, CardsApp.nextSide(0, false, 2, false))
+        assertEquals(1 to false, CardsApp.nextSide(0, true, 2, false))
+        assertEquals(0 to false, CardsApp.nextSide(1, true, 2, false))
+    }
+
+    @Test fun autoOrderInvertedBackThenFront() {
+        assertEquals(0 to false, CardsApp.nextSide(0, true, 2, true))
+        assertEquals(1 to true, CardsApp.nextSide(0, false, 2, true))
+        assertEquals(0 to true, CardsApp.nextSide(1, false, 2, true))
+    }
+
     @Test fun ringKeys() {
         assertEquals("flip", CardsApp.keyAction(KeyEvent.KEYCODE_DPAD_UP))
         assertEquals("flip", CardsApp.keyAction(KeyEvent.KEYCODE_DPAD_DOWN))

@@ -128,7 +128,7 @@ object CardStore {
 
 /**
  * 眼镜上播放一组学习卡。
- * 自动：正面停几秒，反面停几秒，再下一张，循环。
+ * 自动：先停一面、再停另一面，然后下一张，循环。默认先正面。倒置时先反面。
  * 镜腿左键翻面，右键下一张。蓝牙戒指上下翻面，左上一张，右下一张。
  */
 class CardsApp(
@@ -137,6 +137,7 @@ class CardsApp(
     private val frontSec: () -> Int,
     private val backSec: () -> Int,
     private val autoPref: () -> Boolean,
+    private val invertPref: () -> Boolean,
     private val keys: (Boolean) -> Unit,
 ) : GlassesApp {
     override val title = "学习卡"
@@ -144,6 +145,8 @@ class CardsApp(
     var index = 0
     var back = false
     var auto = true
+    /** 倒置：一张卡先出现反面，再出现正面。 */
+    var invert = false
     var playing = false
         private set
 
@@ -162,6 +165,8 @@ class CardsApp(
 
     override fun onOpen() {
         auto = autoPref()
+        invert = invertPref()
+        back = invert
         playing = true
         keys(true)
         show()
@@ -199,6 +204,16 @@ class CardsApp(
 
     fun reschedule() { if (playing) arm() }
 
+    /** 播放中改倒置：当前这张立刻从新的第一面重新开始。 */
+    fun applyInvert(on: Boolean) {
+        invert = on
+        if (!playing) return
+        back = on
+        show()
+        arm()
+        host.changed()
+    }
+
     fun act(action: String) {
         val now = SystemClock.uptimeMillis()
         if (action == lastAct && now - lastActAt < 80) return
@@ -208,8 +223,8 @@ class CardsApp(
         if (n == 0) return
         when (action) {
             "flip" -> back = !back
-            "next" -> { index = (index + 1) % n; back = false }
-            "prev" -> { index = (index - 1 + n) % n; back = false }
+            "next" -> { index = (index + 1) % n; back = invert }
+            "prev" -> { index = (index - 1 + n) % n; back = invert }
             else -> return
         }
         show()
@@ -240,7 +255,8 @@ class CardsApp(
         val text = (if (back) card.back else card.front).ifBlank { "（空）" }
         val side = if (back) "反面" else "正面"
         val mode = if (auto) " 自动" else ""
-        val status = "${d.name.take(8)} ${index + 1}/${d.cards.size} $side$mode"
+        val order = if (invert) " 逆" else ""
+        val status = "${d.name.take(8)} ${index + 1}/${d.cards.size} $side$order$mode"
         return CardStore.fit(text, cols, rows) to status
     }
 
@@ -250,7 +266,8 @@ class CardsApp(
         if (n == 0) return "${d.name} · 没有卡片"
         val side = if (back) "反面" else "正面"
         val mode = if (auto) "自动" else "手动"
-        return "第 ${index + 1}/$n 张 · $side · $mode"
+        val order = if (invert) " · 倒置" else ""
+        return "第 ${index + 1}/$n 张 · $side · $mode$order"
     }
 
     private fun deck(): StudyDeck? = decks().find { it.id == deckId }
@@ -269,7 +286,9 @@ class CardsApp(
         if (!playing || !auto || !host.isShowing(this)) return
         val n = deck()?.cards?.size ?: return
         if (n == 0) return
-        if (!back) back = true else { back = false; index = (index + 1) % n }
+        val step = nextSide(index, back, n, invert)
+        index = step.first
+        back = step.second
         show()
         arm()
         host.changed()
@@ -283,6 +302,16 @@ class CardsApp(
             KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_PREVIOUS, KeyEvent.KEYCODE_MEDIA_REWIND -> "prev"
             KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> "next"
             else -> null
+        }
+
+        /**
+         * 自动播放的下一步。[firstBack] 为真时先反面、再正面。
+         * 返回下一张的序号，以及下一张要显示反面。
+         */
+        fun nextSide(index: Int, showingBack: Boolean, count: Int, firstBack: Boolean): Pair<Int, Boolean> {
+            if (count <= 0) return index to showingBack
+            return if (showingBack == firstBack) index to !firstBack
+            else (index + 1) % count to firstBack
         }
 
         fun actionName(action: String) = when (action) {

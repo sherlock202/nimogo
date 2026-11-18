@@ -230,7 +230,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     val eyes by lazy { EyeRestApp(this) }
     val party by lazy { PartyApp(this) }
     val study by lazy {
-        CardsApp(this, { cardDecks() }, { cardFrontSec() }, { cardBackSec() }, { cardAuto() }) { on ->
+        CardsApp(this, { cardDecks() }, { cardFrontSec() }, { cardBackSec() }, { cardAuto() }, { cardInvert() }) { on ->
             if (on) studyMediaOn() else studyMediaOff()
         }
     }
@@ -1141,6 +1141,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     fun cardFrontSec() = prefs.getInt("cardFrontSec", 5).coerceIn(1, 60)
     fun cardBackSec() = prefs.getInt("cardBackSec", 5).coerceIn(1, 60)
     fun cardAuto() = prefs.getBoolean("cardAuto", true)
+    fun cardInvert() = prefs.getBoolean("cardInvert", false)
     fun cardSetFront(sec: Int) {
         prefs.edit().putInt("cardFrontSec", sec.coerceIn(1, 60)).apply()
         if (activeApp === study) study.reschedule()
@@ -1154,6 +1155,11 @@ class ReaderService : Service(), NimoListener, AppHost {
     fun cardSetAuto(on: Boolean) {
         prefs.edit().putBoolean("cardAuto", on).apply()
         if (activeApp === study) { study.auto = on; study.reschedule() }
+        notifyUi()
+    }
+    fun cardSetInvert(on: Boolean) {
+        prefs.edit().putBoolean("cardInvert", on).apply()
+        if (activeApp === study) study.applyInvert(on)
         notifyUi()
     }
     fun cardAddDeck(name: String): String {

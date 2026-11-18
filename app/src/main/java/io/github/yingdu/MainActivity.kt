@@ -2687,11 +2687,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
     private fun buildCards(): View {
         val page = vbox()
         page.addView(note("一组里可以加卡片。正面写单词，反面写意思。在眼镜上播放时，先放正面、再放反面，然后下一张，一直循环。" +
-            "镜腿左键翻面，右键下一张。蓝牙戒指上下翻面，左上一张，右下一张。自己建卡片不收费。"))
+            "打开「倒置」就先放反面、再放正面。镜腿左键翻面，右键下一张。蓝牙戒指上下翻面，左上一张，右下一张。自己建卡片不收费。"))
         page.addView(section("播放"))
         val timing = listBox()
         val auto = Toggle { service?.let { it.cardSetAuto(!it.cardAuto()) } }
+        val invert = Toggle { service?.let { it.cardSetInvert(!it.cardInvert()) } }
         timing.addRow(Row("自动播放", "关掉后只按键翻").apply { accessory(auto.root) }.root)
+        timing.addRow(Row("倒置", "先出现反面，再出现正面").apply { accessory(invert.root) }.root)
         val front = Stepper(
             { service?.let { it.cardSetFront(it.cardFrontSec() - 1) } },
             { service?.let { it.cardSetFront(it.cardFrontSec() + 1) } })
@@ -2708,6 +2710,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         var shown = ""
         onUpdate(Sub.CARDS) { s ->
             auto.set(s.cardAuto())
+            invert.set(s.cardInvert())
             front.value.text = "${s.cardFrontSec()} 秒"
             back.value.text = "${s.cardBackSec()} 秒"
             val sig = s.cardDecks().joinToString("|") { "${it.id}:${it.name}:${it.cards.size}" }
