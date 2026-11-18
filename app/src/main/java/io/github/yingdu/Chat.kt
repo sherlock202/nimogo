@@ -5,7 +5,7 @@ import java.util.concurrent.Executors
 
 /**
  * 和 AI 直接聊天。大模型和转文字都用场景助手里已经填好的那一套。
- * 眼镜上说完一句（停一下）就发出去；手机上也可以打字。回答显示在眼镜上。
+ * 眼镜上说完一句（停 2 秒以上）就发出去；一句最长 30 秒。手机上也可以打字。回答显示在眼镜上。
  */
 class ChatTurn(val me: Boolean, val text: String, val at: Long)
 
@@ -51,7 +51,12 @@ class ChatApp(private val host: AppHost, private val env: Env) : GlassesApp {
                     if (!running) return@transcribe
                     r.onSuccess { t ->
                         val s = t.trim()
-                        if (s.isNotEmpty()) say(s)
+                        when {
+                            s.isEmpty() -> {}
+                            // 没人说话时麦克风听到的「嗯」「啊」或者 Whisper 编的句子，不当成用户说的话
+                            SpeechToText.isFiller(s) || SpeechToText.isHallucination(s) -> host.log("聊天：丢掉像噪音的「${s.take(20)}」")
+                            else -> say(s)
+                        }
                     }.onFailure {
                         error = "转文字出错：${it.message ?: it.javaClass.simpleName}"
                         host.log("聊天：$error")
@@ -60,7 +65,7 @@ class ChatApp(private val host: AppHost, private val env: Env) : GlassesApp {
                 }
             }
             override fun dropped(id: Int) {}
-        })
+        }, endQuietFrames = CaptionSegmenter.CHAT_END_QUIET_FRAMES, maxFrames = CaptionSegmenter.CHAT_MAX_FRAMES)
         if (env.asrReady()) env.setMic(true)
         lastFrameAt = System.currentTimeMillis()
         host.main.removeCallbacks(watch)
@@ -136,19 +141,18 @@ class ChatApp(private val host: AppHost, private val env: Env) : GlassesApp {
         }
         val (provider, base, key, model) = cfg
         val mine = turns.toList()
+        // 最新一句是用户刚说的（say 里刚加进去的）；前面的几句作为对话历史，按真正的角色交替发给模型
+        val latest = mine.last().text.trim()
+        val history = mine.dropLast(1).takeLast(12).map { (if (it.me) "user" else "assistant") to it.text.trim() }
         val id = ++serial
         thinking = true
         error = ""
         show()
         val system = "你在和用户直接聊天。用户戴着智能眼镜，用语音或手机打字和你说话，你的回答会显示在眼镜上。" +
+            "用户的话是语音识别的结果，可能有错字或断句不对。你要回答他这句话的意思，不要重复、复述或引用他的原话，不要说「你说的是」「我听到你说」这类话。" +
             "用用户说的语言回答，口语、简短，一般两三句。不要 Markdown，不要标题，不要寒暄套话。"
-        val user = buildString {
-            append("对话：\n")
-            mine.takeLast(12).forEach { append(if (it.me) "我：" else "你：").append(it.text.trim()).append('\n') }
-            append("\n请直接回复我最后说的话。")
-        }
         llmExec.execute {
-            val r = runCatching { AssistAi.chat(provider, base, key, model, system, user, 800, 40_000) }
+            val r = runCatching { AssistAi.chat(provider, base, key, model, system, latest, 800, 40_000, history) }
             host.main.post {
                 if (id != serial) return@post
                 thinking = false
@@ -228,7 +232,7 @@ class ChatApp(private val host: AppHost, private val env: Env) : GlassesApp {
         val body = when {
             thinking -> listOf(head, "在想…")
             error.isNotEmpty() && turns.none { !it.me } -> wrap(error, cols)
-            turns.none { !it.me } -> wrap(if (error.isNotEmpty()) error else "说吧，说完停一下我就回答。手机上也可以打字。", cols)
+            turns.none { !it.me } -> wrap(if (error.isNotEmpty()) error else "说吧，说完停 2 秒我就回答。手机上也可以打字。", cols)
             else -> {
                 val ps = pages()
                 val p = page.coerceIn(0, ps.size - 1)

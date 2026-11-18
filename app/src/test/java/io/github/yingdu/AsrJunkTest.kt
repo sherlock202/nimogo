@@ -17,6 +17,23 @@ class AsrJunkTest {
         assertFalse(SpeechToText.isHallucination("。"))
     }
 
+    @Test fun fillerWordsAreDropped() {
+        // 没人说话时听到的语气词：整句只有这些就丢
+        assertTrue(SpeechToText.isFiller("嗯"))
+        assertTrue(SpeechToText.isFiller("嗯。"))
+        assertTrue(SpeechToText.isFiller("嗯，嗯…"))
+        assertTrue(SpeechToText.isFiller("呃啊"))
+        assertTrue(SpeechToText.isFiller("えー"))
+        assertTrue(SpeechToText.isFiller("um"))
+        assertTrue(SpeechToText.isFiller("Hmm."))
+        assertTrue(SpeechToText.isFiller("。"))
+        // 有实际内容的不丢
+        assertFalse(SpeechToText.isFiller("好的，嗯"))
+        assertFalse(SpeechToText.isFiller("明天九点开会"))
+        assertFalse(SpeechToText.isFiller("ok"))
+        assertFalse(SpeechToText.isFiller("はい"))
+    }
+
     @Test fun whisperVerboseDropsNoiseSegments() {
         val body = """{"text":"x","segments":[
             {"text":"こんにちは。","no_speech_prob":0.1,"avg_logprob":-0.3,"compression_ratio":1.1},

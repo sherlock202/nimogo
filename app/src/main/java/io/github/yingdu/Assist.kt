@@ -336,16 +336,30 @@ object AssistAi {
     }
 
     /** 请求正文。 */
-    fun body(provider: String, model: String, system: String, user: String, maxTokens: Int): JSONObject =
-        if (provider == "claude") JSONObject()
+    /**
+     * 请求体。history 是更早的几句（role 为 "user" / "assistant"），最后一句是 user。
+     * 相邻的同一角色会合并（某次出错后可能连着两句我说的），保证 Claude 那边也是交替的。
+     */
+    fun body(provider: String, model: String, system: String, user: String, maxTokens: Int,
+             history: List<Pair<String, String>> = emptyList()): JSONObject {
+        val turns = ArrayList<Pair<String, String>>()
+        for ((role, text) in history + ("user" to user)) {
+            if (turns.isNotEmpty() && turns.last().first == role) turns[turns.size - 1] = role to turns.last().second + "\n" + text
+            else turns.add(role to text)
+        }
+        while (turns.size > 1 && turns.first().first != "user") turns.removeAt(0)   // 截断历史后开头可能是助手的话，要从用户开始
+        val msgs = JSONArray()
+        turns.forEach { (role, text) -> msgs.put(JSONObject().put("role", role).put("content", text)) }
+        return if (provider == "claude") JSONObject()
             .put("model", model).put("max_tokens", maxTokens).put("fallbacks", "default").put("system", system)
-            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", user)))
+            .put("messages", msgs)
         else JSONObject()
             .put("model", model).put("max_tokens", maxTokens)
-            .put("messages", JSONArray()
-                .put(JSONObject().put("role", "system").put("content", system))
-                .put(JSONObject().put("role", "user").put("content", user)))
+            .put("messages", JSONArray().put(JSONObject().put("role", "system").put("content", system)).also { arr ->
+                turns.forEach { (role, text) -> arr.put(JSONObject().put("role", role).put("content", text)) }
+            })
             .apply { if (model.contains("gpt-oss")) put("reasoning_effort", "low") }   // Groq 上的 gpt-oss：少想一点，出字快
+    }
 
     /** 即时翻译用大模型时的提示词：只要译文。 */
     fun trSystem(fromName: String, toName: String, terms: List<String>) =
@@ -370,12 +384,13 @@ object AssistAi {
     }.replace(Regex("""\n{3,}"""), "\n\n").trim()
 
     /** 调用大模型（后台线程）。 */
-    fun chat(provider: String, base: String, key: String, model: String, system: String, user: String, maxTokens: Int, timeoutMs: Int): String {
+    fun chat(provider: String, base: String, key: String, model: String, system: String, user: String, maxTokens: Int, timeoutMs: Int,
+             history: List<Pair<String, String>> = emptyList()): String {
         if (key.isBlank()) throw IOException("还没填大模型的 API Key（「场景助手 › 设置」）")
         if (base.isBlank() || model.isBlank()) throw IOException("还没填接口地址或型号（「场景助手 › 设置」）")
         val claude = provider == "claude"
         val url = base.trimEnd('/') + if (claude) "/v1/messages" else "/chat/completions"
-        val bytes = body(provider, model, system, user, maxTokens).toString().toByteArray(Charsets.UTF_8)
+        val bytes = body(provider, model, system, user, maxTokens, history).toString().toByteArray(Charsets.UTF_8)
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 10_000; c.readTimeout = timeoutMs
         c.requestMethod = "POST"; c.doOutput = true

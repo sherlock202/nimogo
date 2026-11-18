@@ -8,7 +8,14 @@ import java.util.concurrent.Executors
  * 说的过程中每隔一会儿把已经说的部分送去转一次文字（先显示个大概），说完再转一次整句（定稿）。
  * 纯 Kotlin，不依赖 Android，有单元测试。PCM 都是 16 kHz。
  */
-class CaptionSegmenter(private val listener: Listener, private val vad: SpeechDetector = SpeechDetector()) {
+class CaptionSegmenter(
+    private val listener: Listener,
+    private val vad: SpeechDetector = SpeechDetector(),
+    /** 安静多少帧（10 ms）算这一句说完。字幕、场景助手用默认值；聊天要等得更久。 */
+    private val endQuietFrames: Int = END_QUIET_FRAMES,
+    /** 一句最长多少帧，超过就先断开。 */
+    private val maxFrames: Int = MAX_FRAMES,
+) {
     interface Listener {
         /** 这一句还在说：到目前为止的声音（id 相同的是同一句）。 */
         fun partial(id: Int, pcm: ShortArray)
@@ -58,8 +65,8 @@ class CaptionSegmenter(private val listener: Listener, private val vad: SpeechDe
         framesSincePartial++
         val frames = b.size / FRAME
         when {
-            quietFrames >= END_QUIET_FRAMES -> finish(keepGoing = false)
-            frames >= MAX_FRAMES -> finish(keepGoing = true)
+            quietFrames >= endQuietFrames -> finish(keepGoing = false)
+            frames >= maxFrames -> finish(keepGoing = true)
             framesSincePartial >= PARTIAL_FRAMES && voicedFrames >= MIN_VOICED -> {
                 framesSincePartial = 0
                 listener.partial(id, b.toArray())
@@ -95,6 +102,10 @@ class CaptionSegmenter(private val listener: Listener, private val vad: SpeechDe
         const val END_QUIET_FRAMES = 50       // 停顿约 0.8 秒（说话判断本身还有 0.3 秒余量）算说完
         const val TAIL_FRAMES = 30
         const val MAX_FRAMES = 1200           // 一句最长 12 秒，再长就先断开
+        /** 聊天：安静约 2 秒才算说完（说话判断本身还要约 0.2 秒才停，所以总共约 2.1 秒）。 */
+        const val CHAT_END_QUIET_FRAMES = 190
+        /** 聊天：一句最长 30 秒，长句不会被切开。 */
+        const val CHAT_MAX_FRAMES = 3000
         const val PARTIAL_FRAMES = 120        // 说的过程中每 1.2 秒转一次
         const val MIN_VOICED = 25             // 有声的部分不到 0.25 秒不算一句
     }

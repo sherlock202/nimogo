@@ -2980,7 +2980,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
     private fun buildChat(): View {
         val page = vbox()
-        page.addView(note("和 AI 直接聊天。大模型、转文字都用「场景助手 › 设置」里填好的那一套。眼镜上说完停一下就发送；回答长了双击翻页。"))
+        page.addView(note("和 AI 直接聊天。大模型、转文字都用「场景助手 › 设置」里填好的那一套。眼镜上说完停 2 秒就发送（中途停顿不到 2 秒不会断开）；回答长了双击翻页。"))
         val input = field("打一句", multi = true)
         val send = pill("发送", dark = true) {
             val t = input.text?.toString()?.trim().orEmpty()

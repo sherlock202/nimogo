@@ -187,6 +187,21 @@ class CaptionSegmenterTest {
         assertNull(s.current)
     }
 
+    /** 聊天：说话中间停 1.5 秒不断开，停满 2 秒以上才算说完。 */
+    @Test fun chatWaitsForTwoSecondsOfSilence() {
+        val rnd = java.util.Random(8)
+        val r = Rec()
+        val s = CaptionSegmenter(r, endQuietFrames = CaptionSegmenter.CHAT_END_QUIET_FRAMES, maxFrames = CaptionSegmenter.CHAT_MAX_FRAMES)
+        feedChunks(s, hiss(1.0, rnd) + voice(2.0, 150.0, 5000.0, rnd) + hiss(1.5, rnd) + voice(2.0, 200.0, 5000.0, rnd))
+        assertTrue("中间停 1.5 秒不该断开", r.finals.isEmpty())
+        assertNotNull(s.current)
+        feedChunks(s, hiss(2.5, rnd))
+        assertEquals(1, r.finals.size)
+        val sec = r.finals[0].second / 16000.0
+        assertTrue("整句 $sec 秒", sec in 5.5..7.5)
+        assertNull(s.current)
+    }
+
     @Test fun silenceProducesNothing() {
         val r = Rec(); val s = CaptionSegmenter(r)
         feedChunks(s, hiss(5.0, java.util.Random(7)))

@@ -93,6 +93,17 @@ object SpeechToText {
         return n in JUNK_EXACT || JUNK_PART.any { n.contains(it.lowercase()) }
     }
 
+    /** 语气词（嗯、啊、呃、えー、um 这类）。没人说话时麦克风的底噪、呼吸声也会被认成这些，整句只有这些就不要。 */
+    private const val FILLER_CHARS = "嗯呃啊哦唔额诶欸噢哎唉哈呵嘿えーあーんうんええ"
+    private val FILLER_WORDS = setOf("um", "uh", "umm", "uhh", "hmm", "mm", "mhm", "er", "erm", "ah", "oh")
+
+    fun isFiller(text: String): Boolean {
+        val n = text.lowercase().filter { it.isLetterOrDigit() }
+        if (n.isEmpty()) return true
+        if (n in FILLER_WORDS) return true
+        return n.length <= 8 && n.all { it in FILLER_CHARS }
+    }
+
     /** Qwen3-ASR 这类用对话接口的模型。 */
     fun isChatAsr(model: String) = model.startsWith("qwen", true) && model.contains("asr", true)
 
