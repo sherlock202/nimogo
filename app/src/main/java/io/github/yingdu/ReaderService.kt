@@ -230,7 +230,8 @@ class ReaderService : Service(), NimoListener, AppHost {
     val eyes by lazy { EyeRestApp(this) }
     val party by lazy { PartyApp(this) }
     val study by lazy {
-        CardsApp(this, { cardDecks() }, { cardFrontSec() }, { cardBackSec() }, { cardAuto() }, { cardInvert() }) { on ->
+        CardsApp(this, { cardDecks() }, { cardFrontSec() }, { cardBackSec() }, { cardAuto() }, { cardInvert() },
+            { id -> prefs.getInt("cardPos_$id", 0) }, { id, i -> prefs.edit().putInt("cardPos_$id", i).apply() }) { on ->
             if (on) studyMediaOn() else studyMediaOff()
         }
     }
@@ -1174,6 +1175,7 @@ class ReaderService : Service(), NimoListener, AppHost {
     }
     fun cardDelete(id: String) {
         if (activeApp === study && study.deckId == id) closeApp()
+        prefs.edit().remove("cardPos_$id").apply()
         saveDecks(cardDecks().filter { it.id != id })
     }
     fun cardAdd(id: String, front: String, back: String) = cardChange(id) { it.copy(cards = it.cards + StudyCard(front.trim().take(500), back.trim().take(500))) }
@@ -1231,6 +1233,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         cancelDashTimers()
         if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
         glassesPaused = false
+        dashBlank = false
         log("打开：${app.title}")
         pushPage()
     }
@@ -1401,8 +1404,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         override fun run() {
             // 通知正盖在看板上：等它显示完再收起
             if (notifyOver) { main.postDelayed(this, 1_000); return }
-            // 抬头显示开着：页面不退出，只把屏幕暗下去。退出页面后眼镜不再报抬头，再抬头就只剩原生看板。
-            // 暗着时左单击打开语音菜单，抬头显示看板。抬头显示关着：退回主界面，屏幕亮着，左单击开语音菜单。
+            // 抬头显示开着：页面不退出，也不息屏，只换成空白一屏。退出页面后眼镜不再报抬头，再抬头就只剩原生看板。
+            // 空白时左单击打开语音菜单，抬头显示看板。抬头显示关着：退回主界面，屏幕亮着，左单击开语音菜单。
             if (dashHeadWake) hideDashboard("看板已自动收起", headDown = false, standby = true)
             else hideDashboard("看板已自动收起", keepScreen = true)
         }
@@ -1433,10 +1436,13 @@ class ReaderService : Service(), NimoListener, AppHost {
         headHidden = true
         notifyLit = false; main.removeCallbacks(reOffAfterNotify); restoreHeadUp()
         notifyOver = false; main.removeCallbacks(endNotifyOver)
-        if (standby && client.enteredAppId() == NimoProtocol.APP_ID_NAV) {
-            screenOffByUs = true; client.screenOff(true)
-            main.postDelayed(standbyRefresh, 300)
-            log("$why（页面留着，屏幕暗下去；抬头显示看板，左单击打开语音菜单）")
+        if (standby && client.enteredAppId() != null) {
+            // 不关屏（关屏用的是眼镜的息屏模式），往开着的页面里放一屏空白：看板不见了，页面还在，眼镜照样报抬头
+            dashBlank = true
+            lastPushedDash = ""
+            if (client.enteredAppId() == NimoProtocol.APP_ID_NAV) client.showImage(DashboardImage.blank(), DashboardImage.W, DashboardImage.H)
+            else client.showText(" ", if (displayPage == DisplayPage.PROMPTER) " " else null)
+            log("$why（页面留着，只换成空白，不息屏；抬头显示看板，左单击打开语音菜单）")
         } else if (keepScreen || standby || dashHideMode == HIDE_HOME) {
             // 退回主界面，屏幕保持亮着。到时间收起走这里：关屏的话，下一次点镜腿会把看板亮回来，开不了语音菜单。
             // 刚退出时眼镜会顺手报一次「主界面被点亮」，quitHomeAt 用来忽略那一次，避免看板马上又出现。
@@ -1453,6 +1459,9 @@ class ReaderService : Service(), NimoListener, AppHost {
         }
         updateNotification(); notifyUi()
     }
+
+    /** 看板收起成空白一屏（页面还开着、屏幕亮着）：抬头时直接把看板发进去。 */
+    private var dashBlank = false
 
     /** 萤读自己退回官方主界面的时间（uptime）：退出后眼镜会顺手报一次「主界面被点亮」，那不是用户点的。 */
     private var quitHomeAt = 0L
@@ -1527,6 +1536,12 @@ class ReaderService : Service(), NimoListener, AppHost {
         notifyLit = false; main.removeCallbacks(reOffAfterNotify); restoreHeadUp()
         main.removeCallbacks(standbyRefresh)
         dashPage = 0
+        if (dashBlank && client.enteredAppId() != null) {
+            // 收起成空白时屏幕一直亮着：不先关屏，直接把看板发进开着的页面
+            lastPushedDash = ""
+            pushDashboard(force = true)
+            return
+        }
         if ((screenOffByUs || lit) && standbyKey != null && standbyKey == lastPushedDash &&
             client.enteredAppId() == NimoProtocol.APP_ID_NAV && dashAsImage) {
             // 关屏时第一屏已经放在眼镜上了：只发一条"开屏"，马上就能看到；内容有变化再紧接着刷新
@@ -2038,6 +2053,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (force && screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
         glassesPaused = false
         headHidden = false
+        dashBlank = false
         if (force && restartTimers) { startDashTimers(); shownAt = android.os.SystemClock.uptimeMillis() }
         if (!force && key == lastPushedDash) { notifyUi(); return }
         lastPushedDash = key

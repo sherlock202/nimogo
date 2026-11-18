@@ -384,6 +384,13 @@ object DashboardImage {
         return NimoFrameCodec.pack2bpp(levels)
     }
 
+    /** 全黑的一屏：看板收起时放进还开着的页面，屏幕不关、看板不见。 */
+    fun blank(): ByteArray {
+        val bmp = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888)
+        Canvas(bmp).drawColor(Color.BLACK)
+        return toGlasses(bmp)
+    }
+
     /** 调画面上下、远近时显示的框：整圈边和十字，移动时能看出框有没有被切掉。 */
     fun alignTest(): ByteArray {
         val bmp = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888)

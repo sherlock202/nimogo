@@ -1791,7 +1791,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时直接关屏，不回官方主界面。再按一下镜腿亮回来。看板显示时右单击关屏，左单击翻屏，左双击上一屏，右双击打开语音菜单。已经在官方主界面上时，点一下左镜腿（主界面被点亮也算）打开语音菜单。菜单里的项目在「我的 → 菜单设置」。" +
                 "官方 app 连着时眼镜的报告会发给官方 app，NimoGo 收不到，要先停止官方 app（「我的 › 和官方 app 切换」）。"
                 else "抬头显示开着：抬头显示 NimoGo 看板。低头时眼镜自己会暗屏，但看板不收起，再抬头还是 NimoGo 看板。看板上左单击打开语音菜单，右单击翻到下一屏。" +
-                "到时间后看板隐去，屏幕暗下去，但不回原生看板。这时左单击打开语音菜单，抬头重新显示 NimoGo 看板。原生看板上左单击也打开语音菜单。"
+                "到时间后看板换成空白一屏，不息屏，也不回原生看板。这时左单击打开语音菜单，抬头重新显示 NimoGo 看板。原生看板上左单击也打开语音菜单。"
             headToggle.set(s.dashHeadWake)
             headRow.titleV.text = "眼镜的抬头显示"
             headRow.desc(when {

@@ -138,6 +138,9 @@ class CardsApp(
     private val backSec: () -> Int,
     private val autoPref: () -> Boolean,
     private val invertPref: () -> Boolean,
+    /** 每组上次播到第几张（下次从这张开始）。 */
+    private val loadPos: (String) -> Int,
+    private val savePos: (String, Int) -> Unit,
     private val keys: (Boolean) -> Unit,
 ) : GlassesApp {
     override val title = "学习卡"
@@ -158,7 +161,7 @@ class CardsApp(
         val d = decks().find { it.id == id } ?: return "找不到这组"
         if (d.cards.isEmpty()) return "这组还没有卡片"
         deckId = id
-        index = 0
+        index = loadPos(id).let { if (it in d.cards.indices) it else 0 }
         back = false
         return null
     }
@@ -168,7 +171,9 @@ class CardsApp(
         invert = invertPref()
         back = invert
         playing = true
+        waitLogged = false
         keys(true)
+        host.log("学习卡：${if (auto) "自动" else "手动"}播放，从第 ${index + 1} 张开始")
         show()
         arm()
     }
@@ -197,7 +202,7 @@ class CardsApp(
     fun refreshIfShowing() {
         if (!playing) return
         val n = deck()?.cards?.size ?: 0
-        if (n == 0) index = 0 else if (index >= n) index = 0
+        if (n == 0) index = 0 else if (index >= n) { index = 0; savePos(deckId, index) }
         show()
         arm()
     }
@@ -223,8 +228,8 @@ class CardsApp(
         if (n == 0) return
         when (action) {
             "flip" -> back = !back
-            "next" -> { index = (index + 1) % n; back = invert }
-            "prev" -> { index = (index - 1 + n) % n; back = invert }
+            "next" -> { index = (index + 1) % n; back = invert; savePos(deckId, index) }
+            "prev" -> { index = (index - 1 + n) % n; back = invert; savePos(deckId, index) }
             else -> return
         }
         show()
@@ -282,11 +287,22 @@ class CardsApp(
         host.main.postDelayed(tick, sec * 1000L)
     }
 
+    /** 自动播放时暂时不在眼镜上（切页面、收起）这件事已经记过一次。 */
+    private var waitLogged = false
+
     private fun advance() {
-        if (!playing || !auto || !host.isShowing(this)) return
+        if (!playing || !auto) return
+        if (!host.isShowing(this)) {
+            // 不能就此停掉：从语音菜单切过来、眼镜刚换页面时这里会碰上一下，停掉后就一直不翻了，看起来像手动播放
+            if (!waitLogged) { waitLogged = true; host.log("学习卡：现在没在眼镜上显示，等显示出来再接着自动播放") }
+            host.main.postDelayed(tick, 1_000)
+            return
+        }
+        waitLogged = false
         val n = deck()?.cards?.size ?: return
         if (n == 0) return
         val step = nextSide(index, back, n, invert)
+        if (step.first != index) savePos(deckId, step.first)
         index = step.first
         back = step.second
         show()
