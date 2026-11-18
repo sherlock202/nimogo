@@ -32,6 +32,8 @@ class VoiceMenuTest {
         assertEquals("chat", idOf("打开聊天"))
         assertEquals("record", idOf("打开录音"))
         assertEquals("record", idOf("录音"))
+        assertEquals("cards", idOf("学习卡"))
+        assertEquals("cards", idOf("打开背单词"))
     }
 
     @Test fun ringOrderAndHidden() {

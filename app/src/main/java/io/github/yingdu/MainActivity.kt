@@ -28,6 +28,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -50,6 +51,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         private const val REQ_PERMS = 2
         private const val REQ_NAV_LOC = 3
         private const val REQ_MIC = 4
+        private const val REQ_CSV = 5
 
         // 配色
         private const val BG = 0xFFF6F0E9.toInt()
@@ -82,7 +84,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
     private enum class Sub {
         READ, STOCKS, AGENDA, NOTIFY, GAMES, GAME, CLOCK, POMO, POMO_SET, WORKOUT, WORKOUT_GROUP, EYES, PARTY,
         DASH_SET, FONT, READ_SET, ALIGN, OFFICIAL, LOG, ABOUT, LICENSES, MEMORY, MEMORY_SET, MEMORY_LISTEN, MEMORY_API, CAPTIONS, SIGHTS, MANUAL, MANUAL_TOPIC,
-        NAV, NAV_SET, ASSIST, ASSIST_SET, ASSIST_SESSION, CHAT, RECORD, AGENT, MENU
+        NAV, NAV_SET, ASSIST, ASSIST_SET, ASSIST_SESSION, CHAT, RECORD, CARDS, CARDS_DECK, AGENT, MENU
     }
 
     private var service: ReaderService? = null
@@ -131,6 +133,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             refreshNow()
             pendingNav?.let { pendingNav = null; confirmNav(it) }
             pendingOpen?.let { pendingOpen = null; s.openBook(it) }
+            pendingCsvUri?.let { pendingCsvUri = null; importCsvUri(it) }
             uiHandler.removeCallbacks(pageTicker); uiHandler.postDelayed(pageTicker, 1000)
         }
         override fun onServiceDisconnected(name: ComponentName?) { service = null }
@@ -228,6 +231,15 @@ class MainActivity : Activity(), ReaderService.UiListener {
         VoiceMenu.keyAction(code)?.let { a ->
             if ((service?.activeApp as? VoiceMenuApp)?.running == true) {
                 if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) service?.menuRemote(a)
+                return true
+            }
+        }
+        // 学习卡正在眼镜上播：戒指上下翻面，左上一张，右下一张（音量键也算上下）
+        if (service?.activeApp === service?.study && service?.study?.playing == true) {
+            CardsApp.keyAction(code)?.let { a ->
+                if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                    service?.cardsRemote(a); toast(CardsApp.actionName(a))
+                }
                 return true
             }
         }
@@ -779,6 +791,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         subPages[Sub.ASSIST_SESSION] = buildAssistSession()
         subPages[Sub.CHAT] = buildChat()
         subPages[Sub.RECORD] = buildRecord()
+        subPages[Sub.CARDS] = buildCards()
+        subPages[Sub.CARDS_DECK] = buildCardsDeck()
         subPages[Sub.AGENT] = buildAgent()
         subPages[Sub.MENU] = buildMenuSettings()
         subPages[Sub.ABOUT] = buildAbout()
@@ -1016,6 +1030,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.ASSIST -> "场景助手"; Sub.ASSIST_SET -> "场景助手设置"; Sub.ASSIST_SESSION -> "记录和复盘"
         Sub.CHAT -> "聊天"
         Sub.RECORD -> "录音"
+        Sub.CARDS -> "学习卡"
+        Sub.CARDS_DECK -> service?.cardDecks()?.find { it.id == cardDeckId }?.name ?: "卡片组"
         Sub.AGENT -> "AI 代理"
         Sub.MENU -> "菜单设置"
     }
@@ -1030,6 +1046,8 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.ASSIST_SET -> "说明" to { openManual("assist") }
         Sub.CHAT -> "说明" to { openManual("chat") }
         Sub.RECORD -> "说明" to { openManual("record") }
+        Sub.CARDS -> "说明" to { openManual("cards") }
+        Sub.CARDS_DECK -> "改名" to { renameCardDeck() }
         Sub.AGENT -> "说明" to { openManual("agent") }
         Sub.GAME -> "说明" to { (service?.activeApp as? GameApp)?.let { message(it.title, it.help) }; Unit }
         // 设置页只留一行字，详细说明在使用手册里：右上角「说明」直接跳到对应的一页
@@ -1056,6 +1074,11 @@ class MainActivity : Activity(), ReaderService.UiListener {
         Sub.ASSIST -> if (s.activeApp === s.assist && s.assist.running) "结束这一场" else "开始（眼镜 + 手机黑屏）"
         Sub.CHAT -> glassesButton(s, s.chat, "在眼镜上开始聊天")
         Sub.RECORD -> if (s.tape.recording) "停止" else "开始录音"
+        Sub.CARDS_DECK -> when {
+            s.activeApp === s.study && s.study.deckId == cardDeckId && s.glassesPaused -> "恢复眼镜显示"
+            s.activeApp === s.study && s.study.deckId == cardDeckId -> "收回"
+            else -> "在眼镜上播放"
+        }
         else -> null
     }
 
@@ -1089,6 +1112,14 @@ class MainActivity : Activity(), ReaderService.UiListener {
                 toggleOnGlasses { it.chat }
             }
             Sub.RECORD -> if (s.tape.recording) { s.tape.stop(); refreshNow() } else startRecording()
+            Sub.CARDS_DECK -> {
+                val on = s.activeApp === s.study && s.study.deckId == cardDeckId
+                when {
+                    !on -> s.playCards(cardDeckId)?.let { toast(it) }
+                    s.glassesPaused -> s.resumeGlasses()
+                    else -> s.closeApp()
+                }
+            }
             Sub.ASSIST -> {
                 if (s.activeApp === s.assist && s.assist.running) {
                     s.closeApp()
@@ -1147,7 +1178,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val label = p?.let { stickyLabel(it, s) }
         sticky.visibility = if (label == null) View.GONE else View.VISIBLE
         if (label != null) stickyButton.text = label
-        if (p == Sub.GAME || p == Sub.WORKOUT_GROUP) subTitle.text = titleOf(p)
+        if (p == Sub.GAME || p == Sub.WORKOUT_GROUP || p == Sub.CARDS_DECK) subTitle.text = titleOf(p)
     }
 
     /** 这几页每秒刷新一次（进度、倒计时、表盘预览）。 */
@@ -1283,6 +1314,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
             app(px(PhoneIcons.ASSIST), "场景助手") { openSub(Sub.ASSIST) },
             app(px(PhoneIcons.CHAT), "聊天") { openSub(Sub.CHAT) },
             app(px(PhoneIcons.RECORD), "录音") { openSub(Sub.RECORD) },
+            app(px(PhoneIcons.CARDS), "学习卡") { openSub(Sub.CARDS) },
             app(px(PhoneIcons.AGENT), "AI 代理") { openSub(Sub.AGENT) },
             app(px(PhoneIcons.SIGHTS), "景点介绍") { openSub(Sub.SIGHTS) }, app(px(PhoneIcons.MANUAL), "使用手册") { openSub(Sub.MANUAL) })
         apps.chunked(4).forEach { r -> grid.addView(hbox().apply {
@@ -1349,6 +1381,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
                             a === s.captions -> openSub(Sub.CAPTIONS)
                             a === s.assist -> openSub(Sub.ASSIST)
                             a === s.chat -> openSub(Sub.CHAT)
+                            a === s.study -> { openSub(Sub.CARDS, animate = false); cardDeckId = s.study.deckId; openSub(Sub.CARDS_DECK) }
                             a === s.agent -> openSub(Sub.AGENT)
                             a === s.nav -> openSub(Sub.NAV)
                         }
@@ -1751,7 +1784,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         val wakeBox = listBox()
         // 跟着眼镜自己的「抬头显示」（和「我的」页的抬头显示、官方 app 里的是同一个设置）
         val headToggle = Toggle { service?.toggleHeadUp(); refreshNow() }
-        val headRow = Row("抬头时显示看板", "低头再关屏").apply { accessory(headToggle.root) }
+        val headRow = Row("抬头时显示看板", "低头不关屏").apply { accessory(headToggle.root) }
         wakeBox.addRow(headRow.root)
         val darkToggle = Toggle { service?.let { it.dashHomeDark = !it.dashHomeDark }; refreshNow() }
         val darkRow = Row("低着头收起时直接关屏（测试）", "低头退回主界面时先关屏，主界面不会一直亮着；12 秒后松开关屏，交回眼镜自己按抬头低头开关屏。抬头没反应就点左镜腿或关掉这个开关").apply { accessory(darkToggle.root) }
@@ -1767,15 +1800,13 @@ class MainActivity : Activity(), ReaderService.UiListener {
             val home = s.dashHideMode == ReaderService.HIDE_HOME
             howHint.text = if (!s.dashHeadWake) "眼镜的「抬头显示」关着：收起时直接关屏，不回官方主界面。再按一下镜腿亮回来。看板显示时右单击关屏，左单击翻屏，左双击上一屏，右双击打开语音菜单。已经在官方主界面上时，点一下左镜腿（主界面被点亮也算）打开语音菜单。菜单里的项目在「我的 → 菜单设置」。" +
                 "官方 app 连着时眼镜的报告会发给官方 app，NimoGo 收不到，要先停止官方 app（「我的 › 和官方 app 切换」）。"
-                else if (home) "抬头显示开着：抬头显示 NimoGo 看板。看板上左单击打开语音菜单，右单击翻到下一屏。到时间后看板退出，屏幕保持亮着，这时点左镜腿就能开语音菜单。"
-                else "抬头显示开着：抬头亮起 NimoGo 看板，低头关屏。看板上左单击打开语音菜单，右单击翻到下一屏。到时间后看板退出，屏幕保持亮着。"
+                else "抬头显示开着：抬头显示 NimoGo 看板，低头不关屏、也不收起。看板上左单击打开语音菜单，右单击翻到下一屏。到时间后看板自己隐去，不关屏。再抬头重新显示 NimoGo 看板。原生看板上左单击也打开语音菜单。"
             headToggle.set(s.dashHeadWake)
             headRow.titleV.text = "眼镜的抬头显示"
             headRow.desc(when {
                 s.headUpDisplay == null -> "连上眼镜后读取（和官方 app 里的是同一个设置）"
                 !s.dashHeadWake -> "关：收起时直接关屏，不回主界面"
-                home -> "开：抬头显示 NimoGo 看板，左单击打开语音菜单"
-                else -> "开：抬头显示 NimoGo 看板，低头关屏"
+                else -> "开：抬头显示 NimoGo 看板。低头不关屏。左单击打开语音菜单"
             })
             darkToggle.set(s.dashHomeDark)
             darkRow.root.visibility = if (home && s.dashHeadWake) View.VISIBLE else View.GONE
@@ -2653,9 +2684,214 @@ class MainActivity : Activity(), ReaderService.UiListener {
         return "${s / 60}:${(s % 60).toString().padStart(2, '0')}"
     }
 
+    private fun buildCards(): View {
+        val page = vbox()
+        page.addView(note("一组里可以加卡片。正面写单词，反面写意思。在眼镜上播放时，先放正面、再放反面，然后下一张，一直循环。" +
+            "镜腿左键翻面，右键下一张。蓝牙戒指上下翻面，左上一张，右下一张。自己建卡片不收费。"))
+        page.addView(section("播放"))
+        val timing = listBox()
+        val auto = Toggle { service?.let { it.cardSetAuto(!it.cardAuto()) } }
+        timing.addRow(Row("自动播放", "关掉后只按键翻").apply { accessory(auto.root) }.root)
+        val front = Stepper(
+            { service?.let { it.cardSetFront(it.cardFrontSec() - 1) } },
+            { service?.let { it.cardSetFront(it.cardFrontSec() + 1) } })
+        val back = Stepper(
+            { service?.let { it.cardSetBack(it.cardBackSec() - 1) } },
+            { service?.let { it.cardSetBack(it.cardBackSec() + 1) } })
+        timing.addRow(Row("正面停", "默认 5 秒").apply { accessory(front.root) }.root)
+        timing.addRow(Row("反面停", "默认 5 秒").apply { accessory(back.root) }.root)
+        page.addView(timing)
+        page.addView(section("卡片组", "新建" to { newCardDeck() }, "导入 CSV" to { importCsv() }))
+        val (box, list) = scrollListBox(420)
+        page.addView(box)
+        page.addView(note("导入 CSV 是收费功能，和场景助手的私人定制用同一套设备码、密钥。一个文件一组，没有表头，第一行就是卡片。可以用英文逗号或中文逗号，也可以加引号。"))
+        var shown = ""
+        onUpdate(Sub.CARDS) { s ->
+            auto.set(s.cardAuto())
+            front.value.text = "${s.cardFrontSec()} 秒"
+            back.value.text = "${s.cardBackSec()} 秒"
+            val sig = s.cardDecks().joinToString("|") { "${it.id}:${it.name}:${it.cards.size}" }
+            if (sig == shown) return@onUpdate
+            shown = sig
+            list.removeAllViews()
+            val decks = s.cardDecks()
+            if (decks.isEmpty()) list.addRow(Row("还没有卡片组", "点上面的「新建」，或导入 CSV").root)
+            for (d in decks) list.addRow(Row(d.name, "${d.cards.size} 张", chevron = true) {
+                cardDeckId = d.id; openSub(Sub.CARDS_DECK)
+            }.root)
+        }
+        return page
+    }
+
+    private fun buildCardsDeck(): View {
+        val page = vbox()
+        val status = text("", 13f, SUB)
+        page.addView(status, lp(bottom = 6))
+        val flip = pill("翻面", dark = false, small = true) { cardAct("flip") }
+        val prev = pill("上一张", dark = false, small = true) { cardAct("prev") }
+        val next = pill("下一张", dark = false, small = true) { cardAct("next") }
+        val controls = vbox().apply { addView(pillRow(flip, prev, next), lp(bottom = 8)) }
+        page.addView(controls)
+        page.addView(section("卡片", "加一张" to { editCard(cardDeckId, null) }))
+        val (box, list) = scrollListBox(420)
+        page.addView(box)
+        page.addView(pill("删除这组", dark = false) { deleteCardDeck() }, lp(top = 8))
+        var shown = ""
+        onUpdate(Sub.CARDS_DECK) { s ->
+            val deck = s.cardDecks().find { it.id == cardDeckId }
+            val playing = deck != null && s.activeApp === s.study && s.study.deckId == cardDeckId && !s.glassesPaused
+            controls.visibility = if (playing) View.VISIBLE else View.GONE
+            status.text = when {
+                deck == null -> "这组已经删掉了"
+                playing -> s.study.status()
+                deck.cards.isEmpty() -> "还没有卡片。加一张，或回到上一页导入 CSV"
+                else -> "点下面的按钮，在眼镜上播放"
+            }
+            val sig = deck?.cards?.joinToString("|") { "${it.front}\t${it.back}" } ?: ""
+            if (sig == shown && list.childCount > 0) return@onUpdate
+            shown = sig
+            list.removeAllViews()
+            if (deck == null || deck.cards.isEmpty()) list.addRow(Row("没有卡片", "正面是单词，反面是意思").root)
+            deck?.cards?.forEachIndexed { i, c ->
+                list.addRow(Row(c.front.ifBlank { "（空）" }, c.back.ifBlank { "（空）" }, chevron = true) {
+                    editCard(cardDeckId, i)
+                }.root)
+            }
+        }
+        return page
+    }
+
+    private fun newCardDeck() {
+        val s = service ?: return
+        val name = field("卡片组名字")
+        AlertDialog.Builder(this).setTitle("新建卡片组")
+            .setView(vbox().apply { setPadding(dp(20), dp(8), dp(20), 0); addView(name) })
+            .setPositiveButton("建立") { _, _ ->
+                cardDeckId = s.cardAddDeck(name.text.toString())
+                openSub(Sub.CARDS_DECK)
+            }
+            .setNegativeButton("取消", null).show()
+    }
+
+    private fun renameCardDeck() {
+        val s = service ?: return
+        val deck = s.cardDecks().find { it.id == cardDeckId } ?: return
+        val name = field("卡片组名字")
+        name.setText(deck.name)
+        AlertDialog.Builder(this).setTitle("改名字")
+            .setView(vbox().apply { setPadding(dp(20), dp(8), dp(20), 0); addView(name) })
+            .setPositiveButton("保存") { _, _ -> s.cardRename(cardDeckId, name.text.toString()) }
+            .setNegativeButton("取消", null).show()
+    }
+
+    private fun editCard(deckId: String, index: Int?) {
+        val s = service ?: return
+        val deck = s.cardDecks().find { it.id == deckId } ?: return
+        val cur = index?.let { deck.cards.getOrNull(it) }
+        val front = field("正面，比如英语单词", multi = true)
+        val back = field("反面，比如中文意思", multi = true)
+        front.setText(cur?.front ?: "")
+        back.setText(cur?.back ?: "")
+        val dialog = AlertDialog.Builder(this).setTitle(if (cur == null) "加一张" else "改这张")
+            .setView(ScrollView(this).apply {
+                addView(vbox().apply {
+                    setPadding(dp(20), dp(8), dp(20), 0)
+                    addView(front); addView(back, lp(top = 10))
+                })
+            })
+            .setPositiveButton("保存") { _, _ ->
+                val f = front.text.toString(); val b = back.text.toString()
+                if (f.isBlank() && b.isBlank()) { toast("正面和反面都是空的"); return@setPositiveButton }
+                if (index == null) s.cardAdd(deckId, f, b) else s.cardEdit(deckId, index, f, b)
+            }
+            .setNegativeButton("取消", null)
+        if (index != null) dialog.setNeutralButton("删除") { _, _ -> s.cardRemove(deckId, index) }
+        dialog.show()
+    }
+
+    private fun deleteCardDeck() {
+        val s = service ?: return
+        val deck = s.cardDecks().find { it.id == cardDeckId } ?: return
+        AlertDialog.Builder(this).setTitle("删除这组")
+            .setMessage("「${deck.name}」和里面的 ${deck.cards.size} 张卡片都会删掉。")
+            .setPositiveButton("删除") { _, _ -> s.cardDelete(cardDeckId); closeSub() }
+            .setNegativeButton("取消", null).show()
+    }
+
+    private fun cardAct(action: String) {
+        val s = service ?: return
+        if (s.activeApp !== s.study || s.study.deckId != cardDeckId) { toast("先在眼镜上播放这一组"); return }
+        s.cardsRemote(action)
+    }
+
+    private fun importCsv() {
+        val s = service ?: return
+        if (!s.licensed) { csvPaywall(); return }
+        val name = field("卡片组名字")
+        AlertDialog.Builder(this).setTitle("导入 CSV")
+            .setView(vbox().apply {
+                setPadding(dp(20), dp(8), dp(20), 0)
+                addView(hint("一个文件一组。没有表头，第一行就是卡片。第一项是正面，第二项是反面。"))
+                addView(name, lp(top = 10))
+            })
+            .setPositiveButton("选文件") { _, _ ->
+                pendingCsvName = name.text.toString().trim()
+                val pick = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                    putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("text/*", "application/csv", "application/vnd.ms-excel"))
+                }
+                runCatching { startActivityForResult(pick, REQ_CSV) }.onFailure { toast("打不开文件选择") }
+            }
+            .setNegativeButton("取消", null).show()
+    }
+
+    private fun csvPaywall() {
+        val s = service ?: return
+        AlertDialog.Builder(this).setTitle("导入 CSV")
+            .setMessage("导入 CSV 是收费功能，和场景助手的私人定制用同一套设备码和密钥。自己在手机上新建、修改卡片不收费。\n\n" +
+                "设备码：${s.deviceCode}\n\n" +
+                "购买密钥请加作者微信 ${License.WECHAT_ID}（${License.WECHAT_NOTE}）。密钥填在「场景助手 › 设置 › 私人定制」。")
+            .setPositiveButton("复制设备码") { _, _ -> copyText("设备码", s.deviceCode) }
+            .setNeutralButton("去填写密钥") { _, _ -> openSub(Sub.ASSIST_SET) }
+            .setNegativeButton("取消", null).show()
+    }
+
+    private fun importCsvUri(uri: android.net.Uri?) {
+        if (uri == null) return
+        val s = service
+        if (s == null) { pendingCsvUri = uri; toast("正在导入…"); return }
+        pendingCsvUri = null
+        if (!s.licensed) { pendingCsvName = ""; csvPaywall(); return }
+        val bytes = runCatching { contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+        if (bytes == null) { pendingCsvName = ""; toast("读不了这个文件"); return }
+        if (bytes.size > 2_000_000) { pendingCsvName = ""; toast("文件太大"); return }
+        val title = pendingCsvName.ifBlank { csvDisplayName(uri) }
+        pendingCsvName = ""
+        val result = s.importCards(title, csvText(bytes))
+        toast(result.message)
+        if (result.id != null) { cardDeckId = result.id; openSub(Sub.CARDS_DECK) }
+    }
+
+    private fun csvDisplayName(uri: android.net.Uri): String {
+        val name = runCatching {
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        }.getOrNull().orEmpty()
+        return name.substringBeforeLast('.').trim()
+    }
+
+    private fun csvText(bytes: ByteArray): String {
+        if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte())
+            return String(bytes, 3, bytes.size - 3, Charsets.UTF_8)
+        val utf = String(bytes, Charsets.UTF_8)
+        return if ('\uFFFD' in utf) String(bytes, charset("GB18030")) else utf
+    }
+
     private fun buildRecord(): View {
         val page = vbox()
-        page.addView(note("选手机或眼镜收音。录完可以播放，也可以点「转文字」，用的是场景助手里设好的转文字。"))
+        page.addView(note("选手机或眼镜收音。录完可以播放，点「转文字」用场景助手里设好的转文字，点「转发」把这一条录音交给其他 app（比如 ChatGPT、Claude）。"))
         val srcSeg = Seg(listOf("手机", "眼镜")) { i ->
             if (service?.tape?.recording == true) return@Seg
             service?.recSource = if (i == 1) "glasses" else "phone"
@@ -2689,7 +2925,9 @@ class MainActivity : Activity(), ReaderService.UiListener {
                         setPadding(dp(14), dp(10), dp(14), dp(10))
                         addView(text("${if (n.source == "glasses") "眼镜" else "手机"} · ${md.format(java.util.Date(n.started))} · ${clockMs(n.durationMs)} · ${kb} KB", 12f, SUB))
                         if (n.text.isNotEmpty()) addView(text(n.text, 14.5f, INK).apply { setLineSpacing(0f, 1.35f) }, lp(top = 4))
-                        addView(hbox().apply {
+                        addView(HorizontalScrollView(this@MainActivity).apply {
+                            isHorizontalScrollBarEnabled = false
+                            addView(hbox().apply {
                             addView(pill(if (t.playingId == n.id) "停止" else "播放", dark = false, small = true) {
                                 if (s.tape.recording) { toast("正在录音"); return@pill }
                                 s.tape.togglePlay(n.id)
@@ -2701,6 +2939,9 @@ class MainActivity : Activity(), ReaderService.UiListener {
                                 s.tape.transcribe(n.id)
                                 refreshNow()
                             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
+                            addView(pill("转发", dark = false, small = true) {
+                                shareRecording(n.file)
+                            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
                             if (n.text.isNotEmpty()) addView(pill("复制", dark = false, small = true) {
                                 (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager)
                                     .setPrimaryClip(android.content.ClipData.newPlainText("录音", n.text))
@@ -2709,12 +2950,29 @@ class MainActivity : Activity(), ReaderService.UiListener {
                             addView(pill("删除", dark = false, small = true) {
                                 s.tape.delete(n.id); refreshNow()
                             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
+                            })
                         }, lp(top = 8))
                     })
                 }
             }
         }
         return page
+    }
+
+    /** 把这一条录音交给其他 app。文件是 Ogg Opus，只授予读取这一条。 */
+    private fun shareRecording(file: java.io.File) {
+        if (!file.isFile) { toast("找不到这条录音"); return }
+        val uri = runCatching {
+            androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        }.getOrElse { toast("转发不了：${it.message}"); return }
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "audio/ogg"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = android.content.ClipData.newRawUri("录音", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching { startActivity(Intent.createChooser(send, "转发录音")) }
+            .onFailure { toast("没有可以接收录音的 app") }
     }
 
     // =====================================================================
@@ -2771,6 +3029,11 @@ class MainActivity : Activity(), ReaderService.UiListener {
 
     /** 场景助手的记录页看的是哪一场。 */
     private var assistSessionId = ""
+
+    /** 正在看的学习卡组。 */
+    private var cardDeckId = ""
+    private var pendingCsvName = ""
+    private var pendingCsvUri: android.net.Uri? = null
 
     private fun copyText(label: String, t: String) {
         if (t.isBlank()) { toast("没有内容"); return }
@@ -3046,7 +3309,7 @@ class MainActivity : Activity(), ReaderService.UiListener {
         }
         lic.addRow(devRow.root); lic.addRow(keyRow.root)
         page.addView(lic)
-        page.addView(note("普通版只有「面试」一个场景。私人定制版解锁「商务谈判」「相亲约会」等全部场景、可以自己添加场景，并按你的情况调好。" +
+        page.addView(note("普通版只有「面试」一个场景。私人定制版解锁「商务谈判」「相亲约会」等全部场景、可以自己添加场景，并按你的情况调好。同一套密钥也用来在学习卡里导入 CSV。" +
             "购买密钥请加作者微信 ${License.WECHAT_ID}（${License.WECHAT_NOTE}）。" +
             "把上面的设备码发给作者购买密钥；密钥只在这台手机上有效，换手机、恢复出厂设置后要重新申请。"))
 
@@ -5143,6 +5406,10 @@ class MainActivity : Activity(), ReaderService.UiListener {
     @Deprecated("Activity 基类的旧 API，足够用")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_CSV) {
+            if (resultCode == RESULT_OK) importCsvUri(data?.data) else pendingCsvName = ""
+            return
+        }
         if (requestCode != REQ_OPEN || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         // 持久授权，下次启动能自动打开上次的书

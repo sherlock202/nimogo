@@ -76,6 +76,17 @@
             </intent-filter>
         </activity>
 
+        <!-- 录音转发：把 files/recordings 里的 .ogg 交给其他 app，只授予这一条的读取 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- Health Connect 要求提供"为什么需要健康数据"的说明入口，这里直接打开主界面 -->
         <activity-alias
             android:name=".HealthRationale"

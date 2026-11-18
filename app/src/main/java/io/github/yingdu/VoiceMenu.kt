@@ -36,6 +36,7 @@ object VoiceMenu {
             VoiceCommand("party:truth", "真心话", listOf("真心话大冒险", "真心话", "大冒险")),
             VoiceCommand("follow", "跟读", listOf("语音跟读", "跟读")),
             VoiceCommand("record", "录音", listOf("录音")),
+            VoiceCommand("cards", "学习卡", listOf("学习卡", "单词卡", "背单词")),
             VoiceCommand("games", "小游戏", listOf("小游戏", "游戏")),
         )
         val extra = mapOf(
@@ -54,7 +55,7 @@ object VoiceMenu {
     }
 
     /** 戒指能逐条选的功能（语音还能用别名，比如骰子、看板）。游戏页只列游戏。顺序和隐藏由菜单设置决定。 */
-    val RING = listOf("dash", "read", "nav", "pomo", "workout", "eyes", "sleep", "clock", "captions", "assist", "chat", "agent", "memory", "sights", "party", "follow", "record", "games")
+    val RING = listOf("dash", "read", "nav", "pomo", "workout", "eyes", "sleep", "clock", "captions", "assist", "chat", "agent", "memory", "sights", "party", "follow", "record", "cards", "games")
 
     /**
      * 眼镜上排出来的功能。order 里没有的新功能补在最后。hidden 里的不显示，但说名字仍然能打开。

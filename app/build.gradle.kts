@@ -69,6 +69,7 @@ if (!sherpaAar.isFile) {
 }
 
 dependencies {
+    implementation("androidx.core:core-ktx:1.15.0")   // 录音转发：FileProvider 把文件交给其他 app
     implementation("io.github.jaredmdobson:concentus:1.0.2")   // 纯 Java 的 Opus 解码（眼镜麦克风），BSD 许可
     // Google 导航（逐向导航数据流）。注意：同一个 app 里不能再加 Maps SDK（play-services-maps）
     implementation("com.google.android.libraries.navigation:navigation:7.9.0")

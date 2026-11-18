@@ -5,7 +5,7 @@ package io.github.yingdu
  * 内容有实质改动时把 VERSION 加一，用户下次打开会再看到一次。
  */
 object Legal {
-    const val VERSION = 14
+    const val VERSION = 15
 
     const val DISCLAIMER =
         "1. NimoGo 是个人开发的非官方第三方 app，与 Nimo 眼镜的厂商没有任何关系，也没有得到厂商的授权或认可。" +
@@ -41,6 +41,8 @@ object Legal {
         "· 网络卡片：按你填的网址、请求头和请求体去请求。\n" +
         "· 语音跟读：识别在手机上离线做，声音和识别结果不发给任何服务；第一次用时从 GitHub（sherpa-onnx 项目的发布页）下载识别模型。" +
         "跟读日志（识别出的文字、对齐过程）只存在手机上，你点「导出」才会存到「下载」里。\n" +
+        "· 录音：文件存在手机上。你点「转发」时，这一条录音交给你选的 app（比如 ChatGPT、Claude），由那个 app 处理。\n" +
+        "· 学习卡：卡片和导入的 CSV 只在手机上解析、保存，不发出去。\n" +
         "· 检查更新：每天最多一次访问 GitHub（github.com/sherlock202/nimogo 的最新发布）看有没有新版，不带个人信息；" +
         "只有你点「立即下载」才下载安装包。可以在「关于」里关掉自动检查。\n\n" +
         "只存在手机上的：\n" +

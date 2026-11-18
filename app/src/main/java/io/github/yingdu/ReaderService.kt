@@ -229,6 +229,11 @@ class ReaderService : Service(), NimoListener, AppHost {
     val workout by lazy { WorkoutApp(this) }
     val eyes by lazy { EyeRestApp(this) }
     val party by lazy { PartyApp(this) }
+    val study by lazy {
+        CardsApp(this, { cardDecks() }, { cardFrontSec() }, { cardBackSec() }, { cardAuto() }) { on ->
+            if (on) studyMediaOn() else studyMediaOff()
+        }
+    }
     /** 导航（NimoGo：Google Navigation SDK 的逐向数据画到眼镜上）。导航开始时自动在眼镜上打开，结束后收回。 */
     val nav by lazy {
         navCreated = true
@@ -718,6 +723,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         "party:truth" -> { openApp(party); party.truthOrDare(null); null }
         "follow" -> if (book == null) "跟读要先在手机上打开讲稿" else { switchAppMode(AppMode.READER); readFromMenu = true; startFollow(); null }
         "record" -> launchRecord()
+        "cards" -> playLastCards()
         else -> {
             if (!id.startsWith("game:")) "没有这个功能"
             else {
@@ -1086,6 +1092,126 @@ class ReaderService : Service(), NimoListener, AppHost {
         log("场景助手：放开音量键和耳机键")
     }
 
+    private var studyMedia: android.media.session.MediaSession? = null
+    private fun studyMediaOn() {
+        if (studyMedia != null) return
+        runCatching {
+            val ms = android.media.session.MediaSession(this, "NimoGo-cards")
+            fun act(a: String?, from: String) {
+                log("学习卡：$from" + (a?.let { " → ${CardsApp.actionName(it)}" } ?: "（没有用到）"))
+                if (a != null) main.post { if (activeApp === study) study.act(a) }
+            }
+            ms.setCallback(object : android.media.session.MediaSession.Callback() {
+                override fun onMediaButtonEvent(i: Intent): Boolean {
+                    @Suppress("DEPRECATION")
+                    val e = i.getParcelableExtra<android.view.KeyEvent>(Intent.EXTRA_KEY_EVENT) ?: return false
+                    if (e.action == android.view.KeyEvent.ACTION_DOWN && e.repeatCount == 0)
+                        act(CardsApp.keyAction(e.keyCode), "耳机键 " + android.view.KeyEvent.keyCodeToString(e.keyCode).removePrefix("KEYCODE_"))
+                    return true
+                }
+                override fun onSkipToNext() = act("next", "下一张")
+                override fun onSkipToPrevious() = act("prev", "上一张")
+            }, main)
+            ms.setPlaybackToRemote(object : android.media.VolumeProvider(VOLUME_CONTROL_RELATIVE, 100, 50) {
+                override fun onAdjustVolume(direction: Int) {
+                    if (direction != 0) act("flip", if (direction > 0) "音量 +" else "音量 −")
+                }
+            })
+            ms.setPlaybackState(android.media.session.PlaybackState.Builder()
+                .setActions(android.media.session.PlaybackState.ACTION_SKIP_TO_NEXT or android.media.session.PlaybackState.ACTION_SKIP_TO_PREVIOUS)
+                .setState(android.media.session.PlaybackState.STATE_PLAYING, 0, 1f).build())
+            ms.isActive = true
+            studyMedia = ms
+            log("学习卡：接管音量键和耳机键（结束后恢复）")
+        }.onFailure { log("学习卡：接管音量键失败：$it") }
+    }
+    private fun studyMediaOff() {
+        val ms = studyMedia ?: return
+        studyMedia = null
+        runCatching { ms.isActive = false; ms.release() }
+        log("学习卡：放开音量键和耳机键")
+    }
+
+    fun cardDecks(): List<StudyDeck> = CardStore.decode(prefs.getString("cardDecks", "[]") ?: "[]")
+    private fun saveDecks(decks: List<StudyDeck>) {
+        prefs.edit().putString("cardDecks", CardStore.encode(decks)).apply()
+        notifyUi()
+        if (activeApp === study) study.refreshIfShowing()
+    }
+    fun cardFrontSec() = prefs.getInt("cardFrontSec", 5).coerceIn(1, 60)
+    fun cardBackSec() = prefs.getInt("cardBackSec", 5).coerceIn(1, 60)
+    fun cardAuto() = prefs.getBoolean("cardAuto", true)
+    fun cardSetFront(sec: Int) {
+        prefs.edit().putInt("cardFrontSec", sec.coerceIn(1, 60)).apply()
+        if (activeApp === study) study.reschedule()
+        notifyUi()
+    }
+    fun cardSetBack(sec: Int) {
+        prefs.edit().putInt("cardBackSec", sec.coerceIn(1, 60)).apply()
+        if (activeApp === study) study.reschedule()
+        notifyUi()
+    }
+    fun cardSetAuto(on: Boolean) {
+        prefs.edit().putBoolean("cardAuto", on).apply()
+        if (activeApp === study) { study.auto = on; study.reschedule() }
+        notifyUi()
+    }
+    fun cardAddDeck(name: String): String {
+        val id = "c${System.currentTimeMillis()}"
+        saveDecks(cardDecks() + StudyDeck(id, name.trim().ifEmpty { "未命名" }.take(40), emptyList()))
+        return id
+    }
+    fun cardRename(id: String, name: String) {
+        val n = name.trim().take(40)
+        if (n.isEmpty()) return
+        saveDecks(cardDecks().map { if (it.id == id) it.copy(name = n) else it })
+    }
+    fun cardDelete(id: String) {
+        if (activeApp === study && study.deckId == id) closeApp()
+        saveDecks(cardDecks().filter { it.id != id })
+    }
+    fun cardAdd(id: String, front: String, back: String) = cardChange(id) { it.copy(cards = it.cards + StudyCard(front.trim().take(500), back.trim().take(500))) }
+    fun cardEdit(id: String, index: Int, front: String, back: String) = cardChange(id) {
+        if (index !in it.cards.indices) it else it.copy(cards = it.cards.mapIndexed { i, c ->
+            if (i == index) StudyCard(front.trim().take(500), back.trim().take(500)) else c
+        })
+    }
+    fun cardRemove(id: String, index: Int) = cardChange(id) {
+        if (index !in it.cards.indices) it else it.copy(cards = it.cards.filterIndexed { i, _ -> i != index })
+    }
+    private fun cardChange(id: String, block: (StudyDeck) -> StudyDeck) {
+        saveDecks(cardDecks().map { if (it.id == id) block(it) else it })
+    }
+    /** 导入一组。没开通私人定制时不导入。 */
+    fun importCards(name: String, text: String): CardImport {
+        if (!licensed) return CardImport(null, "导入 CSV 需要和场景助手私人定制同一套密钥")
+        val all = CardStore.parse(text)
+        if (all.isEmpty()) return CardImport(null, "没有读到卡片。一行一张，前面是正面，后面是反面")
+        val kept = all.take(2000)
+        val id = "c${System.currentTimeMillis()}"
+        val title = name.trim().ifEmpty { "导入的卡片" }.take(40)
+        saveDecks(cardDecks() + StudyDeck(id, title, kept))
+        val extra = if (all.size > kept.size) "，只保留前 ${kept.size} 张" else ""
+        return CardImport(id, "已导入 ${kept.size} 张$extra")
+    }
+    /** 在眼镜上播放这一组。空组不打开。 */
+    fun playCards(id: String): String? {
+        val err = study.prepare(id) ?: run {
+            prefs.edit().putString("cardLast", id).apply()
+            openApp(study)
+            null
+        }
+        return err
+    }
+    private fun playLastCards(): String? {
+        val decks = cardDecks()
+        val last = prefs.getString("cardLast", null)
+        val pick = decks.find { it.id == last && it.cards.isNotEmpty() } ?: decks.firstOrNull { it.cards.isNotEmpty() }
+            ?: return "先在手机上建一组学习卡"
+        return playCards(pick.id)
+    }
+    fun cardsRemote(action: String) { if (activeApp === study) study.act(action) }
+
     /** 长按退出后的一小段时间：番茄钟、导航还在刷新，不能把页面又打开，否则「正在退出」清不掉。 */
     private var exitLockUntil = 0L
 
@@ -1204,6 +1330,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         cancelDashTimers()
         glassesPaused = true
         headHidden = false
+        if (activeApp === study) study.onHide()
+        restoreHeadUp()
         if (screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
         // 回到官方主界面，屏幕保持亮着。
         client.quitCurrent(flash = false)
@@ -1249,7 +1377,9 @@ class ReaderService : Service(), NimoListener, AppHost {
         get() = if (prefs.getInt("dashHide36", HIDE_SCREEN_OFF) == HIDE_HOME) HIDE_HOME else HIDE_SCREEN_OFF
     /**
      * 抬头显示看板：跟着眼镜自己的「抬头显示」设置（官方 app 和 NimoGo 里改的是同一个），不再单独设置（2026-10-22）。
-     * 开着：抬头开屏显示看板（从第一屏开始），低头再关。关着：收起时直接关屏，不回官方主界面；再按一下镜腿亮回来。显示时右单击收起、左单击翻屏。
+     * 开着：抬头显示 NimoGo 看板。看板显示期间临时关掉眼镜自己的抬头显示，低头不关屏、也不收起。
+     * 到时间只把看板隐去，不关屏；再抬头重新显示。看板上和原生看板上，左单击都打开语音菜单。
+     * 关着：收起时直接关屏，不回官方主界面；再按一下镜腿亮回来。显示时右单击收起、左单击翻屏。
      */
     val dashHeadWake: Boolean get() = headUpDisplay == true
     private val headWakeOn get() = dashHeadWake && dashHideMode == HIDE_SCREEN_OFF
@@ -1299,7 +1429,12 @@ class ReaderService : Service(), NimoListener, AppHost {
             // 刚退出时眼镜会顺手报一次「主界面被点亮」，quitHomeAt 用来忽略那一次，避免看板马上又出现。
             quitHomeAt = android.os.SystemClock.uptimeMillis()
             if (!keepScreen && headDown && dashHomeDark) { client.quitToDarkHome(); log("$why（回主界面，低着头所以关屏；抬头再看）【测试】") }
-            else { client.quitCurrent(); log(if (keepScreen) "$why（看板收起，屏幕保持亮着）" else "$why（回主界面；抬头再看 NimoGo 看板）") }
+            else {
+                client.quitCurrent()
+                // 到时间收起：把头抬显示交回眼镜之后，如果头正低着，眼镜会马上息屏。再发一次开屏，这次收起本身不关屏。
+                if (keepScreen && dashHeadWake) client.screenOff(false)
+                log(if (keepScreen) "$why（看板收起，屏幕保持亮着）" else "$why（回主界面；抬头再看 NimoGo 看板）")
+            }
         } else {
             screenOffByUs = true; client.screenOff(true)
             main.postDelayed(standbyRefresh, 300)
@@ -1348,7 +1483,7 @@ class ReaderService : Service(), NimoListener, AppHost {
             linkState != LinkState.READY -> "没连着"
             dashAtHome -> "没用看板"
             appMode != AppMode.DASHBOARD -> "现在不是看板（${activeApp?.title ?: "阅读"}）"
-            !glassesPaused || client.enteredAppId() != null -> null      // 看板已经开着
+            !glassesPaused -> null      // 看板已经开着。收起后页面号可能还留着，不能据此当成还在显示
             notifyLit -> "正在显示通知"
             else -> ""
         }
@@ -1878,6 +2013,8 @@ class ReaderService : Service(), NimoListener, AppHost {
         if (force && screenOffByUs) { screenOffByUs = false; client.screenOff(false) }
         glassesPaused = false
         headHidden = false
+        // 抬头显示开着时，看板在眼前的这几秒先关掉眼镜自己的抬头显示，否则一低头眼镜就把屏幕关了，再抬头只会亮原生看板。
+        if (dashHeadWake && activeApp == null) suspendHeadUp()
         if (force && restartTimers) { startDashTimers(); shownAt = android.os.SystemClock.uptimeMillis() }
         if (!force && key == lastPushedDash) { notifyUi(); return }
         lastPushedDash = key
@@ -3433,7 +3570,7 @@ class ReaderService : Service(), NimoListener, AppHost {
                 ending?.onClose()
                 activeApp = null
                 log(if (ending === assist) "场景助手：右镜腿长按退出，这一场结束" else "聊天：右镜腿长按退出")
-            }
+            } else if (ending === study) study.onHide()
             glassesPaused = true
             main.removeCallbacks(restoreCheck)
             quitHomeAt = android.os.SystemClock.uptimeMillis()
@@ -3506,25 +3643,25 @@ class ReaderService : Service(), NimoListener, AppHost {
                 headIsDown = false
                 main.removeCallbacks(headDownHide)
                 if (!dashHeadWake) return
-                val pageOpen = screenOffByUs && client.enteredAppId() != null
                 if (glassesPaused && showingPopup) { log("抬头：正在显示通知，等它显示完"); return }
-                if (glassesPaused && !headHidden) log("抬头：看板是在手机上收起的，不自动显示（点「显示看板」）")
-                else if (glassesPaused && dashHideMode == HIDE_HOME && !pageOpen) log("抬头：收起方式是「回主界面」，眼镜点亮主界面时才叫回看板")
-                if (!glassesPaused) { cancelDashTimers(); armDashTimers(); scheduleDashLive() }
-                else if (headHidden && (headWakeOn || pageOpen) && !dashAtHome) { log("抬头：显示看板"); wakeDashboard() }
+                if (glassesPaused && !headHidden) { log("抬头：看板是在手机上收起的，不自动显示（点「显示看板」）"); return }
+                if (!glassesPaused) { cancelDashTimers(); armDashTimers(); scheduleDashLive(); return }
+                if (android.os.SystemClock.uptimeMillis() - quitHomeAt < QUIT_HOME_IGNORE_MS) { log("刚退回主界面，这次抬头不叫回看板"); return }
+                if (dashAtHome) return
+                log("抬头：显示看板")
+                wakeDashboard()
                 return
             }
             GlassesInput.HEAD_DOWN -> {
                 headIsDown = true
-                // 看板页面开着时眼镜会报低头：关屏方式下关屏，回主界面方式下退回主界面（主界面上眼镜自己低头灭屏）
-                if (dashHeadWake && !glassesPaused) {
-                    main.removeCallbacks(headDownHide)
-                    main.postDelayed(headDownHide, maxOf(0L, shownAt + 2_000 - android.os.SystemClock.uptimeMillis()))
-                }
+                // 抬头显示开着：低头不收起、不关屏。看板只到时间自己隐去。
+                if (dashHeadWake) log("抬头显示开着：低头不做反应")
                 return
             }
             else -> if (glassesPaused) {
                 if (onOfficialHome()) return
+                // 原生看板（页面号可能还留着）：左单击开语音菜单，不拿去把看板亮回来。
+                if (dashHeadWake && input == GlassesInput.CLICK_LEFT) { noteHomeTap(); return }
                 // 页面还开着、只是关了屏：点镜腿把看板亮回来。官方主界面上不走这里，左单击已经用来开菜单。
                 val click = input == GlassesInput.CLICK_LEFT || input == GlassesInput.CLICK_RIGHT ||
                     input == GlassesInput.DOUBLE_LEFT || input == GlassesInput.DOUBLE_RIGHT
@@ -3577,14 +3714,19 @@ class ReaderService : Service(), NimoListener, AppHost {
 
     override fun onGlassesSetting(key: Int, on: Boolean) {
         when (key) {
-            NimoProtocol.SET_HEADUP_DISPLAY -> headUpDisplay = on
+            NimoProtocol.SET_HEADUP_DISPLAY -> if (!headUpSuspended) headUpDisplay = on
             NimoProtocol.SET_DISPLAY_OFF -> displayOff = on
             NimoProtocol.SET_AUTO_BRIGHTNESS -> { autoBrightness = on; autoBrightFilter.reset(); if (!on) { main.removeCallbacks(brightnessStep); brightnessAnim = null } }
         }
         notifyUi()
     }
 
-    fun toggleHeadUp() { client.setGlassesSetting(NimoProtocol.SET_HEADUP_DISPLAY, headUpDisplay != true); log(if (headUpDisplay != true) "抬头显示：开" else "抬头显示：关") }
+    fun toggleHeadUp() {
+        val turnOn = headUpDisplay != true
+        if (!turnOn) { headUpSuspended = false; prefs.edit().remove("headUpRestore").apply() }
+        client.setGlassesSetting(NimoProtocol.SET_HEADUP_DISPLAY, turnOn)
+        log(if (turnOn) "抬头显示：开" else "抬头显示：关")
+    }
     fun toggleDisplayOff() {
         client.setGlassesSetting(NimoProtocol.SET_DISPLAY_OFF, displayOff != true)
         log(if (displayOff != true) "息屏模式：开" else "息屏模式：关")
