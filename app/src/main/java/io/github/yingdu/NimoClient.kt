@@ -753,6 +753,9 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         listener.onTwsReconnected()
     }
 
+    /** 握手完成后 2 秒再校一次时（见 finishHandshake）。 */
+    private val timeRecheck = Runnable { resyncTime("连上后复核，两条镜腿对齐") }
+
     private fun syncTime() {
         if (state != LinkState.HANDSHAKING || gatt == null) return
         setTimeAttempts++
@@ -787,6 +790,9 @@ class NimoClient(private val context: Context, private val listener: NimoListene
             reportDisplayOff(false)
         }
         setState(LinkState.READY)
+        // 握手时只校了连着的那一边；隔 2 秒再校一次，让另一条镜腿也跟上（两边要一致）。
+        main.removeCallbacks(timeRecheck)
+        main.postDelayed(timeRecheck, 2_000)
         flushText()
         askBattery()
         if (batteryWatch?.invoke() == true) main.postDelayed(batteryPoll, BATTERY_POLL_MS)
