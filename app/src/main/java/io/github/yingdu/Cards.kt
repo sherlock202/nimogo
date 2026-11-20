@@ -285,8 +285,15 @@ class CardsApp(
         return f.done()
     }
 
-    /** 自己画一帧。返回 null，不走提词器文字页。 */
-    override fun glassesText(cols: Int, rows: Int): Pair<String, String>? = null
+    /** 提词器文字页：正文是正面或反面，顶部状态行是组名、第几张、正面或反面。 */
+    override fun glassesText(cols: Int, rows: Int): Pair<String, String>? {
+        val d = deck() ?: return "" to "学习卡"
+        val card = d.cards.getOrNull(index) ?: return "这组没有卡片" to d.name
+        val text = (if (back) card.back else card.front).ifBlank { "（空）" }
+        val side = if (back) "反面" else "正面"
+        val status = "${d.name.take(8)} ${index + 1}/${d.cards.size} $side"
+        return CardStore.fit(text, cols, rows) to status
+    }
 
     override fun status(): String {
         val d = deck() ?: return "学习卡"

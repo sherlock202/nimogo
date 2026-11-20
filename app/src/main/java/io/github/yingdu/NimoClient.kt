@@ -826,12 +826,6 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     private fun flush() {
         val c = pending ?: return
-        // 导航页已经开着，队列里堆的是上一张图（语音菜单切过来时同一张会连发好几遍）。
-        // 新的一张顶掉还没发完的旧图，不要排在后面，否则学习卡这一面会比设定的秒数长。
-        if (c is Content.Image && enteredApp == imageApp && enteringApp == null && writeQueue.size > 8) {
-            log("新的一张顶掉队列里还没发完的旧图（${writeQueue.size} 帧）")
-            writeQueue.clear()
-        }
         // 上一屏的数据还在发送队列里：先不发，等队列清空后只发最新的一份（翻译、自动滚动时避免越积越多）
         if (writeQueue.size > 2 || writeInFlight && writeQueue.isNotEmpty()) { flushWhenIdle = true; return }
         val target = if (c is Content.Image) imageApp else pageAppId
@@ -883,6 +877,7 @@ class NimoClient(private val context: Context, private val listener: NimoListene
      */
     private var reopenNext = false
     fun reopenBeforeNextContent() { if (state == LinkState.READY && enteredApp != null) reopenNext = true }
+
     /** 下一份内容会先重开页面（重开时会暂时关屏、发完再开屏）。 */
     val reopenPending get() = reopenNext
 
