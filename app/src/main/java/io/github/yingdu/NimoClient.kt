@@ -826,6 +826,12 @@ class NimoClient(private val context: Context, private val listener: NimoListene
 
     private fun flush() {
         val c = pending ?: return
+        // 导航页已经开着，队列里堆的是上一张图（语音菜单切过来时同一张会连发好几遍）。
+        // 新的一张顶掉还没发完的旧图，不要排在后面，否则学习卡这一面会比设定的秒数长。
+        if (c is Content.Image && enteredApp == imageApp && enteringApp == null && writeQueue.size > 8) {
+            log("新的一张顶掉队列里还没发完的旧图（${writeQueue.size} 帧）")
+            writeQueue.clear()
+        }
         // 上一屏的数据还在发送队列里：先不发，等队列清空后只发最新的一份（翻译、自动滚动时避免越积越多）
         if (writeQueue.size > 2 || writeInFlight && writeQueue.isNotEmpty()) { flushWhenIdle = true; return }
         val target = if (c is Content.Image) imageApp else pageAppId
@@ -1037,6 +1043,8 @@ class NimoClient(private val context: Context, private val listener: NimoListene
         if (appId == imageApp) for (at in EARLY_IMAGE_MS) main.postDelayed({
             val c = pending as? Content.Image ?: return@postDelayed
             if (enteringApp != appId || state != LinkState.READY) return@postDelayed
+            // 上一份已经在队列里：不再叠一份。叠多了，5 秒后的下一张要等这些重复的图发完。
+            if (writeQueue.size > 8) return@postDelayed
             earlySent = true
             NimoFrameCodec.updateContentFrames(imageApp, 0, imageRes, NimoProtocol.WIDGET_PICTURE,
                 NimoFrameCodec.imageContent(c.packed2bpp, c.width, c.height)).forEach { sendFrame(it) }

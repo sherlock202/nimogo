@@ -46,6 +46,11 @@ interface AppHost {
     fun isShowing(app: GlassesApp): Boolean
     /** 连续发图时眼镜实际每张图隔多少毫秒（不知道时为 null）。 */
     fun frameIntervalMs(): Long?
+    /**
+     * 接下来这一帧发到眼镜上之后再做（默认马上做）。
+     * 先登记、再 redraw：页面还在切换时，这几秒不算进学习卡的停留时间。
+     */
+    fun afterShown(action: () -> Unit) { action() }
     /** 在眼镜上弹一条通知（不管眼镜现在显示什么；没连接时什么也不做）。 */
     fun popup(title: String, text: String) {}
 }

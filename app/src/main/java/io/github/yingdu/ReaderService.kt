@@ -1629,7 +1629,7 @@ class ReaderService : Service(), NimoListener, AppHost {
             dashPage = (dashPage + 1) % pages
             val last = dashPage >= pages - 1
             // 下一屏也从真正显示出来时算起：显示满 5 秒再翻；最后一屏至少显示 5 秒才收起
-            afterShown {
+            afterShownForDash {
                 val now = android.os.SystemClock.uptimeMillis()
                 if (dashAutoHideSec > 0 && last && hideAt - now < 5_000) {
                     main.removeCallbacks(dashHide); hideAt = now + 5_000; main.postDelayed(dashHide, 5_000)
@@ -1672,7 +1672,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         cancelDashTimers()
         if (appMode != AppMode.DASHBOARD) return
         shownAt = android.os.SystemClock.uptimeMillis()
-        afterShown { armDashTimers() }
+        afterShownForDash { armDashTimers() }
         main.post(stockLive)
     }
 
@@ -1710,7 +1710,15 @@ class ReaderService : Service(), NimoListener, AppHost {
     private val stockIo by lazy { java.util.concurrent.Executors.newSingleThreadExecutor() }
 
     /** 接下来那份内容显示到眼镜上之后执行（最多等 6 秒，发送出问题也照样继续）。 */
-    private fun afterShown(action: () -> Unit) {
+    override fun afterShown(action: () -> Unit) {
+        var done = false
+        val run = Runnable { if (!done) { done = true; action() } }
+        client.whenNextContentShown { main.post(run) }
+        main.postDelayed(run, 6_000)
+    }
+
+    /** 看板用：换了一轮计时就把还没到的回调作废。 */
+    private fun afterShownForDash(action: () -> Unit) {
         val token = timerToken
         var done = false
         val run = Runnable { if (!done && token == timerToken) { done = true; action() } }

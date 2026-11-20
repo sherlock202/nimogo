@@ -175,8 +175,7 @@ class CardsApp(
         waitLogged = false
         keys(true)
         host.log("学习卡：${if (auto) "自动" else "手动"}播放，从第 ${index + 1} 张开始")
-        show()
-        arm()
+        showThenArm()
     }
 
     override fun onClose() {
@@ -190,12 +189,14 @@ class CardsApp(
     override fun onResume() {
         if (!playing) return
         hold(true)
-        show()
-        arm()
+        showThenArm()
     }
 
     private fun hold(on: Boolean) {
-        if (!on) host.main.removeCallbacks(tick)
+        if (!on) {
+            host.main.removeCallbacks(tick)
+            armToken++
+        }
         keys(on)
     }
 
@@ -204,8 +205,7 @@ class CardsApp(
         if (!playing) return
         val n = deck()?.cards?.size ?: 0
         if (n == 0) index = 0 else if (index >= n) { index = 0; savePos(deckId, index) }
-        show()
-        arm()
+        showThenArm()
     }
 
     fun reschedule() { if (playing) arm() }
@@ -215,8 +215,7 @@ class CardsApp(
         invert = on
         if (!playing) return
         back = on
-        show()
-        arm()
+        showThenArm()
         host.changed()
     }
 
@@ -233,8 +232,7 @@ class CardsApp(
             "prev" -> { index = (index - 1 + n) % n; back = invert; savePos(deckId, index) }
             else -> return
         }
-        show()
-        arm()
+        showThenArm()
         host.changed()
     }
 
@@ -302,10 +300,28 @@ class CardsApp(
 
     private fun deck(): StudyDeck? = decks().find { it.id == deckId }
 
+    /** 作废还没开始的计时（画面还在路上，或者已经收起）。 */
+    private var armToken = 0
+
     private fun show() { host.redraw(this) }
 
+    /** 先等这一帧到眼镜上，再开始数这一面的秒数。语音菜单要先换页面，换页面的时间不算进去。 */
+    private fun showThenArm() {
+        host.main.removeCallbacks(tick)
+        if (!playing || !auto || deck()?.cards.isNullOrEmpty()) { armToken++; show(); return }
+        val token = ++armToken
+        val sec = (if (back) backSec() else frontSec()).coerceIn(1, 60)
+        host.afterShown {
+            if (token != armToken || !playing || !auto) return@afterShown
+            host.main.postDelayed(tick, sec * 1000L)
+        }
+        show()
+    }
+
+    /** 这一面已经在眼镜上（只改了秒数）：从现在重新数。 */
     private fun arm() {
         host.main.removeCallbacks(tick)
+        armToken++
         if (!playing || !auto) return
         if (deck()?.cards.isNullOrEmpty()) return
         val sec = (if (back) backSec() else frontSec()).coerceIn(1, 60)
@@ -330,8 +346,7 @@ class CardsApp(
         if (step.first != index) savePos(deckId, step.first)
         index = step.first
         back = step.second
-        show()
-        arm()
+        showThenArm()
         host.changed()
     }
 
