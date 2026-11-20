@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Calendar
 
 /** 一张学习卡：正面、反面。 */
 data class StudyCard(val front: String, val back: String)
@@ -130,6 +131,7 @@ object CardStore {
  * 眼镜上播放一组学习卡。
  * 自动：先停一面、再停另一面，然后下一张，循环。默认先正面。倒置时先反面。
  * 镜腿左键翻面，右键下一张。蓝牙戒指上下翻面，左上一张，右下一张。
+ * 画面自己画：左上角是现在的时间（几点几分），每到整分更新一次。
  */
 class CardsApp(
     private val host: AppHost,
@@ -156,6 +158,12 @@ class CardsApp(
     private var lastAct = ""
     private var lastActAt = 0L
     private val tick = Runnable { advance() }
+    /** 整分时重画一次，左上角的时间才会变。 */
+    private val clockTick = Runnable {
+        if (!playing) return@Runnable
+        if (host.isShowing(this)) host.redraw(this)
+        armClock()
+    }
 
     fun prepare(id: String): String? {
         val d = decks().find { it.id == id } ?: return "找不到这组"
@@ -176,6 +184,7 @@ class CardsApp(
         host.log("学习卡：${if (auto) "自动" else "手动"}播放，从第 ${index + 1} 张开始")
         show()
         arm()
+        armClock()
     }
 
     override fun onClose() {
@@ -191,11 +200,23 @@ class CardsApp(
         hold(true)
         show()
         arm()
+        armClock()
     }
 
     private fun hold(on: Boolean) {
-        if (!on) host.main.removeCallbacks(tick)
+        if (!on) {
+            host.main.removeCallbacks(tick)
+            host.main.removeCallbacks(clockTick)
+        }
         keys(on)
+    }
+
+    /** 排到下一个整分再画，左上角的时间跟着变。 */
+    private fun armClock() {
+        host.main.removeCallbacks(clockTick)
+        if (!playing) return
+        val now = System.currentTimeMillis()
+        host.main.postDelayed(clockTick, 60_000 - now % 60_000 + 50)
     }
 
     /** 卡片改过之后，正在播放的话重新画。 */
@@ -247,23 +268,44 @@ class CardsApp(
 
     override fun render(fontPx: Int): ByteArray {
         val f = Frame(fontPx)
-        val (body, status) = glassesText(12, 4)
-        val y = f.header("学习卡", status.take(10))
-        f.text(body.lineSequence().firstOrNull().orEmpty(), 6, y)
+        val d = deck()
+        val card = d?.cards?.getOrNull(index)
+        val time = clockText(Calendar.getInstance())
+        f.text(time, 6, 6, Frame.FULL, f.small)
+        val right = when {
+            d == null -> ""
+            card == null -> d.name
+            else -> "${d.name.take(8)} ${index + 1}/${d.cards.size} " + if (back) "反面" else "正面"
+        }
+        if (right.isNotEmpty()) {
+            val room = f.w - 18 - f.small.measure(time)
+            f.text(f.small.ellipsize(right, room), f.w - 6, 6, Frame.DIM, f.small, Frame.RIGHT)
+        }
+        f.dotted(26)
+        val body = when {
+            d == null -> "学习卡"
+            card == null -> "这组没有卡片"
+            else -> (if (back) card.back else card.front).ifBlank { "（空）" }
+        }
+        val maxW = f.w - 12
+        val lineH = f.font.height + 6
+        val y0 = 32
+        val maxLines = ((f.h - y0 - 4) / lineH).coerceAtLeast(1)
+        val wrapped = f.font.wrap(body, maxW).let { if (it.isEmpty()) listOf(" ") else it }
+        val shown = wrapped.take(maxLines).toMutableList()
+        if (wrapped.size > maxLines && shown.isNotEmpty()) {
+            val t = shown.last()
+            val marked = if (t.isEmpty()) "…" else t.dropLast(1) + "…"
+            shown[shown.lastIndex] = f.font.ellipsize(marked, maxW)
+        }
+        val block = shown.size * lineH
+        val top = y0 + ((f.h - 4 - y0 - block) / 2).coerceAtLeast(0)
+        shown.forEachIndexed { i, line -> f.text(line, 6, top + i * lineH) }
         return f.done()
     }
 
-    override fun glassesText(cols: Int, rows: Int): Pair<String, String> {
-        val d = deck() ?: return "" to "学习卡"
-        val card = d.cards.getOrNull(index)
-        if (card == null) return "这组没有卡片" to d.name
-        val text = (if (back) card.back else card.front).ifBlank { "（空）" }
-        val side = if (back) "反面" else "正面"
-        val mode = if (auto) " 自动" else ""
-        val order = if (invert) " 逆" else ""
-        val status = "${d.name.take(8)} ${index + 1}/${d.cards.size} $side$order$mode"
-        return CardStore.fit(text, cols, rows) to status
-    }
+    /** 自己画一帧，左上角才能是时间。返回 null，不走提词器文字页。 */
+    override fun glassesText(cols: Int, rows: Int): Pair<String, String>? = null
 
     override fun status(): String {
         val d = deck() ?: return "学习卡"
@@ -336,5 +378,9 @@ class CardsApp(
             "next" -> "下一张"
             else -> action
         }
+
+        /** 左上角的时间：24 小时制，只到分。 */
+        fun clockText(cal: Calendar): String =
+            String.format(java.util.Locale.US, "%02d:%02d", cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
     }
 }

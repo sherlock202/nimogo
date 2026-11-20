@@ -4,6 +4,7 @@ import android.view.KeyEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Calendar
 
 class CardsTest {
     @Test fun csvWithoutHeader() {
@@ -65,6 +66,19 @@ class CardsTest {
         assertEquals(0 to false, CardsApp.nextSide(0, true, 2, true))
         assertEquals(1 to true, CardsApp.nextSide(0, false, 2, true))
         assertEquals(0 to true, CardsApp.nextSide(1, false, 2, true))
+    }
+
+    @Test fun clockTextIsHourAndMinute() {
+        val c = Calendar.getInstance()
+        c.set(Calendar.HOUR_OF_DAY, 9)
+        c.set(Calendar.MINUTE, 4)
+        assertEquals("09:04", CardsApp.clockText(c))
+        c.set(Calendar.HOUR_OF_DAY, 0)
+        c.set(Calendar.MINUTE, 0)
+        assertEquals("00:00", CardsApp.clockText(c))
+        c.set(Calendar.HOUR_OF_DAY, 23)
+        c.set(Calendar.MINUTE, 59)
+        assertEquals("23:59", CardsApp.clockText(c))
     }
 
     @Test fun ringKeys() {
