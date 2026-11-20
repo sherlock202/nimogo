@@ -67,6 +67,16 @@ class CardsTest {
         assertEquals(0 to true, CardsApp.nextSide(1, false, 2, true))
     }
 
+    @Test fun clockTextIsHourAndMinute() {
+        val c = java.util.Calendar.getInstance()
+        c.set(java.util.Calendar.HOUR_OF_DAY, 9)
+        c.set(java.util.Calendar.MINUTE, 4)
+        assertEquals("09:04", CardsApp.clockText(c))
+        c.set(java.util.Calendar.HOUR_OF_DAY, 23)
+        c.set(java.util.Calendar.MINUTE, 59)
+        assertEquals("23:59", CardsApp.clockText(c))
+    }
+
     @Test fun ringKeys() {
         assertEquals("flip", CardsApp.keyAction(KeyEvent.KEYCODE_DPAD_UP))
         assertEquals("flip", CardsApp.keyAction(KeyEvent.KEYCODE_DPAD_DOWN))

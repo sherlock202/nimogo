@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Calendar
 
 /** 一张学习卡：正面、反面。 */
 data class StudyCard(val front: String, val back: String)
@@ -157,6 +158,19 @@ class CardsApp(
     private var lastAct = ""
     private var lastActAt = 0L
     private val tick = Runnable { advance() }
+    /** 整分时重画一次，顶部状态行里的时间才会变。 */
+    private val clockTick = Runnable {
+        if (!playing) return@Runnable
+        if (host.isShowing(this)) host.redraw(this)
+        armClock()
+    }
+
+    /** 排到下一个整分再画。 */
+    private fun armClock() {
+        host.main.removeCallbacks(clockTick)
+        if (!playing) return
+        host.main.postDelayed(clockTick, 60_000 - System.currentTimeMillis() % 60_000 + 50)
+    }
 
     fun prepare(id: String): String? {
         val d = decks().find { it.id == id } ?: return "找不到这组"
@@ -176,6 +190,7 @@ class CardsApp(
         keys(true)
         host.log("学习卡：${if (auto) "自动" else "手动"}播放，从第 ${index + 1} 张开始")
         showThenArm()
+        armClock()
     }
 
     override fun onClose() {
@@ -190,11 +205,13 @@ class CardsApp(
         if (!playing) return
         hold(true)
         showThenArm()
+        armClock()
     }
 
     private fun hold(on: Boolean) {
         if (!on) {
             host.main.removeCallbacks(tick)
+            host.main.removeCallbacks(clockTick)
             armToken++
         }
         keys(on)
@@ -285,13 +302,14 @@ class CardsApp(
         return f.done()
     }
 
-    /** 提词器文字页：正文是正面或反面，顶部状态行是组名、第几张、正面或反面。 */
+    /** 提词器文字页：正文是正面或反面，顶部状态行是时间、组名、第几张、正面或反面。 */
     override fun glassesText(cols: Int, rows: Int): Pair<String, String>? {
-        val d = deck() ?: return "" to "学习卡"
-        val card = d.cards.getOrNull(index) ?: return "这组没有卡片" to d.name
+        val now = clockText(Calendar.getInstance())
+        val d = deck() ?: return "" to "$now 学习卡"
+        val card = d.cards.getOrNull(index) ?: return "这组没有卡片" to "$now ${d.name.take(8)}"
         val text = (if (back) card.back else card.front).ifBlank { "（空）" }
         val side = if (back) "反面" else "正面"
-        val status = "${d.name.take(8)} ${index + 1}/${d.cards.size} $side"
+        val status = "$now ${d.name.take(8)} ${index + 1}/${d.cards.size} $side"
         return CardStore.fit(text, cols, rows) to status
     }
 
@@ -383,5 +401,9 @@ class CardsApp(
             "next" -> "下一张"
             else -> action
         }
+
+        /** 顶部状态行里的时间：24 小时制，只到分。 */
+        fun clockText(cal: Calendar): String =
+            String.format(java.util.Locale.US, "%02d:%02d", cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
     }
 }
