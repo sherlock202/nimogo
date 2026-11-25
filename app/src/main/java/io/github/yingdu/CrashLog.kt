@@ -15,6 +15,8 @@ import java.util.Locale
 object CrashLog {
     private const val FILE = "last_crash.txt"
     @Volatile private var installed = false
+    /** 闪退时一起记下的最近日志（新的在前），由 ReaderService 提供。 */
+    @Volatile var recent: (() -> List<String>)? = null
 
     fun install(ctx: Context) {
         if (installed) return
@@ -28,7 +30,9 @@ object CrashLog {
                 val version = runCatching { app.packageManager.getPackageInfo(app.packageName, 0).versionName }.getOrNull() ?: ""
                 val head = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()) +
                     "  NimoGo $version  Android ${android.os.Build.VERSION.RELEASE} (${android.os.Build.MODEL})  线程 ${thread.name}\n"
-                File(app.filesDir, FILE).writeText(head + sw.toString().take(20_000))
+                val logs = runCatching { recent?.invoke()?.joinToString("\n") }.getOrNull().orEmpty()
+                File(app.filesDir, FILE).writeText(head + sw.toString().take(20_000) +
+                    (if (logs.isEmpty()) "" else "\n最近的日志（新的在上）：\n" + logs.take(12_000)))
             }
             previous?.uncaughtException(thread, e)
         }

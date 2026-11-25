@@ -2124,6 +2124,8 @@ class ReaderService : Service(), NimoListener, AppHost {
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
+        // 闪退记录里带上最近的日志（日志只在内存里，闪退后就没了）
+        CrashLog.recent = { logLines.take(60) }
         instance = this
         LocalAsr.appCtx = applicationContext
         main.postDelayed({ agentPollSoon() }, 10_000)   // 上次还没做完的命令：接着查回复
@@ -2215,6 +2217,7 @@ class ReaderService : Service(), NimoListener, AppHost {
         runCatching { unregisterReceiver(timeReceiver) }
         main.removeCallbacks(dailyTimeSync)
         instance = null
+        CrashLog.recent = null
         runCatching { tape.stopPlay() }
         if (recWantsMic || recPhoneOn) tape.stop()
         activeApp?.onClose()
@@ -2309,7 +2312,9 @@ class ReaderService : Service(), NimoListener, AppHost {
         showDashboardOnReady = false
         deviceName = runCatching { dev.name }.getOrNull() ?: dev.address
         log("$why：直接连接眼镜")
-        startInForeground()
+        // 这里常在后台被调用（息屏时来通知）：Android 12 起后台再调 startForeground 可能被系统拒绝并抛异常，
+        // 不接住就整个 app 闪退。服务本来就在前台，失败了只记一笔，照样去连。
+        runCatching { startInForeground() }.onFailure { log("$why：后台更新前台服务被系统拒绝（${it.javaClass.simpleName}），照样连接") }
         client.connect(dev, forNotify = quiet)
         return true
     }
